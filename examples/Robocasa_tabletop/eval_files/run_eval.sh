@@ -9,13 +9,16 @@
 # ============================================================
 
 ###########################################################################################
-# === Please modify the paths to Python executables in conda environments ===
-starVLA_PYTHON=/path/to/conda_envs/starVLA/bin/python
-ROBOCASA_PYTHON=/path/to/conda_envs/robocasa/bin/python
-SAM3_PYTHON=/path/to/conda_envs/sam3/bin/python
+# === Paths resolve from examples/eval_env.sh; override any of them via environment ===
+#   CONDA_ENVS_ROOT, STARVLA_PYTHON, ROBOCASA_PYTHON, SAM3_PYTHON, NUM_GPUS
+# Run from the repository root.
+source "$(dirname "${BASH_SOURCE[0]}")/../../eval_env.sh"
+vpvla_require STARVLA_PYTHON ROBOCASA_PYTHON SAM3_PYTHON
+
+starVLA_PYTHON="${STARVLA_PYTHON}"
 
 export PYTHONPATH=$(pwd):${PYTHONPATH}
-CKPT_DEFAULT="/path/to/your/checkpoint.pt"
+CKPT_DEFAULT="${CKPT_DEFAULT:-playground/Checkpoints/VP-VLA-Robocasa-Tabletop/checkpoints/steps_100000_pytorch_model.pt}"
 id_name=${id_name:-"eval_vp_vla_robocasa_tabletop"}
 # Port bases: can be overridden via env for parallel runs (e.g. PORT_OFFSET=8)
 PORT_OFFSET=${PORT_OFFSET:-0}
@@ -29,7 +32,7 @@ N_ENVS_DEFAULT=1
 MAX_EPISODE_STEPS_DEFAULT=720
 N_ACTION_STEPS_DEFAULT=12
 
-NUM_GPUS=8
+# NUM_GPUS resolved in eval_env.sh; override with NUM_GPUS=<n>
 
 # Visual prompting configuration
 USE_SAM3=${USE_SAM3:-true}

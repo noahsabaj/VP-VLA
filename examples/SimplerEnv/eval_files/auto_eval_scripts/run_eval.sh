@@ -11,13 +11,19 @@
 echo "$(which python)"
 
 ###########################################################################################
-# === Please modify the following paths according to your environment ===
-# cd /path/to/VP-VLA
-export star_vla_python=/path/to/conda_envs/starVLA/bin/python
-export sim_python=/path/to/conda_envs/simpler_env/bin/python
-export sam3_python=/path/to/conda_envs/sam3/bin/python
-export SimplerEnv_PATH=/path/to/SimplerEnv
+# === Paths resolve from examples/eval_env.sh; override any of them via environment ===
+#   CONDA_ENVS_ROOT, STARVLA_PYTHON, SIMPLER_PYTHON, SAM3_PYTHON, SIMPLERENV_PATH
+# Run from the repository root.
+source "$(dirname "${BASH_SOURCE[0]}")/../../../eval_env.sh"
+vpvla_require STARVLA_PYTHON SIMPLER_PYTHON SAM3_PYTHON
+vpvla_require_dir SIMPLERENV_PATH
+
+export star_vla_python="${STARVLA_PYTHON}"
+export sim_python="${SIMPLER_PYTHON}"
+export sam3_python="${SAM3_PYTHON}"
+export SimplerEnv_PATH="${SIMPLERENV_PATH}"
 export PYTHONPATH=$(pwd):${PYTHONPATH}
+vpvla_banner STARVLA_PYTHON SIMPLER_PYTHON SAM3_PYTHON SIMPLERENV_PATH
 # === End of environment variable configuration ===
 ###########################################################################################
 
@@ -167,6 +173,13 @@ stop_all_services() {
 # ============================================================
 # GPU Setup
 # ============================================================
+# Default CUDA_VISIBLE_DEVICES to 0..NUM_GPUS-1 when unset, otherwise an unset
+# value yields a single empty device id and every job runs with an empty
+# CUDA_VISIBLE_DEVICES (all GPUs visible, all colliding on GPU 0).
+if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
+  CUDA_VISIBLE_DEVICES=$(seq -s, 0 $((NUM_GPUS - 1)))
+  export CUDA_VISIBLE_DEVICES
+fi
 IFS=',' read -r -a CUDA_DEVICES <<< "$CUDA_VISIBLE_DEVICES"
 NUM_GPUS=${#CUDA_DEVICES[@]}
 

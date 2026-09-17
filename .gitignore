@@ -1,3 +1,5 @@
-/playground/Pretrained_models/*
+# Downloaded/generated artifacts: checkpoints, base models, eval outputs, videos
+/playground/
 /results
 __pycache__/
+*.egg-info/

@@ -3,3 +3,6 @@
 /results
 __pycache__/
 *.egg-info/
+
+# MuJoCo writes this to the launch directory on physics warnings
+MUJOCO_LOG.TXT

@@ -1,6 +1,7 @@
 # Downloaded/generated artifacts: checkpoints, base models, eval outputs, videos
 /playground/
 /results
+output/
 __pycache__/
 *.egg-info/
 

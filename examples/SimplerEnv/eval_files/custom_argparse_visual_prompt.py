@@ -126,6 +126,17 @@ def get_args():
                         help="Save overlay visualization videos for debugging")
     parser.add_argument("--overlay-video-dir", type=str, default="./overlay_videos")
 
+    # ===== Motion planner (KAN-22) =====
+    parser.add_argument("--controller", type=str, default="vla", choices=["vla", "planner", "planner_then_vla"],
+                        help="Who drives the arm: the VLA, a motion planner, or the planner then the VLA")
+    parser.add_argument("--planner", type=str, default="mplib", choices=["mplib", "curobo"])
+    parser.add_argument("--target-source", type=str, default="camera", choices=["camera", "sim"],
+                        help="Where the planner's targets come from (sim = simulator poses, debugging only)")
+    parser.add_argument("--pregrasp-height", type=float, default=0.06,
+                        help="Meters above the object's top where the planner stops")
+    parser.add_argument("--planner-log", type=str, default=None,
+                        help="JSON-lines file for per-episode planner stats (default: <logging-dir>/planner_stats.jsonl)")
+
     args = parser.parse_args()
 
     # ===== Post-processing (same as base) =====

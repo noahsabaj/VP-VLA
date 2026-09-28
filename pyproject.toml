@@ -90,5 +90,5 @@ testpaths = ["tests"]
 pythonpath = ["."]
 filterwarnings = [
     # the frameworks hard-code torch.autocast("cuda", ...), which only warns on CPU-only machines
-    "ignore:CUDA is not available:UserWarning",
+    "ignore:.*CUDA is not available:UserWarning",
 ]

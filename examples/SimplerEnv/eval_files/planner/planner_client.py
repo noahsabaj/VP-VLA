@@ -15,7 +15,6 @@ simulator instead (debugging only). One JSON line per episode is written to `log
 """
 
 import json
-import logging
 import math
 import re
 import sys
@@ -27,7 +26,7 @@ from scipy.spatial.transform import Rotation, Slerp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "Robocasa_tabletop" / "visual_prompt_utility"))
 
-from .geometry import CameraView, ee_delta_action, mat_to_pose, path_length, pose_to_mat
+from .geometry import CameraView, DepthNoise, ee_delta_action, mat_to_pose, path_length, pose_to_mat
 from .planners import make_planner
 
 GRIPPER_OPEN, GRIPPER_CLOSED = 1.0, -1.0
@@ -116,6 +115,8 @@ class PlannerClient:
         max_step_rot: float = 0.15,
         settle_steps: int = 3,
         log_path: Optional[str] = None,
+        depth_noise: str = "none",
+        noise_seed: Optional[int] = None,
     ) -> None:
         self.planner = make_planner(planner)
         self.planner_name = planner
@@ -127,6 +128,7 @@ class PlannerClient:
         self.max_step_rot = max_step_rot
         self.settle_steps = settle_steps
         self.log_path = log_path
+        self.noise = DepthNoise(depth_noise, noise_seed)
         self.sam3 = None
         if target_source == "camera":
             from sam3_client import SAM3Client
@@ -148,7 +150,8 @@ class PlannerClient:
         self.gripper = GRIPPER_OPEN
         self.hold_steps = 0
         self.step_count = 0
-        self.stats = {"plans": []}
+        self.noise.new_episode()
+        self.stats = {"plans": [], "depth_noise": self.noise.level, "features": {}}
         self.ee_trace: List[np.ndarray] = []
         self.transit_contact = False
         self.place_goal = None
@@ -215,7 +218,7 @@ class PlannerClient:
 
     def _start(self, image, obs, env, qpos, target) -> None:
         self.home_orientation = target[3:].copy()
-        self.view = CameraView(obs)
+        self.view = CameraView(obs, noise=self.noise)
         self.robot_ids = [link.id for link in env.unwrapped.agent.robot.get_links()]
         grasp = self._locate(image, obs, env, which="grasp")
         if grasp is None:
@@ -226,6 +229,10 @@ class PlannerClient:
         # The VLA picks its own grasp after the hand-off, so only the planner-only setup turns the hand.
         orientation = self.home_orientation if self.vla is not None \
             else grasp_orientation(self.home_orientation, grasp.get("points_xy"))
+        self.stats["features"]["grasp_turn_rad"] = rotation_angle(
+            np.r_[np.zeros(3), self.home_orientation],
+            np.r_[np.zeros(3), grasp_orientation(self.home_orientation, grasp.get("points_xy"))])
+        self.stats["features"]["grasp_reach_m"] = float(np.linalg.norm(grasp["center"] - target[:2]))
         goal = np.concatenate([[grasp["center"][0], grasp["center"][1], grasp["top"] + self.pregrasp_height],
                                orientation])
         if not self._plan_to(qpos, goal, "pregrasp"):
@@ -258,7 +265,7 @@ class PlannerClient:
                 return
             goal = np.concatenate([[place["center"][0], place["center"][1],
                                     max(place["top"] + self.place_height, target[2])], self.home_orientation])
-            self.view = CameraView(obs)
+            self.view = CameraView(obs, noise=self.noise)
             self.view.ignore_sphere = (ee_pose_from_obs(obs)[:3], 0.08)  # the held object
             if not self._plan_to(qpos, goal, "place"):
                 self.phase = "done"
@@ -326,7 +333,9 @@ class PlannerClient:
         else:
             return None
         self.stats[f"{which}_sam3_score"] = float(scores.max())
-        pts = CameraView(obs).object_points(np.asarray(masks[int(np.argmax(scores))]))
+        mask = np.asarray(masks[int(np.argmax(scores))])
+        pts = CameraView(obs, noise=self.noise).object_points(mask)
+        self._record_features(which, scores, mask, pts)
         if len(pts) < 5:
             return None
         found = {"center": np.median(pts[:, :2], axis=0), "top": float(np.percentile(pts[:, 2], 95)),
@@ -336,6 +345,20 @@ class PlannerClient:
             self.stats[f"{which}_error_xy"] = float(np.linalg.norm(found["center"] - truth["center"]))
             self.stats[f"{which}_error_3d"] = float(np.linalg.norm(center3 - truth["center3"]))
         return found
+
+    def _record_features(self, which: str, scores, mask, pts) -> None:
+        """What the adaptive selector sees about an object: all from the camera, none from the simulator."""
+        f = self.stats["features"]
+        f[f"{which}_sam3_score"] = float(np.max(scores))
+        f[f"{which}_sam3_count"] = int(len(scores))
+        f[f"{which}_mask_px"] = int(np.asarray(mask).astype(bool).sum())
+        f[f"{which}_points"] = int(len(pts))
+        if len(pts) >= 5:
+            xy = pts[:, :2] - pts[:, :2].mean(axis=0)
+            spread = np.sqrt(np.maximum(np.linalg.eigvalsh(xy.T @ xy / len(xy)), 0.0))
+            f[f"{which}_height"] = float(np.percentile(pts[:, 2], 95) - np.percentile(pts[:, 2], 5))
+            f[f"{which}_extent_long"], f[f"{which}_extent_short"] = float(4 * spread[1]), float(4 * spread[0])
+            f[f"{which}_depth_spread"] = float(np.std(pts[:, 2]))
 
     @staticmethod
     def _sim_object(obs, env, which: str) -> Optional[dict]:

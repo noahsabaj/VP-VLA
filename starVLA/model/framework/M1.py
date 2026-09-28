@@ -290,7 +290,7 @@ class InternVLA_M1(baseframework):
 
             if using_cfg:
                 samples, _ = samples.chunk(2, dim=0)  # Remove null class samples
-            normalized_actions = samples.cpu().numpy()
+            normalized_actions = samples.float().cpu().numpy()
             
             raw_actions = None
      

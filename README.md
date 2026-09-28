@@ -141,44 +141,54 @@ The evaluation relies on three separate conda environments:
 | `simpler_env` (SimplerEnv only) | Simulation environment | 
 | `robocasa` (Robocasa only) | Simulation environment |
 
+### Configuring paths
+
+Both evaluation scripts source [`examples/eval_env.sh`](examples/eval_env.sh), which resolves every interpreter and path from environment variables, so you don't need to edit the scripts. Any variable already set in your environment wins; otherwise the default below is used.
+
+| Variable | Default | Used by |
+|---|---|---|
+| `CONDA_ENVS_ROOT` | `~/miniconda3/envs` | Base for the three python defaults below |
+| `STARVLA_PYTHON` | `$CONDA_ENVS_ROOT/starVLA/bin/python` | Both (policy server) |
+| `SAM3_PYTHON` | `$CONDA_ENVS_ROOT/sam3/bin/python` | Both (SAM3 + VLM servers) |
+| `SIMPLER_PYTHON` | `$CONDA_ENVS_ROOT/simpler_env/bin/python` | SimplerEnv |
+| `ROBOCASA_PYTHON` | `$CONDA_ENVS_ROOT/robocasa/bin/python` | Robocasa |
+| `SIMPLERENV_PATH` | `~/Development/SimplerEnv` | SimplerEnv (your SimplerEnv clone) |
+| `NUM_GPUS` | Number of ids in `CUDA_VISIBLE_DEVICES`, else every GPU `nvidia-smi` lists | Both |
+
+If your conda envs use the standard names, setting `CONDA_ENVS_ROOT` is usually enough. Before launching anything, the scripts check that each python is executable (and that `SIMPLERENV_PATH` is a directory) and exit with an error naming the bad variable, then print the resolved configuration.
+
 ### SimplerEnv
 
 ```bash
 cd VP-VLA
 
-# Edit the python paths and SimplerEnv path in the script first
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash examples/SimplerEnv/eval_files/auto_eval_scripts/run_eval.sh /path/to/checkpoint.pt
+CONDA_ENVS_ROOT=/path/to/conda/envs SIMPLERENV_PATH=/path/to/SimplerEnv \
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+  bash examples/SimplerEnv/eval_files/auto_eval_scripts/run_eval.sh /path/to/checkpoint.pt
 ```
+
+Jobs are spread across the GPU ids in `CUDA_VISIBLE_DEVICES`; if it is unset, the script uses GPUs `0..NUM_GPUS-1`.
 
 The script automatically:
 1. Launches policy / SAM3 / VLM servers on each GPU
 2. Runs all bridge tasks with visual prompting
 3. Collects results and saves overlay videos
 
-Modify the following paths at the top of the script:
-- `star_vla_python`: path to starVLA conda python
-- `sim_python`: path to simpler_env conda python
-- `sam3_python`: path to SAM3 conda python
-- `SimplerEnv_PATH`: path to the SimplerEnv repository that you cloned
-
 ### Robocasa
 
 ```bash
 cd VP-VLA
 
-# Edit the python paths in the script first
-bash examples/Robocasa_tabletop/eval_files/run_eval.sh /path/to/checkpoint.pt 
+CONDA_ENVS_ROOT=/path/to/conda/envs NUM_GPUS=8 \
+  bash examples/Robocasa_tabletop/eval_files/run_eval.sh /path/to/checkpoint.pt
 ```
+
+The script uses GPUs `0..NUM_GPUS-1` and ignores which ids are in `CUDA_VISIBLE_DEVICES` (only their count sets the default `NUM_GPUS`), so `CUDA_VISIBLE_DEVICES=2,3` still runs on GPUs 0 and 1.
 
 The script automatically:
 1. Launches policy / SAM3 / VLM servers (one per GPU)
 2. Dispatches 24 tabletop environments across GPUs
 3. Monitors for crashes and re-queues failed evaluations (up to 5 retries)
-
-Modify the following paths at the top of the script:
-- `starVLA_PYTHON`: path to starVLA conda python
-- `ROBOCASA_PYTHON`: path to robocasa conda python
-- `SAM3_PYTHON`: path to SAM3 conda python
 
 ---
 

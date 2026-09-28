@@ -34,6 +34,10 @@ vlm_base_port=4550
 
 MODEL_PATH=$1
 EVAL_NAME=${2:-${EVAL_NAME:-"eval_vp_vla_simpler_env"}}
+# Who drives the arm (KAN-22): CONTROLLER=vla|planner|planner_then_vla, PLANNER=mplib|curobo
+CONTROLLER=${CONTROLLER:-vla}
+PLANNER=${PLANNER:-mplib}
+PLANNER_ARGS="--controller ${CONTROLLER} --planner ${PLANNER}"
 TSET_NUM=1
 run_count=0
 
@@ -271,6 +275,7 @@ for i in "${!ENV_NAMES[@]}"; do
       --vlm-port ${vlm_port} \
       ${VP_ARGS} \
       ${OVERLAY_ARGS} \
+      ${PLANNER_ARGS} \
       > "${task_log}" 2>&1 &
 
     eval_pids+=($!)
@@ -344,6 +349,7 @@ for i in "${!ENV_NAMES_V2[@]}"; do
       --vlm-port ${vlm_port} \
       ${VP_ARGS} \
       ${OVERLAY_ARGS} \
+      ${PLANNER_ARGS} \
       2>&1 | tee "${task_log}" &
 
     eval_pids+=($!)

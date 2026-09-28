@@ -26,11 +26,12 @@ except NameError:
 
 # Auto-import all framework submodules to trigger registration
 if pkg_path is not None:
-    try:
-        for _, module_name, _ in pkgutil.iter_modules(pkg_path):
+    # one module per try, so a missing optional dependency (e.g. qwen_vl_utils for M1) only drops that framework
+    for _, module_name, _ in pkgutil.iter_modules(pkg_path):
+        try:
             importlib.import_module(f"{__name__}.{module_name}")
-    except Exception as e:
-        logger.warning(f"Failed to auto-import framework submodules: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to auto-import framework submodule {module_name}: {e}")
         
 def build_framework(cfg):
     """

@@ -17,7 +17,7 @@ from msgpack_utils import packb, unpackb
 
 
 class SAM3Model:
-    """Wrapper for SAM3 model to handle segmentation requests."""
+    """Wrapper for SAM3 model to handle segmentation requests. SAM3.1 lives in sam31_backend.py."""
     
     def __init__(self, model_path: str, device: str = "cuda"):
         from transformers import Sam3Processor, Sam3Model
@@ -113,7 +113,7 @@ class SAM3Server:
         self._port = port
         self._idle_timeout = idle_timeout
         self._last_active = time.time()
-        self._metadata = {"service": "sam3_segmentation"}
+        self._metadata = {"service": "sam3_segmentation", "model": type(model).__name__}
         logging.getLogger("websockets.server").setLevel(logging.INFO)
     
     def serve_forever(self) -> None:
@@ -226,9 +226,17 @@ def build_argparser():
     parser.add_argument(
         "--model-path", 
         type=str, 
-        default="playground/Pretrained_models/sam3",
-        help="Path to SAM3 model checkpoint"
+        default=None,
+        help="SAM3: model directory (default playground/Pretrained_models/sam3). "
+        "SAM3.1: path to sam3.1_multiplex.pt (default: download from facebook/sam3.1 into HF_HOME).",
     )
+    parser.add_argument(
+        "--sam-version",
+        choices=["sam3", "sam3.1"],
+        default="sam3",
+        help="sam3 = transformers Sam3Model (paper setup); sam3.1 = Meta's SAM 3.1 detector (needs the sam31 env)",
+    )
+    parser.add_argument("--bf16", action="store_true", help="SAM3.1 only: run under bf16 autocast")
     parser.add_argument("--port", type=int, default=10094, help="Server port")
     parser.add_argument("--idle-timeout", type=int, default=1800, help="Idle timeout in seconds, -1 means never close")
     return parser
@@ -243,13 +251,18 @@ def main():
     
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)
-    logging.info(f"Starting SAM3 server (host: {hostname}, ip: {local_ip})")
+    logging.info(f"Starting SAM3 server (host: {hostname}, ip: {local_ip}, version: {args.sam_version})")
     
     # Load model
-    model = SAM3Model(
-        model_path=args.model_path,
-        device=device,
-    )
+    if args.sam_version == "sam3.1":
+        from sam31_backend import SAM31Model
+
+        model = SAM31Model(checkpoint_path=args.model_path, device=device, bf16=args.bf16)
+    else:
+        model = SAM3Model(
+            model_path=args.model_path or "playground/Pretrained_models/sam3",
+            device=device,
+        )
     
     # Start server
     server = SAM3Server(

@@ -183,7 +183,7 @@ CONDA_ENVS_ROOT=/path/to/conda/envs NUM_GPUS=8 \
   bash examples/Robocasa_tabletop/eval_files/run_eval.sh /path/to/checkpoint.pt
 ```
 
-The script uses GPUs `0..NUM_GPUS-1`.
+The script uses GPUs `0..NUM_GPUS-1` and ignores which ids are in `CUDA_VISIBLE_DEVICES` (only their count sets the default `NUM_GPUS`), so `CUDA_VISIBLE_DEVICES=2,3` still runs on GPUs 0 and 1.
 
 The script automatically:
 1. Launches policy / SAM3 / VLM servers (one per GPU)

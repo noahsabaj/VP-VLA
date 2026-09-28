@@ -36,7 +36,9 @@ stage "3/5  Meta sam3 @ ${SAM3_COMMIT:0:7} + server deps"
 if [ ! -d "${SAM3_SRC}/.git" ]; then git clone "${SAM3_REPO}" "${SAM3_SRC}" || fail "git clone"; fi
 git -C "${SAM3_SRC}" fetch -q origin && git -C "${SAM3_SRC}" checkout -q "${SAM3_COMMIT}" || fail "checkout"
 ${PY} -m pip install -e "${SAM3_SRC}" || fail "sam3"
-${PY} -m pip install -q websockets msgpack pillow opencv-python-headless || fail "server deps"
+# sam3 imports einops, pycocotools and psutil without declaring them. OpenCV >= 4.12 would pull numpy 2.
+${PY} -m pip install -q einops pycocotools psutil websockets msgpack pillow \
+  "numpy>=1.26,<2" "opencv-python-headless<4.12" || fail "server deps"
 
 stage "4/5  download sam3.1_multiplex.pt (HF_HOME=${HF_HOME:-~/.cache/huggingface})"
 ${PY} -c "from huggingface_hub import hf_hub_download as d; print(d('facebook/sam3.1', 'sam3.1_multiplex.pt'))" \

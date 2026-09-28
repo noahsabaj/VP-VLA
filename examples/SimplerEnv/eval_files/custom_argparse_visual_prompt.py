@@ -139,6 +139,8 @@ def get_args():
     parser.add_argument("--depth-noise", type=str, default="none", choices=["none", "realistic", "harsh"],
                         help="Simulated depth-camera errors for the planner (the simulator's depth is perfect)")
     parser.add_argument("--noise-seed", type=int, default=0)
+    parser.add_argument("--robot-mask", type=str, default="sim", choices=["sim", "joints"],
+                        help="Cut the robot out of the depth picture using the simulator (sim) or its joint angles (joints)")
 
     args = parser.parse_args()
 

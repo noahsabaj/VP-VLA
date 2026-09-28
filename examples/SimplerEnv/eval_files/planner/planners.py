@@ -35,6 +35,45 @@ def widowx_asset_dir() -> Path:
     return dst
 
 
+class RobotSpheres:
+    """The arm as a set of spheres, placed from its joint angles (what a real robot knows).
+
+    Sphere sizes and positions per link come from the cuRobo WidowX config; forward kinematics
+    comes from MPlib's model of the same URDF. Used to cut the robot out of the depth picture
+    instead of the simulator's segmentation.
+    """
+
+    def __init__(self, margin: float = 0.02):
+        import mplib
+        import yaml
+
+        urdf = widowx_asset_dir() / "wx250s.urdf"
+        self._planner = mplib.Planner(urdf=str(urdf), move_group=EE_LINK)
+        names = self._planner.user_link_names
+        spheres = yaml.safe_load(Path(__file__).with_name("widowx_curobo.yml").read_text())[
+            "kinematics"]["collision_spheres"]
+        self._links = []  # (link index, (K, 3) centers in the link frame, (K,) radii)
+        for link, items in spheres.items():
+            if link not in names:
+                continue
+            centers = np.array([s["center"] for s in items], dtype=np.float64)
+            radii = np.array([s["radius"] for s in items], dtype=np.float64) + margin
+            self._links.append((names.index(link), centers, radii))
+
+    def __call__(self, qpos: np.ndarray) -> np.ndarray:
+        """(N, 4) spheres [x, y, z, r] in the robot base frame for the full 8-joint qpos."""
+        from .geometry import pose_to_mat
+
+        model = self._planner.pinocchio_model
+        model.compute_forward_kinematics(np.asarray(qpos, dtype=np.float64)[:ARM_DOF + 2])
+        out = []
+        for idx, centers, radii in self._links:
+            pose = model.get_link_pose(idx)
+            mat = pose_to_mat(np.concatenate([pose.p, pose.q]))
+            out.append(np.c_[centers @ mat[:3, :3].T + mat[:3, 3], radii])
+        return np.concatenate(out, axis=0)
+
+
 class PlanResult:
     def __init__(self, success: bool, path: Optional[np.ndarray], plan_time: float, status: str):
         self.success = success

@@ -104,6 +104,7 @@ class CameraView:
             self.depth = noise.apply(self.depth)
             self.base_from_cam = self.base_from_cam @ noise.pose_error  # we believe the camera is where it isn't
         self.ignore_sphere = None  # (center, radius): e.g. the object held in the gripper
+        self.robot_spheres = None  # (N, 4) [x, y, z, r] in the base frame: the arm, from its joint angles
 
     def pixel_points(self) -> np.ndarray:
         """(H, W, 3) base-frame point for every pixel."""
@@ -123,12 +124,30 @@ class CameraView:
         return self.pixel_points()[valid]
 
     def obstacle_mask(self, robot_actor_ids) -> np.ndarray:
-        """Pixels that count as obstacles: not the robot, not inside ignore_sphere."""
-        mask = ~np.isin(self.actor_seg, np.asarray(list(robot_actor_ids)))
+        """Pixels that count as obstacles: not the robot, not inside ignore_sphere.
+
+        The robot is cut out using `robot_spheres` (from its joint angles, as a real robot would)
+        when they are set, and with the simulator's segmentation otherwise.
+        """
+        if self.robot_spheres is not None:
+            mask = ~self.inside_spheres(self.robot_spheres)
+        else:
+            mask = ~np.isin(self.actor_seg, np.asarray(list(robot_actor_ids)))
         if self.ignore_sphere is not None:
             center, radius = self.ignore_sphere
             mask &= np.linalg.norm(self.pixel_points() - np.asarray(center), axis=-1) > radius
         return mask
+
+    def inside_spheres(self, spheres: np.ndarray) -> np.ndarray:
+        """(H, W) mask of pixels whose 3D point lies inside any sphere, given as rows [x, y, z, r]."""
+        pts = self.pixel_points()
+        inside = np.zeros(pts.shape[:2], dtype=bool)
+        lo, hi = spheres[:, :3].min(0) - spheres[:, 3].max(), spheres[:, :3].max(0) + spheres[:, 3].max()
+        near = np.all((pts >= lo) & (pts <= hi), axis=-1) & (self.depth > 1e-3)
+        cand = pts[near]
+        d2 = ((cand[:, None, :] - spheres[None, :, :3]) ** 2).sum(-1)
+        inside[near] = (d2 < spheres[None, :, 3] ** 2).any(axis=1)
+        return inside
 
     def obstacle_cloud(self, robot_actor_ids, voxel: float = 0.01, workspace=None) -> np.ndarray:
         """Everything the camera sees except the robot, downsampled to one point per voxel."""

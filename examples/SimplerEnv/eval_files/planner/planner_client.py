@@ -28,7 +28,7 @@ from scipy.spatial.transform import Rotation, Slerp
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "Robocasa_tabletop" / "visual_prompt_utility"))
 
 from .geometry import CameraView, DepthNoise, ee_delta_action, mat_to_pose, path_length, pose_to_mat
-from .planners import make_planner
+from .planners import RobotSpheres, make_planner
 
 GRIPPER_OPEN, GRIPPER_CLOSED = 1.0, -1.0
 PLACE_PREPOSITIONS = (" onto ", " on ", " into ", " in ")
@@ -128,6 +128,7 @@ class PlannerClient:
         log_path: Optional[str] = None,
         depth_noise: str = "none",
         noise_seed: Optional[int] = None,
+        robot_mask: str = "sim",
     ) -> None:
         self.planner = make_planner(planner)
         self.planner_name = planner
@@ -142,6 +143,9 @@ class PlannerClient:
         self.grasp_retries = grasp_retries
         self.log_path = log_path
         self.noise = DepthNoise(depth_noise, noise_seed)
+        # How the robot is cut out of the obstacle map: the simulator's segmentation ("sim"),
+        # or spheres placed from the joint angles ("joints"), which a real robot can do too.
+        self.robot_spheres = RobotSpheres() if robot_mask == "joints" else None
         self.sam3 = None
         if target_source == "camera":
             from sam3_client import SAM3Client
@@ -237,7 +241,7 @@ class PlannerClient:
 
     def _approach(self, image, obs, env, qpos, target) -> None:
         """Find the object and plan to just above it."""
-        self.view = CameraView(obs, noise=self.noise)
+        self.view = self._obstacle_view(obs, qpos)
         grasp = self._locate(image, obs, env, which="grasp")
         if grasp is None:
             self.stats["failure"] = "grasp object not found"
@@ -296,7 +300,7 @@ class PlannerClient:
             self.place_top = place["top"]
             goal = np.concatenate([[place["center"][0], place["center"][1],
                                     max(place["top"] + self.place_height, target[2])], self.home_orientation])
-            self.view = CameraView(obs, noise=self.noise)
+            self.view = self._obstacle_view(obs, qpos)
             self.view.ignore_sphere = (ee_pose_from_obs(obs)[:3], 0.08)  # the held object
             if not self._plan_to(qpos, goal, "place"):
                 self.phase = "done"
@@ -315,6 +319,12 @@ class PlannerClient:
             self.phase, self.gripper, self.hold_steps = "open", GRIPPER_OPEN, 5
         elif phase == "open":
             self.phase = "done"
+
+    def _obstacle_view(self, obs, qpos) -> CameraView:
+        view = CameraView(obs, noise=self.noise)
+        if self.robot_spheres is not None:
+            view.robot_spheres = self.robot_spheres(qpos)
+        return view
 
     def _plan_to(self, qpos, goal, label: str) -> bool:
         result = self.planner.plan(qpos, goal, self.view, self.robot_ids)

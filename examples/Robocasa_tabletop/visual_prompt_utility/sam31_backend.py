@@ -93,7 +93,7 @@ def _load_detector_weights(detector: torch.nn.Module, checkpoint_path: str) -> N
 class SAM31Model:
     """SAM 3.1 detector with the same segment() interface as sam3_server.SAM3Model."""
 
-    def __init__(self, checkpoint_path: Optional[str] = None, device: str = "cuda", bf16: bool = False):
+    def __init__(self, checkpoint_path: Optional[str] = None, device: str = "cuda"):
         from sam3.model.sam3_image_processor import Sam3Processor
 
         if checkpoint_path is None:
@@ -102,7 +102,6 @@ class SAM31Model:
             checkpoint_path = hf_hub_download(repo_id=SAM31_HF_REPO, filename=SAM31_CKPT_NAME)
 
         self.device = device
-        self.bf16 = bf16 and device == "cuda"
 
         logging.info(f"Loading SAM3.1 detector from {checkpoint_path}")
         detector = _build_sam31_detector()
@@ -117,7 +116,7 @@ class SAM31Model:
 
         self.model = detector
         self.processor = Sam3Processor(detector, device=device)
-        logging.info(f"SAM3.1 model loaded successfully (bf16={self.bf16})")
+        logging.info("SAM3.1 model loaded successfully")
 
     def segment(
         self,
@@ -131,7 +130,9 @@ class SAM31Model:
 
         pil_image = Image.fromarray(image).convert("RGB")
         self.processor.confidence_threshold = threshold
-        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.bf16):
+        # Meta's SAM 3.1 code only runs under bf16 autocast (its own predictors wrap every call in it);
+        # in plain fp32 some layers get bf16 inputs and fail with a dtype mismatch.
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             state = self.processor.set_image(pil_image)
             state = self.processor.set_text_prompt(prompt=text_prompt, state=state)
         return state_to_result(state, mask_threshold)

@@ -236,7 +236,6 @@ def build_argparser():
         default="sam3",
         help="sam3 = transformers Sam3Model (paper setup); sam3.1 = Meta's SAM 3.1 detector (needs the sam31 env)",
     )
-    parser.add_argument("--bf16", action="store_true", help="SAM3.1 only: run under bf16 autocast")
     parser.add_argument("--port", type=int, default=10094, help="Server port")
     parser.add_argument("--idle-timeout", type=int, default=1800, help="Idle timeout in seconds, -1 means never close")
     return parser
@@ -257,7 +256,7 @@ def main():
     if args.sam_version == "sam3.1":
         from sam31_backend import SAM31Model
 
-        model = SAM31Model(checkpoint_path=args.model_path, device=device, bf16=args.bf16)
+        model = SAM31Model(checkpoint_path=args.model_path, device=device)
     else:
         model = SAM3Model(
             model_path=args.model_path or "playground/Pretrained_models/sam3",

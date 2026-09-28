@@ -136,6 +136,9 @@ def get_args():
                         help="Meters above the object's top where the planner stops")
     parser.add_argument("--planner-log", type=str, default=None,
                         help="JSON-lines file for per-episode planner stats (default: <logging-dir>/planner_stats.jsonl)")
+    parser.add_argument("--depth-noise", type=str, default="none", choices=["none", "realistic", "harsh"],
+                        help="Simulated depth-camera errors for the planner (the simulator's depth is perfect)")
+    parser.add_argument("--noise-seed", type=int, default=0)
 
     args = parser.parse_args()
 

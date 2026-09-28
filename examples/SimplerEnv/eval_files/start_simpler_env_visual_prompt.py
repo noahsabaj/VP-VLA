@@ -68,6 +68,8 @@ if __name__ == "__main__":
             target_source=args.target_source,
             pregrasp_height=args.pregrasp_height,
             log_path=args.planner_log or os.path.join(args.logging_dir, "planner_stats.jsonl"),
+            depth_noise=args.depth_noise,
+            noise_seed=args.noise_seed,
         )
 
     success_arr = maniskill2_evaluator(model, args)

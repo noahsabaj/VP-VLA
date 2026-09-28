@@ -40,10 +40,57 @@ def ee_delta_action(target_pose: np.ndarray, desired_pose: np.ndarray, ee_pos: n
     return world_vector, Rotation.from_matrix(r_delta).as_rotvec()
 
 
+class DepthNoise:
+    """A real depth camera's errors, so the planner doesn't get the simulator's perfect depth.
+
+    * Per-pixel noise that grows with distance squared (RealSense-like: sigma = k * z^2).
+    * Dropped pixels: random ones, plus holes along depth edges (object borders).
+    * A camera pose error drawn once per episode (calibration error), in mm and degrees.
+    """
+
+    LEVELS = {
+        "none": None,
+        "realistic": dict(k=0.004, drop=0.02, edge_drop=0.5, edge_jump=0.02, pos_mm=3.0, rot_deg=0.3),
+        "harsh": dict(k=0.012, drop=0.08, edge_drop=0.9, edge_jump=0.01, pos_mm=10.0, rot_deg=1.0),
+    }
+
+    def __init__(self, level: str = "none", seed: Optional[int] = None):
+        self.level = level
+        self.cfg = self.LEVELS[level]
+        self.rng = np.random.default_rng(seed)
+        self.pose_error = np.eye(4)
+
+    @property
+    def active(self) -> bool:
+        return self.cfg is not None
+
+    def new_episode(self) -> None:
+        """Draw this episode's camera pose error (fixed for the whole episode, like a bad calibration)."""
+        self.pose_error = np.eye(4)
+        if not self.active:
+            return
+        axis = self.rng.normal(size=3)
+        angle = np.deg2rad(self.cfg["rot_deg"]) * self.rng.normal()
+        self.pose_error[:3, :3] = Rotation.from_rotvec(axis / np.linalg.norm(axis) * angle).as_matrix()
+        self.pose_error[:3, 3] = self.rng.normal(size=3) * self.cfg["pos_mm"] / 1000.0
+
+    def apply(self, depth: np.ndarray) -> np.ndarray:
+        if not self.active:
+            return depth
+        c = self.cfg
+        valid = depth > 1e-3
+        noisy = depth + self.rng.normal(size=depth.shape) * c["k"] * depth ** 2
+        gy, gx = np.gradient(depth)
+        edges = np.hypot(gx, gy) > c["edge_jump"]
+        dropped = (self.rng.random(depth.shape) < c["drop"]) | (edges & (self.rng.random(depth.shape) < c["edge_drop"]))
+        noisy[dropped | ~valid] = 0.0
+        return noisy
+
+
 class CameraView:
     """One observation's depth picture, turned into 3D points in the robot base frame."""
 
-    def __init__(self, obs: dict, camera: str = CAMERA):
+    def __init__(self, obs: dict, camera: str = CAMERA, noise: Optional[DepthNoise] = None):
         image = obs["image"][camera]
         param = obs["camera_param"][camera]
         self.rgb = image["rgb"]
@@ -53,6 +100,9 @@ class CameraView:
         world_from_cam = np.linalg.inv(np.asarray(param["extrinsic_cv"], dtype=np.float64))
         base_from_world = np.linalg.inv(pose_to_mat(obs["agent"]["base_pose"]))
         self.base_from_cam = base_from_world @ world_from_cam
+        if noise is not None and noise.active:
+            self.depth = noise.apply(self.depth)
+            self.base_from_cam = self.base_from_cam @ noise.pose_error  # we believe the camera is where it isn't
         self.ignore_sphere = None  # (center, radius): e.g. the object held in the gripper
 
     def pixel_points(self) -> np.ndarray:

@@ -111,7 +111,7 @@ class WebsocketPolicyServer:
                     "ok": False,
                     "type": "inference_result",
                     "request_id": req_id,
-                    "error": {"message": "Payload must be a dict", "payload_type": str(type(payload))}
+                    "error": {"message": "Payload must be a dict", "payload_type": str(type(msg))}
                 }
             try:
 

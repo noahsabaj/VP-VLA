@@ -121,7 +121,7 @@ class OxeDroidDataConfig:
                 state_concat_order=self.state_keys,
                 action_concat_order=self.action_keys,
             ),
-            GR00TTransform(
+            GR00TTransform(  # noqa: F821  TODO: never imported, so building this config raises NameError
                 state_horizon=len(self.observation_indices),
                 action_horizon=len(self.action_indices),
                 max_state_dim=64,

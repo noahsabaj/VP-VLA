@@ -168,7 +168,7 @@ def get_layerwise_qformer(num_heads=8, config=None, **kwargs):
     """
     # dist.barrier()
     qformer_cfg = config.framework.layer_qformer
-    num_layers = qformer_cfg.qformer_end_layer - qformer_cfg.qformer_start_layer if config else num_layers
+    num_layers = qformer_cfg.qformer_end_layer - qformer_cfg.qformer_start_layer
     num_query_tokens = qformer_cfg.num_query_tokens
     input_hidden_dim = config.framework.layer_qformer.input_dim
     output_hidden_dim = config.framework.layer_qformer.ouptput_dim

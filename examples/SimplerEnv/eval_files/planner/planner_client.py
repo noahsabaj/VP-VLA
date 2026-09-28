@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
+import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
@@ -52,16 +53,24 @@ def ee_pose_from_obs(obs) -> np.ndarray:
 def grasp_orientation(home_quat: np.ndarray, points_xy: Optional[np.ndarray]) -> np.ndarray:
     """Turn the hand about the vertical so the fingers close across the object's short side.
 
-    The fingers close along the hand's y axis; the object's long side comes from PCA of its
-    top-down points. Without points, keep the starting orientation.
+    The fingers close along the hand's y axis. For long objects the long side comes from PCA of
+    the top-down points. For squarish ones (a cube) PCA's axis is arbitrary and can put the
+    fingers on the corners, so use the smallest rectangle around the points to find a face.
+    Without points, keep the starting orientation.
     """
     if points_xy is None or len(points_xy) < 10:
         return home_quat
     home = Rotation.from_quat(home_quat[[1, 2, 3, 0]])
     closing = home.as_matrix()[:2, 1]
     centered = points_xy - points_xy.mean(axis=0)
-    major = np.linalg.eigh(centered.T @ centered)[1][:, -1]
-    want = np.arctan2(major[0], -major[1])  # perpendicular to the long side
+    evals, evecs = np.linalg.eigh(centered.T @ centered)
+    if evals[1] > 1.7 * evals[0]:  # long side at least ~1.3x the short side
+        major = evecs[:, -1]
+        side = np.arctan2(major[1], major[0])
+    else:
+        (_, _), (w, h), angle = cv2.minAreaRect((points_xy * 1000.0).astype(np.float32))
+        side = np.deg2rad(angle if w >= h else angle + 90.0)
+    want = side + np.pi / 2  # close across the long side
     turn = (want - np.arctan2(closing[1], closing[0]) + np.pi / 2) % np.pi - np.pi / 2
     xyzw = (Rotation.from_euler("z", turn) * home).as_quat()
     return xyzw[[3, 0, 1, 2]]
@@ -114,6 +123,8 @@ class PlannerClient:
         max_step_pos: float = 0.02,
         max_step_rot: float = 0.15,
         settle_steps: int = 3,
+        min_grip: float = 0.0165,
+        grasp_retries: int = 1,
         log_path: Optional[str] = None,
         depth_noise: str = "none",
         noise_seed: Optional[int] = None,
@@ -127,6 +138,8 @@ class PlannerClient:
         self.max_step_pos = max_step_pos
         self.max_step_rot = max_step_rot
         self.settle_steps = settle_steps
+        self.min_grip = min_grip  # finger joint (m); fully closed on nothing reads 0.015
+        self.grasp_retries = grasp_retries
         self.log_path = log_path
         self.noise = DepthNoise(depth_noise, noise_seed)
         self.sam3 = None
@@ -155,6 +168,7 @@ class PlannerClient:
         self.ee_trace: List[np.ndarray] = []
         self.transit_contact = False
         self.place_goal = None
+        self.retries_left = self.grasp_retries
 
     def finish_episode(self, success: bool, info: dict) -> None:
         if self.log_path is None:
@@ -218,8 +232,12 @@ class PlannerClient:
 
     def _start(self, image, obs, env, qpos, target) -> None:
         self.home_orientation = target[3:].copy()
-        self.view = CameraView(obs, noise=self.noise)
         self.robot_ids = [link.id for link in env.unwrapped.agent.robot.get_links()]
+        self._approach(image, obs, env, qpos, target)
+
+    def _approach(self, image, obs, env, qpos, target) -> None:
+        """Find the object and plan to just above it."""
+        self.view = CameraView(obs, noise=self.noise)
         grasp = self._locate(image, obs, env, which="grasp")
         if grasp is None:
             self.stats["failure"] = "grasp object not found"
@@ -252,17 +270,30 @@ class PlannerClient:
                 self.phase = "vla"
                 return
             grasp_z = max(0.5 * (self.grasp["top"] + self.grasp["bottom"]), self.grasp["bottom"] + 0.01)
+            self.hold_offset = grasp_z - self.grasp["bottom"]  # hand height above the held object's bottom
             self._straight_to(target, np.r_[target[:2], grasp_z, target[3:]], "descend")
         elif phase == "descend":
             self.phase, self.gripper, self.hold_steps = "close", GRIPPER_CLOSED, 5
         elif phase == "close":
             self._straight_to(target, np.r_[target[:2], target[2] + 0.08, target[3:]], "lift")
         elif phase == "lift":
+            grip = float(np.mean(qpos[6:8]))
+            self.stats.setdefault("grip_after_lift", []).append(grip)
+            if grip < self.min_grip:  # fingers closed on nothing
+                if self.retries_left > 0:
+                    self.retries_left -= 1
+                    self.stats["grasp_retries"] = self.stats.get("grasp_retries", 0) + 1
+                    self.phase, self.gripper, self.hold_steps = "reopen", GRIPPER_OPEN, 5
+                    return
+                self.stats["failure"] = "grasp missed"
+                self.phase = "done"
+                return
             place = self._locate(None, obs, env, which="place")
             if place is None:
                 self.stats["failure"] = "place target not found"
                 self.phase = "done"
                 return
+            self.place_top = place["top"]
             goal = np.concatenate([[place["center"][0], place["center"][1],
                                     max(place["top"] + self.place_height, target[2])], self.home_orientation])
             self.view = CameraView(obs, noise=self.noise)
@@ -271,7 +302,16 @@ class PlannerClient:
                 self.phase = "done"
                 return
             self.phase = "transit_place"
+        elif phase == "reopen":
+            self._approach(None, obs, env, qpos, target)
         elif phase == "transit_place":
+            # Lower until the held object is 1 cm above the target, so it isn't dropped from height.
+            release_z = self.place_top + self.hold_offset + 0.01
+            if release_z < target[2] - 0.005:
+                self._straight_to(target, np.r_[target[:2], release_z, target[3:]], "lower")
+            else:
+                self.phase, self.gripper, self.hold_steps = "open", GRIPPER_OPEN, 5
+        elif phase == "lower":
             self.phase, self.gripper, self.hold_steps = "open", GRIPPER_OPEN, 5
         elif phase == "open":
             self.phase = "done"

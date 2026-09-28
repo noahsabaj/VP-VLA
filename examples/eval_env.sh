@@ -13,6 +13,7 @@
 
 : "${STARVLA_PYTHON:=${CONDA_ENVS_ROOT}/starVLA/bin/python}"
 : "${SAM3_PYTHON:=${CONDA_ENVS_ROOT}/sam3/bin/python}"
+: "${SAM31_PYTHON:=${CONDA_ENVS_ROOT}/sam31/bin/python}"
 : "${SIMPLER_PYTHON:=${CONDA_ENVS_ROOT}/simpler_env/bin/python}"
 : "${ROBOCASA_PYTHON:=${CONDA_ENVS_ROOT}/robocasa/bin/python}"
 

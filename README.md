@@ -150,6 +150,7 @@ Both evaluation scripts source [`examples/eval_env.sh`](examples/eval_env.sh), w
 | `CONDA_ENVS_ROOT` | `~/miniconda3/envs` | Base for the three python defaults below |
 | `STARVLA_PYTHON` | `$CONDA_ENVS_ROOT/starVLA/bin/python` | Both (policy server) |
 | `SAM3_PYTHON` | `$CONDA_ENVS_ROOT/sam3/bin/python` | Both (SAM3 + VLM servers) |
+| `SAM31_PYTHON` | `$CONDA_ENVS_ROOT/sam31/bin/python` | SimplerEnv with `SAM_VERSION=sam3.1` (SAM 3.1 server) |
 | `SIMPLER_PYTHON` | `$CONDA_ENVS_ROOT/simpler_env/bin/python` | SimplerEnv |
 | `ROBOCASA_PYTHON` | `$CONDA_ENVS_ROOT/robocasa/bin/python` | Robocasa |
 | `SIMPLERENV_PATH` | `~/Development/SimplerEnv` | SimplerEnv (your SimplerEnv clone) |

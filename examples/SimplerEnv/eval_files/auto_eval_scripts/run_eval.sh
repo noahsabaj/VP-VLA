@@ -12,18 +12,28 @@ echo "$(which python)"
 
 ###########################################################################################
 # === Paths resolve from examples/eval_env.sh; override any of them via environment ===
-#   CONDA_ENVS_ROOT, STARVLA_PYTHON, SIMPLER_PYTHON, SAM3_PYTHON, SIMPLERENV_PATH
+#   CONDA_ENVS_ROOT, STARVLA_PYTHON, SIMPLER_PYTHON, SAM3_PYTHON, SAM31_PYTHON, SIMPLERENV_PATH
 # Run from the repository root.
 source "$(dirname "${BASH_SOURCE[0]}")/../../../eval_env.sh"
 vpvla_require STARVLA_PYTHON SIMPLER_PYTHON SAM3_PYTHON
 vpvla_require_dir SIMPLERENV_PATH
+
+# Segmentation model for the visual prompts: SAM_VERSION=sam3 (paper setup) | sam3.1.
+# SAM3.1 runs from its own env ($SAM31_PYTHON); the VLM server stays in $SAM3_PYTHON.
+SAM_VERSION=${SAM_VERSION:-sam3}
+SAM_SERVER_ARGS="--sam-version ${SAM_VERSION} ${SAM_SERVER_EXTRA_ARGS:-}"
+case "${SAM_VERSION}" in
+  sam3) sam_server_python="${SAM3_PYTHON}" ;;
+  sam3.1) vpvla_require SAM31_PYTHON; sam_server_python="${SAM31_PYTHON}" ;;
+  *) echo "ERROR: SAM_VERSION must be sam3 or sam3.1, got '${SAM_VERSION}'" >&2; exit 1 ;;
+esac
 
 export star_vla_python="${STARVLA_PYTHON}"
 export sim_python="${SIMPLER_PYTHON}"
 export sam3_python="${SAM3_PYTHON}"
 export SimplerEnv_PATH="${SIMPLERENV_PATH}"
 export PYTHONPATH=$(pwd):${PYTHONPATH}
-vpvla_banner STARVLA_PYTHON SIMPLER_PYTHON SAM3_PYTHON SIMPLERENV_PATH
+vpvla_banner STARVLA_PYTHON SIMPLER_PYTHON SAM3_PYTHON SIMPLERENV_PATH SAM_VERSION sam_server_python
 # === End of environment variable configuration ===
 ###########################################################################################
 
@@ -105,10 +115,11 @@ start_sam3_service() {
     lsof -iTCP:"${port}" -sTCP:LISTEN -t | xargs kill -9 2>/dev/null
     sleep 2
   fi
-  echo "Starting SAM3 server on GPU ${gpu_id}, port ${port}"
-  CUDA_VISIBLE_DEVICES=${gpu_id} ${sam3_python} \
+  echo "Starting ${SAM_VERSION} server on GPU ${gpu_id}, port ${port}"
+  CUDA_VISIBLE_DEVICES=${gpu_id} ${sam_server_python} \
     examples/Robocasa_tabletop/visual_prompt_utility/sam3_server.py \
     --port ${port} \
+    ${SAM_SERVER_ARGS} \
     > "${svc_log}" 2>&1 &
 
   local pid=$!
@@ -189,7 +200,7 @@ NUM_GPUS=${#CUDA_DEVICES[@]}
 
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 echo "NUM_GPUS: $NUM_GPUS"
-echo "Visual Prompting: SAM3=${TARGET_OBJECT_PROMPT_MODE}/${TARGET_LOCATION_PROMPT_MODE}"
+echo "Visual Prompting: ${SAM_VERSION}=${TARGET_OBJECT_PROMPT_MODE}/${TARGET_LOCATION_PROMPT_MODE}"
 echo "VLM Decompose Tasks: ${VLM_DECOMPOSE_SUBTASKS}"
 echo "Eval Name: ${EVAL_NAME}"
 echo "Eval Dir: ${EVAL_DIR}"

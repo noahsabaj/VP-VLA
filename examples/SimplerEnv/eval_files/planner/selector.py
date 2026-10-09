@@ -8,10 +8,12 @@ beyond what the eval uses.
 
     python -m examples.SimplerEnv.eval_files.planner.selector \\
         --planner-runs <dir with <task>/planner_stats.jsonl> --vla-runs <dir with <task>/...mp4> \\
-        [--save selector.json [--model logreg|trees]]
+        [--save selector.json [--model logreg|trees]] \\
+        [--test-planner-runs <held-out dir> --test-vla-runs <held-out VLA dir>]
 
 prints leave-one-task-out results for both models against "always planner", "always VLA", a hand
-rule and the perfect selector, and optionally saves one model trained on everything.
+rule and the perfect selector, and optionally saves one model trained on everything. With the
+--test-* options it instead trains on all of --planner-runs and scores the held-out layouts.
 """
 
 import argparse
@@ -174,36 +176,53 @@ class BoostedTrees:
 MODELS = {"logreg": Selector, "trees": BoostedTrees}
 
 
-def evaluate(planner_root: str, vla_roots: List[str], save: Optional[str] = None,
-             model: str = "logreg") -> None:
+def load_layouts(planner_root: str, vla_roots: List[str]):
+    """Features, planner outcome, VLA outcome and task name for every layout both controllers ran."""
     planner, vla = load_planner(planner_root), load_vla(vla_roots)
     keys = [k for k in planner if k in vla]
     if not keys:
-        raise SystemExit("no layouts with both planner and VLA results")
+        raise SystemExit(f"no layouts with both planner and VLA results in {planner_root}")
     x = np.stack([row_features(planner[k]) for k in keys])
     y_plan = np.array([float(planner[k]["success"]) for k in keys])
     y_vla = np.array([vla[k] for k in keys])
-    tasks = np.array([k[0] for k in keys])
+    return x, y_plan, y_vla, np.array([k[0] for k in keys])
 
-    chosen = {name: np.zeros(len(keys)) for name in MODELS}
-    for task in TASKS:  # leave one task out: train on the other three, test on this one
-        test = tasks == task
-        if not test.any() or (~test).sum() == 0:
-            continue
-        for name, cls in MODELS.items():
-            sel = cls().fit(x[~test], y_plan[~test])
-            chosen[name][test] = np.where(sel.use_planner(x[test]), y_plan[test], y_vla[test])
+
+def print_table(x, y_plan, y_vla, tasks, chosen: Dict[str, np.ndarray], how: str) -> None:
     rule = (x[:, FEATURES.index("plan_ok")] > 0) & (x[:, FEATURES.index("grasp_sam3_score")] >= 0.3)
     rows = {"always planner": y_plan, "always VLA": y_vla,
             "hand rule (plan ok and SAM3 >= 0.3)": np.where(rule, y_plan, y_vla),
-            "logistic regression (leave one task out)": chosen["logreg"],
-            "boosted trees (leave one task out)": chosen["trees"],
+            f"logistic regression ({how})": chosen["logreg"],
+            f"boosted trees ({how})": chosen["trees"],
             "perfect selector": np.maximum(y_plan, y_vla)}
-    print(f"{len(keys)} layouts")
+    print(f"{len(tasks)} layouts")
     print("| Setup | Spoon | Carrot | Stack | Eggplant | Avg |")
     for name, v in rows.items():
         per = [100 * v[tasks == t].mean() if (tasks == t).any() else float("nan") for t in TASKS]
         print(f"| {name} | " + " | ".join(f"{p:.1f}" for p in per) + f" | {100 * v.mean():.1f} |")
+
+
+def evaluate(planner_root: str, vla_roots: List[str], save: Optional[str] = None,
+             model: str = "logreg", test_planner_root: Optional[str] = None,
+             test_vla_roots: Optional[List[str]] = None) -> None:
+    x, y_plan, y_vla, tasks = load_layouts(planner_root, vla_roots)
+
+    if test_planner_root:  # held out: train on every training layout, test on layouts never seen
+        tx, ty_plan, ty_vla, ttasks = load_layouts(test_planner_root, test_vla_roots or vla_roots)
+        chosen = {name: np.where(cls().fit(x, y_plan).use_planner(tx), ty_plan, ty_vla)
+                  for name, cls in MODELS.items()}
+        print(f"trained on {len(tasks)} layouts from {planner_root}, tested on {test_planner_root}")
+        print_table(tx, ty_plan, ty_vla, ttasks, chosen, "held-out layouts")
+    else:
+        chosen = {name: np.zeros(len(tasks)) for name in MODELS}
+        for task in TASKS:  # leave one task out: train on the other three, test on this one
+            test = tasks == task
+            if not test.any() or (~test).sum() == 0:
+                continue
+            for name, cls in MODELS.items():
+                sel = cls().fit(x[~test], y_plan[~test])
+                chosen[name][test] = np.where(sel.use_planner(x[test]), y_plan[test], y_vla[test])
+        print_table(x, y_plan, y_vla, tasks, chosen, "leave one task out")
     if save:
         with open(save, "w") as fh:
             json.dump({"model": model, **MODELS[model]().fit(x, y_plan).to_json()}, fh, indent=1)
@@ -216,5 +235,10 @@ if __name__ == "__main__":
     ap.add_argument("--vla-runs", nargs="+", required=True)
     ap.add_argument("--save", default=None)
     ap.add_argument("--model", choices=sorted(MODELS), default="logreg", help="model that --save trains")
+    ap.add_argument("--test-planner-runs", default=None,
+                    help="held-out layouts (--layout-seed runs): train on --planner-runs, test on these")
+    ap.add_argument("--test-vla-runs", nargs="+", default=None, help="VLA runs on the held-out layouts")
     a = ap.parse_args()
-    evaluate(a.planner_runs, a.vla_runs, a.save, a.model)
+    if bool(a.test_planner_runs) != bool(a.test_vla_runs):
+        ap.error("--test-planner-runs and --test-vla-runs go together")
+    evaluate(a.planner_runs, a.vla_runs, a.save, a.model, a.test_planner_runs, a.test_vla_runs)

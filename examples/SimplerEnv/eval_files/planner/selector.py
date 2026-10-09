@@ -14,6 +14,11 @@ beyond what the eval uses.
 prints leave-one-task-out results for both models against "always planner", "always VLA", a hand
 rule and the perfect selector, and optionally saves one model trained on everything. With the
 --test-* options it instead trains on all of --planner-runs and scores the held-out layouts.
+
+Two decision rules are scored. The threshold rule uses the planner when P(planner succeeds) >= 0.5.
+The two-model rule uses it when P(planner succeeds) >= P(VLA succeeds), with P(VLA succeeds)
+either learned from the same features or taken as the task's VLA success rate. --save stores
+only the planner model.
 """
 
 import argparse
@@ -188,18 +193,38 @@ def load_layouts(planner_root: str, vla_roots: List[str]):
     return x, y_plan, y_vla, np.array([k[0] for k in keys])
 
 
+def with_tasks(x: np.ndarray, tasks: np.ndarray, seen: List[str]) -> np.ndarray:
+    """Add one column per training task, so a VLA model can learn each task's VLA success rate."""
+    return np.hstack([x, np.stack([(tasks == k).astype(float) for k in seen], 1)])
+
+
+def choose(p_plan: np.ndarray, bar, y_plan: np.ndarray, y_vla: np.ndarray) -> np.ndarray:
+    """Outcome of each layout's chosen controller: the planner where p_plan >= bar, else the VLA."""
+    return np.where(p_plan >= bar, y_plan, y_vla)
+
+
 def print_table(x, y_plan, y_vla, tasks, chosen: Dict[str, np.ndarray], how: str) -> None:
     rule = (x[:, FEATURES.index("plan_ok")] > 0) & (x[:, FEATURES.index("grasp_sam3_score")] >= 0.3)
     rows = {"always planner": y_plan, "always VLA": y_vla,
             "hand rule (plan ok and SAM3 >= 0.3)": np.where(rule, y_plan, y_vla),
-            f"logistic regression ({how})": chosen["logreg"],
-            f"boosted trees ({how})": chosen["trees"],
+            **{f"{name} ({how})": v for name, v in chosen.items()},
             "perfect selector": np.maximum(y_plan, y_vla)}
     print(f"{len(tasks)} layouts")
     print("| Setup | Spoon | Carrot | Stack | Eggplant | Avg |")
     for name, v in rows.items():
         per = [100 * v[tasks == t].mean() if (tasks == t).any() else float("nan") for t in TASKS]
         print(f"| {name} | " + " | ".join(f"{p:.1f}" for p in per) + f" | {100 * v.mean():.1f} |")
+
+
+def rule_rows(p_plan: Dict[str, np.ndarray], p_vla: np.ndarray, task_rate: np.ndarray,
+              y_plan: np.ndarray, y_vla: np.ndarray) -> Dict[str, np.ndarray]:
+    """The two decision rules. The threshold rule treats the VLA as a coin flip on every layout;
+    the two-model rule (Bayes-optimal when both estimates are right) compares the planner's
+    chance with the VLA's."""
+    return {"logistic regression, P >= 0.5": choose(p_plan["logreg"], 0.5, y_plan, y_vla),
+            "boosted trees, P >= 0.5": choose(p_plan["trees"], 0.5, y_plan, y_vla),
+            "two-model: logistic regression P >= learned P_VLA": choose(p_plan["logreg"], p_vla, y_plan, y_vla),
+            "two-model: logistic regression P >= the task's VLA rate": choose(p_plan["logreg"], task_rate, y_plan, y_vla)}
 
 
 def evaluate(planner_root: str, vla_roots: List[str], save: Optional[str] = None,
@@ -209,20 +234,30 @@ def evaluate(planner_root: str, vla_roots: List[str], save: Optional[str] = None
 
     if test_planner_root:  # held out: train on every training layout, test on layouts never seen
         tx, ty_plan, ty_vla, ttasks = load_layouts(test_planner_root, test_vla_roots or vla_roots)
-        chosen = {name: np.where(cls().fit(x, y_plan).use_planner(tx), ty_plan, ty_vla)
-                  for name, cls in MODELS.items()}
+        p_plan = {name: cls().fit(x, y_plan).prob(tx) for name, cls in MODELS.items()}
+        # The tasks were seen in training, so P_VLA may use them; the task's VLA rate comes from training.
+        seen = [k for k in TASKS if (tasks == k).any()]
+        p_vla = Selector().fit(with_tasks(x, tasks, seen), y_vla).prob(with_tasks(tx, ttasks, seen))
+        rate = {k: y_vla[tasks == k].mean() for k in seen}
+        task_rate = np.array([rate.get(k, y_vla.mean()) for k in ttasks])
         print(f"trained on {len(tasks)} layouts from {planner_root}, tested on {test_planner_root}")
-        print_table(tx, ty_plan, ty_vla, ttasks, chosen, "held-out layouts")
+        print_table(tx, ty_plan, ty_vla, ttasks, rule_rows(p_plan, p_vla, task_rate, ty_plan, ty_vla),
+                    "held-out layouts")
     else:
-        chosen = {name: np.zeros(len(tasks)) for name in MODELS}
+        p_plan = {name: np.zeros(len(tasks)) for name in MODELS}
+        p_vla, task_rate = np.zeros(len(tasks)), np.zeros(len(tasks))
         for task in TASKS:  # leave one task out: train on the other three, test on this one
             test = tasks == task
             if not test.any() or (~test).sum() == 0:
                 continue
             for name, cls in MODELS.items():
-                sel = cls().fit(x[~test], y_plan[~test])
-                chosen[name][test] = np.where(sel.use_planner(x[test]), y_plan[test], y_vla[test])
-        print_table(x, y_plan, y_vla, tasks, chosen, "leave one task out")
+                p_plan[name][test] = cls().fit(x[~test], y_plan[~test]).prob(x[test])
+            p_vla[test] = Selector().fit(x[~test], y_vla[~test]).prob(x[test])
+            # The unseen task's VLA rate from its other layouts: what a few VLA tries on a new task give.
+            v = y_vla[test]
+            task_rate[test] = (v.sum() - v) / max(len(v) - 1, 1)
+        print_table(x, y_plan, y_vla, tasks, rule_rows(p_plan, p_vla, task_rate, y_plan, y_vla),
+                    "leave one task out")
     if save:
         with open(save, "w") as fh:
             json.dump({"model": model, **MODELS[model]().fit(x, y_plan).to_json()}, fh, indent=1)

@@ -169,6 +169,49 @@ class CameraView:
         return pts[dist < max(0.05, 3 * np.median(dist))]
 
 
+def depth_roughness(depth: np.ndarray, mask: np.ndarray) -> float:
+    """Median |discrete Laplacian| of depth (m) over mask pixels whose 4 neighbours also have depth.
+
+    Near 0 on a smooth surface and grows with sensor noise, so it measures depth noise on the object
+    without knowing its shape. 0 when too few pixels qualify (the valid-depth share then shows why).
+    """
+    valid = depth > 1e-3
+    core = np.zeros_like(valid)
+    core[1:-1, 1:-1] = (mask.astype(bool) & valid)[1:-1, 1:-1] & valid[:-2, 1:-1] & valid[2:, 1:-1] \
+        & valid[1:-1, :-2] & valid[1:-1, 2:]
+    if core.sum() < 5:
+        return 0.0
+    lap = np.zeros_like(depth)
+    lap[1:-1, 1:-1] = 4 * depth[1:-1, 1:-1] - depth[:-2, 1:-1] - depth[2:, 1:-1] - depth[1:-1, :-2] - depth[1:-1, 2:]
+    return float(np.median(np.abs(lap[core])))
+
+
+def short_width(points_xy: np.ndarray) -> float:
+    """Object width across its short side (m): the 5-95 percentile spread along the minor axis."""
+    xy = points_xy - points_xy.mean(axis=0)
+    minor = np.linalg.eigh(xy.T @ xy)[1][:, 0]
+    proj = xy @ minor
+    return float(np.percentile(proj, 95) - np.percentile(proj, 5))
+
+
+def corridor_points(cloud: np.ndarray, start: np.ndarray, end: np.ndarray, radius: float = 0.03,
+                    skip: float = 0.05) -> int:
+    """Obstacle points within `radius` of the straight line start -> end, past the first `skip` m.
+
+    With good depth the straight way from the hand to above the object is nearly empty; depth noise
+    puts false obstacles there, which the planner then has to go around.
+    """
+    d = np.asarray(end, float) - np.asarray(start, float)
+    length = float(np.linalg.norm(d))
+    if length < 1e-6 or len(cloud) == 0:
+        return 0
+    u = d / length
+    rel = cloud - np.asarray(start, float)
+    t = rel @ u
+    perp = np.linalg.norm(rel - np.outer(t, u), axis=1)
+    return int(((t > skip) & (t < length) & (perp < radius)).sum())
+
+
 def voxel_downsample(points: np.ndarray, voxel: float) -> np.ndarray:
     if len(points) == 0 or voxel <= 0:
         return points

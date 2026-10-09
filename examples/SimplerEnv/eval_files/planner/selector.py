@@ -36,16 +36,30 @@ TASKS = ["PutSpoonOnTableClothInScene-v0", "PutCarrotOnPlateInScene-v0",
 FEATURES = ["grasp_sam3_score", "grasp_sam3_count", "grasp_mask_px", "grasp_points", "grasp_height",
             "grasp_extent_long", "grasp_extent_short", "grasp_depth_spread", "grasp_turn_rad", "grasp_reach_m",
             "place_sam3_score", "place_mask_px", "place_points", "plan_ok", "plan_time", "plan_ee_length"]
+# v2: one feature per way the planner fails, with no units, so no feature says which task it is.
+FEATURES_V2 = [
+    "grasp_sam3_score", "place_sam3_score",            # SAM3 finds the object / the target
+    "grasp_sam3_ambiguity", "place_sam3_ambiguity",    # SAM3 confuses two objects (2nd-best / best score)
+    "grasp_valid_depth_frac", "place_valid_depth_frac",  # depth has holes on the object / target
+    "grasp_depth_roughness_rel",                       # depth noise on the object, against its width
+    "grasp_grip_margin",                               # the object fits the open hand
+    "plan_ok",                                         # a path to above the object exists
+    "plan_path_ratio",                                 # the path detours (planned / straight length)
+    "pregrasp_corridor_points",                        # obstacle points on the straight way there
+]
+FEATURE_SETS = {"v1": FEATURES, "v2": FEATURES_V2}
 
 
-def row_features(record: dict) -> np.ndarray:
+def row_features(record: dict, names: List[str] = FEATURES) -> np.ndarray:
     """Feature vector for one try, from what the planner knew before its first move."""
     f = dict(record.get("features", {}))
     first = record["plans"][0] if record.get("plans") else {}
     f["plan_ok"] = float(bool(first.get("success", False)))
     f["plan_time"] = first.get("time", 0.0)
     f["plan_ee_length"] = first.get("ee_path_length", 0.0)
-    return np.array([float(f.get(k, 0.0) or 0.0) for k in FEATURES])
+    straight = first.get("ee_straight_length", 0.0)
+    f["plan_path_ratio"] = first["ee_path_length"] / straight if f["plan_ok"] and straight > 1e-3 else 1.0
+    return np.array([float(f.get(k, 0.0) or 0.0) for k in names])
 
 
 def load_planner(root: str) -> Dict[tuple, dict]:
@@ -181,13 +195,13 @@ class BoostedTrees:
 MODELS = {"logreg": Selector, "trees": BoostedTrees}
 
 
-def load_layouts(planner_root: str, vla_roots: List[str]):
+def load_layouts(planner_root: str, vla_roots: List[str], names: List[str] = FEATURES):
     """Features, planner outcome, VLA outcome and task name for every layout both controllers ran."""
     planner, vla = load_planner(planner_root), load_vla(vla_roots)
     keys = [k for k in planner if k in vla]
     if not keys:
         raise SystemExit(f"no layouts with both planner and VLA results in {planner_root}")
-    x = np.stack([row_features(planner[k]) for k in keys])
+    x = np.stack([row_features(planner[k], names) for k in keys])
     y_plan = np.array([float(planner[k]["success"]) for k in keys])
     y_vla = np.array([vla[k] for k in keys])
     return x, y_plan, y_vla, np.array([k[0] for k in keys])
@@ -203,8 +217,9 @@ def choose(p_plan: np.ndarray, bar, y_plan: np.ndarray, y_vla: np.ndarray) -> np
     return np.where(p_plan >= bar, y_plan, y_vla)
 
 
-def print_table(x, y_plan, y_vla, tasks, chosen: Dict[str, np.ndarray], how: str) -> None:
-    rule = (x[:, FEATURES.index("plan_ok")] > 0) & (x[:, FEATURES.index("grasp_sam3_score")] >= 0.3)
+def print_table(x, y_plan, y_vla, tasks, chosen: Dict[str, np.ndarray], how: str,
+                names: List[str] = FEATURES) -> None:
+    rule = (x[:, names.index("plan_ok")] > 0) & (x[:, names.index("grasp_sam3_score")] >= 0.3)
     rows = {"always planner": y_plan, "always VLA": y_vla,
             "hand rule (plan ok and SAM3 >= 0.3)": np.where(rule, y_plan, y_vla),
             **{f"{name} ({how})": v for name, v in chosen.items()},
@@ -229,11 +244,12 @@ def rule_rows(p_plan: Dict[str, np.ndarray], p_vla: np.ndarray, task_rate: np.nd
 
 def evaluate(planner_root: str, vla_roots: List[str], save: Optional[str] = None,
              model: str = "logreg", test_planner_root: Optional[str] = None,
-             test_vla_roots: Optional[List[str]] = None) -> None:
-    x, y_plan, y_vla, tasks = load_layouts(planner_root, vla_roots)
+             test_vla_roots: Optional[List[str]] = None, features: str = "v1") -> None:
+    names = FEATURE_SETS[features]
+    x, y_plan, y_vla, tasks = load_layouts(planner_root, vla_roots, names)
 
     if test_planner_root:  # held out: train on every training layout, test on layouts never seen
-        tx, ty_plan, ty_vla, ttasks = load_layouts(test_planner_root, test_vla_roots or vla_roots)
+        tx, ty_plan, ty_vla, ttasks = load_layouts(test_planner_root, test_vla_roots or vla_roots, names)
         p_plan = {name: cls().fit(x, y_plan).prob(tx) for name, cls in MODELS.items()}
         # The tasks were seen in training, so P_VLA may use them; the task's VLA rate comes from training.
         seen = [k for k in TASKS if (tasks == k).any()]
@@ -242,7 +258,7 @@ def evaluate(planner_root: str, vla_roots: List[str], save: Optional[str] = None
         task_rate = np.array([rate.get(k, y_vla.mean()) for k in ttasks])
         print(f"trained on {len(tasks)} layouts from {planner_root}, tested on {test_planner_root}")
         print_table(tx, ty_plan, ty_vla, ttasks, rule_rows(p_plan, p_vla, task_rate, ty_plan, ty_vla),
-                    "held-out layouts")
+                    "held-out layouts", names)
     else:
         p_plan = {name: np.zeros(len(tasks)) for name in MODELS}
         p_vla, task_rate = np.zeros(len(tasks)), np.zeros(len(tasks))
@@ -257,10 +273,10 @@ def evaluate(planner_root: str, vla_roots: List[str], save: Optional[str] = None
             v = y_vla[test]
             task_rate[test] = (v.sum() - v) / max(len(v) - 1, 1)
         print_table(x, y_plan, y_vla, tasks, rule_rows(p_plan, p_vla, task_rate, y_plan, y_vla),
-                    "leave one task out")
+                    "leave one task out", names)
     if save:
         with open(save, "w") as fh:
-            json.dump({"model": model, **MODELS[model]().fit(x, y_plan).to_json()}, fh, indent=1)
+            json.dump({"model": model, **MODELS[model]().fit(x, y_plan).to_json(), "features": names}, fh, indent=1)
         print("saved", save)
 
 
@@ -273,7 +289,9 @@ if __name__ == "__main__":
     ap.add_argument("--test-planner-runs", default=None,
                     help="held-out layouts (--layout-seed runs): train on --planner-runs, test on these")
     ap.add_argument("--test-vla-runs", nargs="+", default=None, help="VLA runs on the held-out layouts")
+    ap.add_argument("--features", choices=sorted(FEATURE_SETS), default="v1",
+                    help="v1: the first 16 features; v2: one per planner failure mode, with no units")
     a = ap.parse_args()
     if bool(a.test_planner_runs) != bool(a.test_vla_runs):
         ap.error("--test-planner-runs and --test-vla-runs go together")
-    evaluate(a.planner_runs, a.vla_runs, a.save, a.model, a.test_planner_runs, a.test_vla_runs)
+    evaluate(a.planner_runs, a.vla_runs, a.save, a.model, a.test_planner_runs, a.test_vla_runs, a.features)

@@ -27,8 +27,9 @@ from scipy.spatial.transform import Rotation, Slerp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "Robocasa_tabletop" / "visual_prompt_utility"))
 
-from .geometry import CameraView, DepthNoise, ee_delta_action, mat_to_pose, path_length, pose_to_mat
-from .planners import RobotSpheres, make_planner
+from .geometry import (CameraView, DepthNoise, corridor_points, depth_roughness, ee_delta_action, mat_to_pose,
+                       path_length, pose_to_mat, short_width)
+from .planners import FINGER_OPEN, WORKSPACE, RobotSpheres, make_planner
 
 GRIPPER_OPEN, GRIPPER_CLOSED = 1.0, -1.0
 PLACE_PREPOSITIONS = (" onto ", " on ", " into ", " in ")
@@ -173,6 +174,7 @@ class PlannerClient:
         self.transit_contact = False
         self.place_goal = None
         self.retries_left = self.grasp_retries
+        self.first_look = True  # the selector's features come from the first frame only
 
     def finish_episode(self, success: bool, info: dict) -> None:
         if self.log_path is None:
@@ -241,8 +243,11 @@ class PlannerClient:
 
     def _approach(self, image, obs, env, qpos, target) -> None:
         """Find the object and plan to just above it."""
+        first, self.first_look = self.first_look, False  # a grasp retry comes back here: no new features
         self.view = self._obstacle_view(obs, qpos)
-        grasp = self._locate(image, obs, env, which="grasp")
+        grasp = self._locate(image, obs, env, which="grasp", record=first)
+        if first:  # the place target too, for the selector only: placing finds it again after the lift
+            self._locate(image, obs, env, which="place", record=True, view=self.view)
         if grasp is None:
             self.stats["failure"] = "grasp object not found"
             self._give_up()
@@ -251,12 +256,16 @@ class PlannerClient:
         # The VLA picks its own grasp after the hand-off, so only the planner-only setup turns the hand.
         orientation = self.home_orientation if self.vla is not None \
             else grasp_orientation(self.home_orientation, grasp.get("points_xy"))
-        self.stats["features"]["grasp_turn_rad"] = rotation_angle(
-            np.r_[np.zeros(3), self.home_orientation],
-            np.r_[np.zeros(3), grasp_orientation(self.home_orientation, grasp.get("points_xy"))])
-        self.stats["features"]["grasp_reach_m"] = float(np.linalg.norm(grasp["center"] - target[:2]))
         goal = np.concatenate([[grasp["center"][0], grasp["center"][1], grasp["top"] + self.pregrasp_height],
                                orientation])
+        if first:
+            f = self.stats["features"]
+            f["grasp_turn_rad"] = rotation_angle(
+                np.r_[np.zeros(3), self.home_orientation],
+                np.r_[np.zeros(3), grasp_orientation(self.home_orientation, grasp.get("points_xy"))])
+            f["grasp_reach_m"] = float(np.linalg.norm(grasp["center"] - target[:2]))
+            cloud = self.view.obstacle_cloud(self.robot_ids, voxel=0.01, workspace=WORKSPACE)
+            f["pregrasp_corridor_points"] = corridor_points(cloud, ee_pose_from_obs(obs)[:3], goal[:3])
         if not self._plan_to(qpos, goal, "pregrasp"):
             self._give_up()
             return
@@ -336,6 +345,7 @@ class PlannerClient:
         poses = [self.planner.fk(q) for q in result.path]
         record["joint_path_length"] = float(np.abs(np.diff(result.path, axis=0)).sum())
         record["ee_path_length"] = path_length(np.array([p[:3] for p in poses]))
+        record["ee_straight_length"] = float(np.linalg.norm(np.asarray(goal[:3]) - poses[0][:3]))
         poses[-1] = goal  # end exactly on the goal, not on the planner's IK tolerance
         self.queue = resample_poses(poses, self.max_step_pos, self.max_step_rot)
         self.queue_goal = goal
@@ -360,8 +370,13 @@ class PlannerClient:
 
     # --------------------------------------------------------------- perception
 
-    def _locate(self, image, obs, env, which: str) -> Optional[dict]:
-        """Center, top and bottom of the grasp object or place target, in the base frame."""
+    def _locate(self, image, obs, env, which: str, record: bool = False,
+                view: Optional[CameraView] = None) -> Optional[dict]:
+        """Center, top and bottom of the grasp object or place target, in the base frame.
+
+        `record` writes the selector's features for this object. `view` reuses a depth picture
+        already taken (and noised) for this frame instead of taking a new one.
+        """
         truth = self._sim_object(obs, env, which)
         if self.target_source == "sim":
             return truth
@@ -384,8 +399,10 @@ class PlannerClient:
             return None
         self.stats[f"{which}_sam3_score"] = float(scores.max())
         mask = np.asarray(masks[int(np.argmax(scores))])
-        pts = CameraView(obs, noise=self.noise).object_points(mask)
-        self._record_features(which, scores, mask, pts)
+        view = view if view is not None else CameraView(obs, noise=self.noise)
+        pts = view.object_points(mask)
+        if record:
+            self._record_features(which, scores, mask, pts, view)
         if len(pts) < 5:
             return None
         found = {"center": np.median(pts[:, :2], axis=0), "top": float(np.percentile(pts[:, 2], 95)),
@@ -396,19 +413,32 @@ class PlannerClient:
             self.stats[f"{which}_error_3d"] = float(np.linalg.norm(center3 - truth["center3"]))
         return found
 
-    def _record_features(self, which: str, scores, mask, pts) -> None:
+    def _record_features(self, which: str, scores, mask, pts, view: CameraView) -> None:
         """What the adaptive selector sees about an object: all from the camera, none from the simulator."""
         f = self.stats["features"]
-        f[f"{which}_sam3_score"] = float(np.max(scores))
+        scores = np.sort(np.asarray(scores, dtype=float))
+        m = np.asarray(mask).astype(bool)
+        f[f"{which}_sam3_score"] = float(scores[-1])
         f[f"{which}_sam3_count"] = int(len(scores))
-        f[f"{which}_mask_px"] = int(np.asarray(mask).astype(bool).sum())
+        # second-best over best SAM3 score: near 1 when two objects look alike
+        f[f"{which}_sam3_ambiguity"] = float(scores[-2] / max(scores[-1], 1e-6)) if len(scores) > 1 else 0.0
+        f[f"{which}_mask_px"] = int(m.sum())
         f[f"{which}_points"] = int(len(pts))
+        f[f"{which}_valid_depth_frac"] = float((m & (view.depth > 1e-3) & (view.depth < 2.0)).sum() / max(m.sum(), 1))
+        roughness = depth_roughness(view.depth, m)
+        f[f"{which}_depth_roughness"] = roughness
         if len(pts) >= 5:
             xy = pts[:, :2] - pts[:, :2].mean(axis=0)
             spread = np.sqrt(np.maximum(np.linalg.eigvalsh(xy.T @ xy / len(xy)), 0.0))
             f[f"{which}_height"] = float(np.percentile(pts[:, 2], 95) - np.percentile(pts[:, 2], 5))
             f[f"{which}_extent_long"], f[f"{which}_extent_short"] = float(4 * spread[1]), float(4 * spread[0])
             f[f"{which}_depth_spread"] = float(np.std(pts[:, 2]))
+            width = short_width(pts[:, :2])
+            f[f"{which}_width"] = width
+            f[f"{which}_depth_roughness_rel"] = roughness / max(width, 0.005)  # noise against object size
+            if which == "grasp":  # room left in the open hand; each finger opens from 0.015 to FINGER_OPEN
+                span = 2 * (FINGER_OPEN - 0.015)
+                f["grasp_grip_margin"] = (span - width) / span
 
     @staticmethod
     def _sim_object(obs, env, which: str) -> Optional[dict]:

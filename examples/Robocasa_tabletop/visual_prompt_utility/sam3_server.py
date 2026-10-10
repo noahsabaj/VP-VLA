@@ -45,7 +45,7 @@ def _repeat(x, n: int):
 class SAM3Model:
     """Wrapper for SAM3 model to handle segmentation requests."""
 
-    def __init__(self, model_path: str, device: str = "cuda", fp16: bool = False):
+    def __init__(self, model_path: str, device: str = "cuda", fp16: bool = False, compile_encoder: bool = False):
         from transformers import Sam3Processor, Sam3Model
 
         self.device = device
@@ -67,7 +67,16 @@ class SAM3Model:
         # features too. Same computation, same output.
         self._vision_cache = collections.OrderedDict()
         self._text_cache = collections.OrderedDict()
-        logging.info(f"SAM3 model loaded successfully (fp16: {fp16})")
+        if compile_encoder:
+            # Fuse the elementwise work of the image encoder (about 40 ms less per frame). Compile layer by
+            # layer: compiling the whole backbone breaks HF's output capture. Compile now, before clients connect.
+            torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, 64)
+            for layer in self.model.vision_encoder.backbone.layers:
+                layer.forward = torch.compile(layer.forward, dynamic=False)
+            with torch.no_grad():
+                self._vision(np.zeros((480, 640, 3), dtype=np.uint8))
+            self._vision_cache.clear()
+        logging.info(f"SAM3 model loaded successfully (fp16: {fp16}, compiled encoder: {compile_encoder})")
 
     @staticmethod
     def _autocast_fp16(module: torch.nn.Module):
@@ -335,6 +344,8 @@ def build_argparser():
                         help="TF32 matmuls (about 1.5x faster on Ampere); masks can differ by a few pixels from fp32")
     parser.add_argument("--fp16", action="store_true",
                         help="Image encoder and heads in fp16 (about 3x faster); masks and boxes can differ by about a pixel from fp32")
+    parser.add_argument("--compile", action="store_true",
+                        help="torch.compile the image encoder layers (about 40 ms less per frame; boxes can differ by about a pixel)")
     return parser
 
 
@@ -356,6 +367,7 @@ def main():
         model_path=args.model_path,
         device=device,
         fp16=args.fp16,
+        compile_encoder=args.compile,
     )
     
     # Start server

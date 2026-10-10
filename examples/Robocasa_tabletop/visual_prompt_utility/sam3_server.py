@@ -42,19 +42,13 @@ class SAM3Model:
         self.model = Sam3Model.from_pretrained(model_path).to(device)
         self.processor = Sam3Processor.from_pretrained(model_path)
         self.model.eval()
-        # fp16: run the image encoder in fp16 and the DETR encoder under fp16 autocast (together
-        # about 2/3 of the cost), each handing fp32 back, so the decoder and the box coordinates
-        # stay fp32. Masks and boxes can differ by about a pixel from all-fp32.
+        # fp16: run the image encoder in fp16 and the heads under fp16 autocast, each handing fp32
+        # back. Masks and boxes can differ by about a pixel from all-fp32.
         self._fp16 = fp16
         if fp16:
             self.model.vision_encoder.half()
-            detr_encoder_forward = self.model.detr_encoder.forward
-
-            def detr_encoder_fp16(*args, **kwargs):
-                with torch.autocast("cuda", dtype=torch.float16):
-                    return _to_float32(detr_encoder_forward(*args, **kwargs))
-
-            self.model.detr_encoder.forward = detr_encoder_fp16
+            for name in ("geometry_encoder", "detr_encoder", "detr_decoder", "mask_decoder", "dot_product_scoring"):
+                self._autocast_fp16(getattr(self.model, name))
         # The eval segments each frame twice (object, then target): keep the image features of the
         # last few frames so the second prompt skips the image encoder, also when several eval
         # clients share this server. The prompts repeat from step to step, so keep their text
@@ -62,6 +56,16 @@ class SAM3Model:
         self._vision_cache = collections.OrderedDict()
         self._text_cache = collections.OrderedDict()
         logging.info(f"SAM3 model loaded successfully (fp16: {fp16})")
+
+    @staticmethod
+    def _autocast_fp16(module: torch.nn.Module):
+        forward = module.forward
+
+        def forward_fp16(*args, **kwargs):
+            with torch.autocast("cuda", dtype=torch.float16):
+                return _to_float32(forward(*args, **kwargs))
+
+        module.forward = forward_fp16
 
     @staticmethod
     def _cached(cache: collections.OrderedDict, key, make, keep: int):
@@ -289,7 +293,7 @@ def build_argparser():
     parser.add_argument("--tf32", action="store_true",
                         help="TF32 matmuls (about 1.5x faster on Ampere); masks can differ by a few pixels from fp32")
     parser.add_argument("--fp16", action="store_true",
-                        help="Image encoder and DETR encoder in fp16 (about 2x faster); masks and boxes can differ by about a pixel from fp32")
+                        help="Image encoder and heads in fp16 (about 3x faster); masks and boxes can differ by about a pixel from fp32")
     return parser
 
 

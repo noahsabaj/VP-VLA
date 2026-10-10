@@ -6,6 +6,8 @@ import logging
 import traceback
 import time
 import argparse
+import collections
+import hashlib
 import socket
 
 import numpy as np
@@ -29,7 +31,21 @@ class SAM3Model:
         self.model = Sam3Model.from_pretrained(model_path).to(device)
         self.processor = Sam3Processor.from_pretrained(model_path)
         self.model.eval()
+        # The eval segments each frame twice (object, then target): keep the image features of the
+        # last few frames so the second prompt skips the vision encoder, also when several eval
+        # clients share this server. Same computation, same output.
+        self._vision_cache = collections.OrderedDict()
         logging.info("SAM3 model loaded successfully")
+
+    def _vision(self, image: np.ndarray, pixel_values: torch.Tensor, keep: int = 4):
+        key = (image.shape, hashlib.blake2b(np.ascontiguousarray(image).tobytes(), digest_size=16).digest())
+        if key in self._vision_cache:
+            self._vision_cache.move_to_end(key)
+        else:
+            self._vision_cache[key] = self.model.get_vision_features(pixel_values=pixel_values)
+            while len(self._vision_cache) > keep:
+                self._vision_cache.popitem(last=False)
+        return self._vision_cache[key]
     
     def segment(
         self, 
@@ -68,7 +84,8 @@ class SAM3Model:
         
         # Run inference
         with torch.no_grad():
-            outputs = self.model(**inputs)
+            vision_embeds = self._vision(image, inputs["pixel_values"])
+            outputs = self.model(vision_embeds=vision_embeds, **{k: v for k, v in inputs.items() if k != "pixel_values"})
         
         # Post-process results
         results = self.processor.post_process_instance_segmentation(

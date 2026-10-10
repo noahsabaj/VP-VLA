@@ -60,10 +60,14 @@ if __name__ == "__main__":
         model = make_vla()
     else:
         from examples.SimplerEnv.eval_files.planner.planner_client import PlannerClient
+        from examples.SimplerEnv.eval_files.planner.selector import load_saved
 
+        if args.controller == "selector" and not args.selector:
+            raise SystemExit("--controller selector needs --selector <model.json>")
         model = PlannerClient(
             planner=args.planner,
-            vla=make_vla() if args.controller == "planner_then_vla" else None,
+            vla=make_vla() if args.controller in ("planner_then_vla", "selector") else None,
+            selector=load_saved(args.selector) if args.controller == "selector" else None,
             sam3_host=args.sam3_host,
             sam3_port=args.sam3_port,
             target_source=args.target_source,

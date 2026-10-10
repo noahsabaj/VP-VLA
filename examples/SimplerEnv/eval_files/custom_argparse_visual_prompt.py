@@ -131,8 +131,12 @@ def get_args():
                         help="Do not save the per-episode action plot PNG (about 0.6 s per episode)")
 
     # ===== Motion planner (KAN-22) =====
-    parser.add_argument("--controller", type=str, default="vla", choices=["vla", "planner", "planner_then_vla"],
-                        help="Who drives the arm: the VLA, a motion planner, or the planner then the VLA")
+    parser.add_argument("--controller", type=str, default="vla",
+                        choices=["vla", "planner", "planner_then_vla", "selector"],
+                        help="Who drives the arm: the VLA, a motion planner, the planner then the VLA, or "
+                             "whichever of the two the selector picks on the first frame (needs --selector)")
+    parser.add_argument("--selector", type=str, default=None,
+                        help="Selector model saved by planner/selector.py --save, for --controller selector")
     parser.add_argument("--planner", type=str, default="mplib", choices=["mplib", "curobo"])
     parser.add_argument("--target-source", type=str, default="camera", choices=["camera", "sim"],
                         help="Where the planner's targets come from (sim = simulator poses, debugging only)")

@@ -2,12 +2,14 @@
 
 `PlannerClient` has the same reset()/step()/visualize_epoch() as ModelClientVP, but it
 also reads the full observation (`obs`) and the simulator (`env`), which our copy of the
-test loop passes in. Two modes:
+test loop passes in. Three modes:
 
 * planner then VLA (`vla` given): plan from the camera to a pre-grasp spot above the
   object, move there, then hand every later step to the VLA.
 * planner only (`vla=None`): same approach, then a scripted grasp, lift, planned move to
   above the place target, and release.
+* selector (`vla` and `selector` given, KAN-72): after the planner's first look, the selector
+  gives the whole try either to the planner (as in planner only) or to the VLA.
 
 Targets come from the camera: SAM3 masks the object named in the instruction, and the
 masked depth pixels give its 3D position. `target_source="sim"` reads them from the
@@ -30,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "Robocasa_tabletop"
 from .geometry import (CameraView, DepthNoise, corridor_points, depth_roughness, ee_delta_action, mat_to_pose,
                        path_length, pose_to_mat, short_width)
 from .planners import FINGER_OPEN, WORKSPACE, RobotSpheres, make_planner
+from .selector import row_features
 
 GRIPPER_OPEN, GRIPPER_CLOSED = 1.0, -1.0
 PLACE_PREPOSITIONS = (" onto ", " on ", " into ", " in ")
@@ -130,10 +133,18 @@ class PlannerClient:
         depth_noise: str = "none",
         noise_seed: Optional[int] = None,
         robot_mask: str = "sim",
+        selector=None,
     ) -> None:
         self.planner = make_planner(planner)
         self.planner_name = planner
         self.vla = vla
+        # (model, feature names) from selector.load_saved; needs a VLA to give tries to.
+        self.selector = selector
+        if selector is not None and vla is None:
+            raise ValueError("the selector mode needs a VLA")
+        # Planner then VLA: the VLA takes over above the object. In the selector mode the planner
+        # works exactly as in planner only, because that is what the selector was trained on.
+        self.hand_off = vla is not None and selector is None
         self.target_source = target_source
         self.pregrasp_height = pregrasp_height
         self.place_height = place_height
@@ -144,6 +155,7 @@ class PlannerClient:
         self.grasp_retries = grasp_retries
         self.log_path = log_path
         self.noise = DepthNoise(depth_noise, noise_seed)
+        self.episode_key: Optional[str] = None
         # How the robot is cut out of the obstacle map: the simulator's segmentation ("sim"),
         # or spheres placed from the joint angles ("joints"), which a real robot can do too.
         self.robot_spheres = RobotSpheres() if robot_mask == "joints" else None
@@ -155,6 +167,10 @@ class PlannerClient:
         self._clear("")
 
     # ------------------------------------------------------------------ episode
+
+    def set_episode(self, key: str) -> None:
+        """Called by planner_evaluator before reset(): this episode's depth noise comes from `key`."""
+        self.episode_key = key
 
     def reset(self, task_description: str) -> None:
         self._clear(task_description)
@@ -168,7 +184,7 @@ class PlannerClient:
         self.gripper = GRIPPER_OPEN
         self.hold_steps = 0
         self.step_count = 0
-        self.noise.new_episode()
+        self.noise.new_episode(self.episode_key)
         self.stats = {"plans": [], "depth_noise": self.noise.level, "features": {}}
         self.ee_trace: List[np.ndarray] = []
         self.transit_contact = False
@@ -179,7 +195,8 @@ class PlannerClient:
     def finish_episode(self, success: bool, info: dict) -> None:
         if self.log_path is None:
             return
-        record = {"planner": self.planner_name, "mode": "planner_then_vla" if self.vla else "planner",
+        mode = "selector" if self.selector is not None else "planner_then_vla" if self.vla is not None else "planner"
+        record = {"planner": self.planner_name, "mode": mode,
                   "task": self.task_description, "success": bool(success), **info, **self.stats,
                   "ee_path_length_planner": path_length(np.array(self.ee_trace)) if self.ee_trace else 0.0,
                   "transit_contact": self.transit_contact}
@@ -208,6 +225,8 @@ class PlannerClient:
 
         if self.phase == "start":
             self._start(image, obs, env, qpos, target)
+            if self.selector is not None:
+                self._choose()
         if self.phase == "vla":
             return self.vla.step(image, task_description)
         if self.phase == "done":
@@ -241,6 +260,16 @@ class PlannerClient:
         self.robot_ids = [link.id for link in env.unwrapped.agent.robot.get_links()]
         self._approach(image, obs, env, qpos, target)
 
+    def _choose(self) -> None:
+        """Selector mode: from the first look's features and first plan, give the whole try to the
+        planner or to the VLA. The robot has not moved yet, so the VLA starts as in a VLA-only run."""
+        model, names = self.selector
+        p = float(model.prob(row_features(self.stats, names)[None])[0])
+        self.stats["selector_p_planner"] = p
+        self.stats["selector_choice"] = "planner" if p >= model.threshold else "vla"
+        if self.stats["selector_choice"] == "vla":
+            self.phase, self.queue = "vla", []
+
     def _approach(self, image, obs, env, qpos, target) -> None:
         """Find the object and plan to just above it."""
         first, self.first_look = self.first_look, False  # a grasp retry comes back here: no new features
@@ -254,7 +283,7 @@ class PlannerClient:
             return
         self.grasp = grasp
         # The VLA picks its own grasp after the hand-off, so only the planner-only setup turns the hand.
-        orientation = self.home_orientation if self.vla is not None \
+        orientation = self.home_orientation if self.hand_off \
             else grasp_orientation(self.home_orientation, grasp.get("points_xy"))
         goal = np.concatenate([[grasp["center"][0], grasp["center"][1], grasp["top"] + self.pregrasp_height],
                                orientation])
@@ -279,7 +308,7 @@ class PlannerClient:
         if phase == "transit_pregrasp":
             self.stats["handoff_step"] = self.step_count
             self.stats["pregrasp_error"] = float(np.linalg.norm(ee_pose_from_obs(obs)[:3] - self.queue_goal[:3]))
-            if self.vla is not None:
+            if self.hand_off:
                 self.phase = "vla"
                 return
             grasp_z = max(0.5 * (self.grasp["top"] + self.grasp["bottom"]), self.grasp["bottom"] + 0.01)
@@ -365,8 +394,8 @@ class PlannerClient:
         self.phase = phase
 
     def _give_up(self) -> None:
-        self.phase = "vla" if self.vla is not None else "done"
-        self.stats["handoff_step"] = self.step_count if self.vla is not None else None
+        self.phase = "vla" if self.hand_off else "done"
+        self.stats["handoff_step"] = self.step_count if self.hand_off else None
 
     # --------------------------------------------------------------- perception
 

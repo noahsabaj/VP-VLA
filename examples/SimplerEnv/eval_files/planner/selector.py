@@ -18,7 +18,7 @@ rule and the perfect selector, and optionally saves one model trained on everyth
 Two decision rules are scored. The threshold rule uses the planner when P(planner succeeds) >= 0.5.
 The two-model rule uses it when P(planner succeeds) >= P(VLA succeeds), with P(VLA succeeds)
 either learned from the same features or taken as the task's VLA success rate. --save stores
-only the planner model.
+only the planner model; the eval runs it with `--controller selector --selector <model.json>`.
 """
 
 import argparse
@@ -193,6 +193,13 @@ class BoostedTrees:
 
 
 MODELS = {"logreg": Selector, "trees": BoostedTrees}
+
+
+def load_saved(path: str):
+    """A model written by --save, for `--controller selector`: (model, its feature names)."""
+    with open(path) as fh:
+        d = json.load(fh)
+    return MODELS[d["model"]].from_json(d), d["features"]
 
 
 def load_layouts(planner_root: str, vla_roots: List[str], names: List[str] = FEATURES):

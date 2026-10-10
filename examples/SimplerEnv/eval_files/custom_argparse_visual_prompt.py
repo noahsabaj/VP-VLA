@@ -125,6 +125,8 @@ def get_args():
     parser.add_argument("--save-overlay-video", action="store_true", default=False,
                         help="Save overlay visualization videos for debugging")
     parser.add_argument("--overlay-video-dir", type=str, default="./overlay_videos")
+    parser.add_argument("--no-action-plots", action="store_true", default=False,
+                        help="Do not save the per-episode action plot PNG (about 0.6 s per episode)")
 
     # ===== Motion planner (KAN-22) =====
     parser.add_argument("--controller", type=str, default="vla", choices=["vla", "planner", "planner_then_vla"],

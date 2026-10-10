@@ -43,6 +43,7 @@ def run_maniskill2_eval_single_episode(
     additional_env_save_tags=None,
     logging_dir="./results",
     layout_seed=None,
+    action_plots=True,
 ):
 
     if additional_env_build_kwargs is None:
@@ -183,11 +184,12 @@ def run_maniskill2_eval_single_episode(
     write_video(video_path, images, fps=5)
 
     # save action trajectory
-    action_path = video_path.replace(".mp4", ".png")
-    action_root = os.path.dirname(action_path) + "/actions/"
-    os.makedirs(action_root, exist_ok=True)
-    action_path = action_root + os.path.basename(action_path)
-    model.visualize_epoch(predicted_actions, images, save_path=action_path)
+    if action_plots:
+        action_path = video_path.replace(".mp4", ".png")
+        action_root = os.path.dirname(action_path) + "/actions/"
+        os.makedirs(action_root, exist_ok=True)
+        action_path = action_root + os.path.basename(action_path)
+        model.visualize_epoch(predicted_actions, images, save_path=action_path)
 
     return success == "success"
 
@@ -252,6 +254,7 @@ def maniskill2_evaluator(model, args):
                     obs_camera_name=args.obs_camera_name,
                     logging_dir=args.logging_dir,
                     layout_seed=getattr(args, "layout_seed", None),
+                    action_plots=not getattr(args, "no_action_plots", False),
                 )
                 if args.obj_variation_mode == "xy":
                     for obj_init_x in args.obj_init_xs:

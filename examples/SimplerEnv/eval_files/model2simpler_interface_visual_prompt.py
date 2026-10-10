@@ -60,6 +60,7 @@ class ModelClientVP:
         target_location_prompt_mode: str = "box",
         sam3_threshold: float = 0.5,
         sam3_mask_threshold: float = 0.5,
+        sam3_batch_prompts: bool = False,
         # VLM options
         use_vlm: bool = False,
         vlm_host: str = "127.0.0.1",
@@ -130,6 +131,7 @@ class ModelClientVP:
                 overlay_mode_closed=target_location_prompt_mode,
                 threshold_open=sam3_threshold,
                 mask_threshold_open=sam3_mask_threshold,
+                batch_prompts=sam3_batch_prompts,
             )
             self._extract_target_from_task = extract_target_from_task
             print(f"*** SAM3 enabled: target_object={target_object_prompt_mode}, target_location={target_location_prompt_mode} ***")

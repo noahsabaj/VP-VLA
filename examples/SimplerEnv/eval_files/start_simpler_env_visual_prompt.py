@@ -42,6 +42,7 @@ if __name__ == "__main__":
             target_location_prompt_mode=args.target_location_prompt_mode,
             sam3_threshold=args.sam3_threshold,
             sam3_mask_threshold=args.sam3_mask_threshold,
+            sam3_batch_prompts=args.sam3_batch_prompts,
             # VLM options
             use_vlm=args.use_vlm,
             vlm_host=args.vlm_host,

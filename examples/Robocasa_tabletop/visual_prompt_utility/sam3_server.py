@@ -7,6 +7,7 @@ import traceback
 import time
 import argparse
 import collections
+import copy
 import hashlib
 import socket
 
@@ -27,6 +28,17 @@ def _to_float32(x):
     if hasattr(x, "keys"):
         for k in list(x.keys()):
             x[k] = _to_float32(x[k])
+    return x
+
+
+def _repeat(x, n: int):
+    """Repeat the batch dimension (size 1) of the tensors in a model output n times."""
+    if torch.is_tensor(x):
+        return torch.cat([x] * n) if x.dim() and x.shape[0] == 1 else x
+    if isinstance(x, (tuple, list)):
+        return type(x)(_repeat(v, n) for v in x)
+    if hasattr(x, "keys"):
+        return type(x)(**{k: _repeat(x[k], n) for k in x.keys()})
     return x
 
 
@@ -123,20 +135,35 @@ class SAM3Model:
                 - scores: np.ndarray of shape (N,), confidence scores
                 - num_masks: int, number of detected masks
         """
-        # Run inference
+        return self.segment_many(image, [text_prompt], threshold, mask_threshold)[0]
+
+    def segment_many(self, image: np.ndarray, text_prompts: list, threshold: float = 0.5,
+                     mask_threshold: float = 0.5) -> list:
+        """segment() for several prompts on one image, in one forward (batched over the prompts)."""
+        n = len(text_prompts)
         with torch.no_grad():
             vision_embeds, original_sizes = self._vision(image)
-            attention_mask, text_embeds = self._text(text_prompt)
+            texts = [self._text(p) for p in text_prompts]
+            attention_mask, text_embeds = texts[0]
+            if n > 1:
+                attention_mask = torch.cat([t[0] for t in texts])
+                text_embeds = copy.copy(text_embeds)
+                for k in ("pooler_output", "last_hidden_state", "text_embeds"):
+                    if torch.is_tensor(getattr(text_embeds, k, None)):
+                        setattr(text_embeds, k, torch.cat([getattr(t[1], k) for t in texts]))
+                vision_embeds = _repeat(vision_embeds, n)
             outputs = self.model(vision_embeds=vision_embeds, text_embeds=text_embeds, attention_mask=attention_mask)
 
-        # Post-process results
         results = self.processor.post_process_instance_segmentation(
             outputs,
             threshold=threshold,
             mask_threshold=mask_threshold,
-            target_sizes=original_sizes
-        )[0]
-        
+            target_sizes=original_sizes * n,
+        )
+        return [self._to_numpy(r, image) for r in results]
+
+    @staticmethod
+    def _to_numpy(results: dict, image: np.ndarray) -> dict:
         masks = results.get("masks", torch.zeros((0, image.shape[0], image.shape[1]), dtype=torch.bool))
         scores = results.get("scores", torch.zeros((0,)))
         boxes = results.get("boxes", torch.zeros((0, 4), dtype=torch.float32))
@@ -269,7 +296,21 @@ class SAM3Server:
                     "request_id": req_id,
                     "error": {"message": str(e)},
                 }
-        
+
+        elif mtype == "segment_batch":  # several prompts on one image; data is a list of segment results
+            try:
+                data = self._model.segment_many(
+                    msg["image"],
+                    list(msg["text_prompts"]),
+                    threshold=msg.get("threshold", 0.5),
+                    mask_threshold=msg.get("mask_threshold", 0.5),
+                )
+                return {"status": "ok", "ok": True, "type": "segment_batch_result", "request_id": req_id, "data": data}
+            except Exception as e:
+                logging.exception("SAM3 batch segmentation error (request_id=%s)", req_id)
+                return {"status": "error", "ok": False, "type": "segment_batch_result", "request_id": req_id,
+                        "error": {"message": str(e)}}
+
         else:
             return {
                 "status": "error",

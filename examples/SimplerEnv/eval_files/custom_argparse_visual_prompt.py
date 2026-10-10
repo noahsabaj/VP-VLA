@@ -101,6 +101,8 @@ def get_args():
     )
     parser.add_argument("--sam3-threshold", type=float, default=0.5)
     parser.add_argument("--sam3-mask-threshold", type=float, default=0.5)
+    parser.add_argument("--sam3-batch-prompts", action="store_true", default=False,
+                        help="Send the object and target prompts to SAM3 in one request (one batched forward)")
 
     # ===== VLM subtask detection arguments =====
     parser.add_argument("--use-vlm", action="store_true", help="Enable VLM subtask detection")

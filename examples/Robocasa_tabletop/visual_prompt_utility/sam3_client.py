@@ -34,6 +34,7 @@ class SAM3Client:
         overlay_mode_closed: Optional[str] = None,
         threshold_closed: Optional[float] = None,
         mask_threshold_closed: Optional[float] = None,
+        batch_prompts: bool = False,
     ):
         """
         Initialize SAM3 client.
@@ -55,6 +56,8 @@ class SAM3Client:
                              If None, uses threshold_open.
             mask_threshold_closed: Mask binarization threshold when gripper is closed.
                                   If None, uses mask_threshold_open.
+            batch_prompts: In segment_and_overlay_both, send the object and target prompts in one
+                          request (one batched forward on the server; boxes can move by about a pixel).
         """
         self._uri = f"ws://{host}:{port}"
         self._overlay_alpha = overlay_alpha
@@ -69,6 +72,7 @@ class SAM3Client:
         self._overlay_mode_closed = overlay_mode_closed if overlay_mode_closed is not None else overlay_mode_open
         self._threshold_closed = threshold_closed if threshold_closed is not None else threshold_open
         self._mask_threshold_closed = mask_threshold_closed if mask_threshold_closed is not None else mask_threshold_open
+        self._batch_prompts = batch_prompts
         
         # Validate overlay modes
         if self._overlay_mode_open not in OVERLAY_MODES:
@@ -158,6 +162,24 @@ class SAM3Client:
             }
         
         return response.get("data", {})
+
+    def segment_many(self, image: np.ndarray, text_prompts: List[str], threshold: float,
+                     mask_threshold: float) -> List[Dict]:
+        """segment() for several prompts on one image in one request."""
+        request = {
+            "type": "segment_batch",
+            "request_id": f"seg_{time.time()}",
+            "image": image,
+            "text_prompts": list(text_prompts),
+            "threshold": threshold,
+            "mask_threshold": mask_threshold,
+        }
+        self._ws.send(packb(request))
+        response = unpackb(self._ws.recv())
+        if not response.get("ok", False):
+            logging.warning(f"SAM3 batch segmentation failed: {response.get('error', {}).get('message', 'Unknown error')}")
+            return [self.segment(image, p, threshold=threshold, mask_threshold=mask_threshold) for p in text_prompts]
+        return response["data"]
     
     # =========================================================================
     # Overlay Methods
@@ -510,13 +532,19 @@ class SAM3Client:
         if overlay_mode_place is None:
             overlay_mode_place = self._overlay_mode_closed
         
-        # Segment grasp object
-        grasp_result = self.segment(
-            image, 
-            grasp_object, 
-            threshold=self._threshold_open, 
-            mask_threshold=self._mask_threshold_open
-        )
+        # Segment grasp object (and the place target in the same request when batching)
+        batched = (self._batch_prompts and bool(place_target)
+                   and (self._threshold_open, self._mask_threshold_open) == (self._threshold_closed, self._mask_threshold_closed))
+        if batched:
+            grasp_result, place_result = self.segment_many(
+                image, [grasp_object, place_target], self._threshold_open, self._mask_threshold_open)
+        else:
+            grasp_result = self.segment(
+                image, 
+                grasp_object, 
+                threshold=self._threshold_open, 
+                mask_threshold=self._mask_threshold_open
+            )
         grasp_masks = grasp_result.get("masks", np.zeros((0,) + image.shape[:2], dtype=np.uint8))
         grasp_boxes = grasp_result.get("boxes", np.zeros((0, 4), dtype=np.float32))
         grasp_scores = grasp_result.get("scores", np.array([]))
@@ -535,12 +563,13 @@ class SAM3Client:
         place_masks = np.zeros((0,) + image.shape[:2], dtype=np.uint8)
         place_boxes = np.zeros((0, 4), dtype=np.float32)
         if place_target:
-            place_result = self.segment(
-                image, 
-                place_target, 
-                threshold=self._threshold_closed, 
-                mask_threshold=self._mask_threshold_closed
-            )
+            if not batched:
+                place_result = self.segment(
+                    image, 
+                    place_target, 
+                    threshold=self._threshold_closed, 
+                    mask_threshold=self._mask_threshold_closed
+                )
             place_masks = place_result.get("masks", np.zeros((0,) + image.shape[:2], dtype=np.uint8))
             place_boxes = place_result.get("boxes", np.zeros((0, 4), dtype=np.float32))
             place_scores = place_result.get("scores", np.array([]))

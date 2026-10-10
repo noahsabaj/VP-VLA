@@ -248,6 +248,8 @@ def build_argparser():
     )
     parser.add_argument("--port", type=int, default=10094, help="Server port")
     parser.add_argument("--idle-timeout", type=int, default=1800, help="Idle timeout in seconds, -1 means never close")
+    parser.add_argument("--tf32", action="store_true",
+                        help="TF32 matmuls (about 1.5x faster on Ampere); masks can differ by a few pixels from fp32")
     return parser
 
 
@@ -257,7 +259,9 @@ def main():
     args = parser.parse_args()
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    
+    torch.backends.cuda.matmul.allow_tf32 = args.tf32
+    logging.info(f"TF32 matmuls: {args.tf32}")
+
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)
     logging.info(f"Starting SAM3 server (host: {hostname}, ip: {local_ip})")

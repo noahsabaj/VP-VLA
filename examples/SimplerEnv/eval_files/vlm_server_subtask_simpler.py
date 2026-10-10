@@ -10,6 +10,7 @@ import logging
 import traceback
 import time
 import argparse
+import hashlib
 import socket
 import json
 import re
@@ -176,12 +177,14 @@ def parse_subtask_detection_response(response: str) -> Dict:
 class VLMModel:
     """Wrapper for Qwen3-VL model for single-gripper subtask detection."""
 
-    def __init__(self, model_path: str, device: str = "cuda", attn_implementation: str = "flash_attention_2"):
+    def __init__(self, model_path: str, device: str = "cuda", attn_implementation: str = "flash_attention_2",
+                 seed_per_query: bool = False):
         from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
         from PIL import Image
 
         self.device = device
         self.Image = Image
+        self.seed_per_query = seed_per_query
 
         logging.info(f"Loading Qwen3-VL model from {model_path}")
         self.model = Qwen3VLForConditionalGeneration.from_pretrained(
@@ -192,7 +195,21 @@ class VLMModel:
         )
         self.processor = AutoProcessor.from_pretrained(model_path)
         self.model.eval()
-        logging.info(f"Qwen3-VL model loaded successfully (attention: {attn_implementation})")
+        logging.info(f"Qwen3-VL model loaded successfully (attention: {attn_implementation}, "
+                     f"seed per query: {seed_per_query})")
+
+    def _seed(self, inputs) -> None:
+        """The model samples its answers. Seed each query from its tokens and pixels, so the same
+        query gets the same answer whatever was asked before (run order, chunks, parallel clients)."""
+        if not self.seed_per_query:
+            return
+        h = hashlib.blake2b(digest_size=8)
+        for key in sorted(inputs.keys()):
+            value = inputs[key]
+            if torch.is_tensor(value):
+                h.update(key.encode())
+                h.update(value.detach().cpu().contiguous().numpy().tobytes())
+        torch.manual_seed(int.from_bytes(h.digest(), "little") >> 1)
 
     def detect_subtask(
         self,
@@ -241,6 +258,7 @@ class VLMModel:
             return_dict=True,
             return_tensors="pt",
         )
+        self._seed(inputs)
         inputs = inputs.to(self.model.device)
 
         with torch.no_grad():
@@ -286,6 +304,7 @@ class VLMModel:
             return_dict=True,
             return_tensors="pt",
         )
+        self._seed(inputs)
         inputs = inputs.to(self.model.device)
 
         with torch.no_grad():
@@ -466,6 +485,8 @@ def build_argparser():
     parser.add_argument("--idle-timeout", type=int, default=-1, help="Idle timeout in seconds, -1 means never close")
     parser.add_argument("--attn", choices=["flash_attention_2", "sdpa"], default="flash_attention_2",
                         help="Attention kernel; sdpa is about 1.2x faster here (answers are sampled, so they change)")
+    parser.add_argument("--seed-per-query", action="store_true",
+                        help="Seed the sampling from each query's content, so answers do not depend on run order")
     return parser
 
 
@@ -480,7 +501,8 @@ def main():
     local_ip = socket.gethostbyname(hostname)
     logging.info(f"Starting VLM SimplerEnv server (host: {hostname}, ip: {local_ip})")
 
-    model = VLMModel(model_path=args.model_path, device=device, attn_implementation=args.attn)
+    model = VLMModel(model_path=args.model_path, device=device, attn_implementation=args.attn,
+                     seed_per_query=args.seed_per_query)
     server = VLMServer(model=model, host="0.0.0.0", port=args.port, idle_timeout=args.idle_timeout)
     server.serve_forever()
 

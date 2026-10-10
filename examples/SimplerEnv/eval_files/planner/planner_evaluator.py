@@ -1,11 +1,13 @@
 """Our copy of SimplerEnv's test loop (simpler_env/evaluation/maniskill2_evaluator.py, commit 06accac).
 
-Two changes, both marked "CHANGED":
+The changes, marked "CHANGED":
 1. `model.step()` also gets the full observation and the simulator (`obs=obs, env=env`),
    so a planner can see depth, camera settings and joint angles. ModelClientVP ignores them.
 2. After each episode, `model.finish_episode(success, info)` is called if the model has it.
 3. `layout_seed` (optional): swap the task's 24 fixed layouts for new random ones, so results
    can be checked on layouts nothing was tuned on. Off by default.
+4. Before each episode, `model.set_episode(key)` is called if the model has it, so the planner can
+   seed its depth noise per episode.
 Everything else is unchanged, so the AI-only setup behaves exactly as with SimplerEnv's loop.
 """
 
@@ -114,6 +116,9 @@ def run_maniskill2_eval_single_episode(
     predicted_terminated, done, truncated = False, False, False
 
     # Initialize model
+    # CHANGED: name the episode first, so the model can seed its own randomness per episode.
+    if hasattr(model, "set_episode"):
+        model.set_episode(f"{env_name}/{layout_seed}/{obj_episode_id}")
     model.reset(task_description)
 
     timestep = 0

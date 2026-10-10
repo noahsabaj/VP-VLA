@@ -4,6 +4,7 @@ Poses are 7-vectors [x, y, z, qw, qx, qy, qz] (SAPIEN convention). Everything th
 planners see is expressed in the robot base frame.
 """
 
+import zlib
 from typing import Optional
 
 import cv2
@@ -46,6 +47,9 @@ class DepthNoise:
     * Per-pixel noise that grows with distance squared (RealSense-like: sigma = k * z^2).
     * Dropped pixels: random ones, plus holes along depth edges (object borders).
     * A camera pose error drawn once per episode (calibration error), in mm and degrees.
+
+    With a seed and an episode key, an episode's draws depend only on (seed, key), not on the
+    episodes run before it, so splitting or reordering a run gives the same noise.
     """
 
     LEVELS = {
@@ -57,6 +61,7 @@ class DepthNoise:
     def __init__(self, level: str = "none", seed: Optional[int] = None):
         self.level = level
         self.cfg = self.LEVELS[level]
+        self.seed = seed
         self.rng = np.random.default_rng(seed)
         self.pose_error = np.eye(4)
 
@@ -64,8 +69,14 @@ class DepthNoise:
     def active(self) -> bool:
         return self.cfg is not None
 
-    def new_episode(self) -> None:
-        """Draw this episode's camera pose error (fixed for the whole episode, like a bad calibration)."""
+    def new_episode(self, key: Optional[str] = None) -> None:
+        """Draw this episode's camera pose error (fixed for the whole episode, like a bad calibration).
+
+        `key` names the episode (task, layout seed, episode id). Without it, the draws go on from
+        the previous episode's.
+        """
+        if self.seed is not None and key is not None:
+            self.rng = np.random.default_rng([self.seed, zlib.crc32(key.encode())])
         self.pose_error = np.eye(4)
         if not self.active:
             return

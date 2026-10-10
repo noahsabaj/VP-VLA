@@ -176,7 +176,7 @@ def parse_subtask_detection_response(response: str) -> Dict:
 class VLMModel:
     """Wrapper for Qwen3-VL model for single-gripper subtask detection."""
 
-    def __init__(self, model_path: str, device: str = "cuda"):
+    def __init__(self, model_path: str, device: str = "cuda", attn_implementation: str = "flash_attention_2"):
         from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
         from PIL import Image
 
@@ -187,12 +187,12 @@ class VLMModel:
         self.model = Qwen3VLForConditionalGeneration.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2",
+            attn_implementation=attn_implementation,
             device_map="auto",
         )
         self.processor = AutoProcessor.from_pretrained(model_path)
         self.model.eval()
-        logging.info("Qwen3-VL model loaded successfully")
+        logging.info(f"Qwen3-VL model loaded successfully (attention: {attn_implementation})")
 
     def detect_subtask(
         self,
@@ -464,6 +464,8 @@ def build_argparser():
     )
     parser.add_argument("--port", type=int, default=10102, help="Server port")
     parser.add_argument("--idle-timeout", type=int, default=-1, help="Idle timeout in seconds, -1 means never close")
+    parser.add_argument("--attn", choices=["flash_attention_2", "sdpa"], default="flash_attention_2",
+                        help="Attention kernel; sdpa is about 1.2x faster here (answers are sampled, so they change)")
     return parser
 
 
@@ -478,7 +480,7 @@ def main():
     local_ip = socket.gethostbyname(hostname)
     logging.info(f"Starting VLM SimplerEnv server (host: {hostname}, ip: {local_ip})")
 
-    model = VLMModel(model_path=args.model_path, device=device)
+    model = VLMModel(model_path=args.model_path, device=device, attn_implementation=args.attn)
     server = VLMServer(model=model, host="0.0.0.0", port=args.port, idle_timeout=args.idle_timeout)
     server.serve_forever()
 

@@ -36,9 +36,12 @@ def main(args) -> None:
         torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, 64)
         for name, layers in vla.qwen_vl_interface.model.named_modules():
             if isinstance(layers, torch.nn.ModuleList) and name.endswith(("layers", "blocks")):
+                # The prompt length changes with the task, so the language layers are dynamic from the start: a static
+                # and a dynamic version of each of the 36 layers would pass the cache limit, and some layers would run eager.
+                dynamic = True if name.endswith("layers") else None
                 for layer in layers:
-                    layer.forward = torch.compile(layer.forward)
-        # Compile now, before clients connect. Two prompt lengths, so the second compile makes the length dynamic.
+                    layer.forward = torch.compile(layer.forward, dynamic=dynamic)
+        # Compile now, before clients connect. A second prompt length runs the dynamic layers once more.
         image = np.zeros((224, 224, 3), dtype=np.uint8)
         for lang in ("warm up", "warm up the compiled layers with a longer prompt"):
             vla.predict_action(examples=[{"image": [image, image], "lang": lang}], do_sample=False, use_ddim=True, num_ddim_steps=10)

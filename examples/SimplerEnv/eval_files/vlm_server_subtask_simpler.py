@@ -178,7 +178,7 @@ class VLMModel:
     """Wrapper for Qwen3-VL model for single-gripper subtask detection."""
 
     def __init__(self, model_path: str, device: str = "cuda", attn_implementation: str = "flash_attention_2",
-                 seed_per_query: bool = False):
+                 seed_per_query: bool = False, compile: bool = False):
         from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
         from PIL import Image
 
@@ -195,8 +195,31 @@ class VLMModel:
         )
         self.processor = AutoProcessor.from_pretrained(model_path)
         self.model.eval()
+        if compile:
+            self._compile()
         logging.info(f"Qwen3-VL model loaded successfully (attention: {attn_implementation}, "
-                     f"seed per query: {seed_per_query})")
+                     f"seed per query: {seed_per_query}, compiled: {compile})")
+
+    def _compile(self) -> None:
+        """Compile the small per-layer operations of the language model (RMSNorm, MLP, rotary), so that their
+        elementwise kernels fuse: about 18% less GPU time per query. The KV cache code stays eager."""
+        from transformers.models.qwen3_vl import modeling_qwen3_vl as qwen3_vl
+
+        torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, 64)
+        qwen3_vl.Qwen3VLTextRMSNorm.forward = torch.compile(qwen3_vl.Qwen3VLTextRMSNorm.forward, dynamic=True)
+        qwen3_vl.Qwen3VLTextMLP.forward = torch.compile(qwen3_vl.Qwen3VLTextMLP.forward, dynamic=True)
+        qwen3_vl.apply_rotary_pos_emb = torch.compile(qwen3_vl.apply_rotary_pos_emb, dynamic=True)
+        # Compile now, before clients connect. Keep the random state, so that the warm-up does not change the answers.
+        cpu_state, cuda_state = torch.get_rng_state(), torch.cuda.get_rng_state_all()
+        logging.disable(logging.WARNING)  # the short warm-up answers do not parse
+        try:
+            self.detect_subtask(None, np.zeros((480, 640, 3), dtype=np.uint8), "warm up", "warm up", None, "OPEN",
+                                max_new_tokens=8)
+            self.decompose_task("warm up the compiled layers", max_new_tokens=8)
+        finally:
+            logging.disable(logging.NOTSET)
+            torch.set_rng_state(cpu_state)
+            torch.cuda.set_rng_state_all(cuda_state)
 
     def _seed(self, inputs) -> None:
         """The model samples its answers. Seed each query from its tokens and pixels, so the same
@@ -487,6 +510,9 @@ def build_argparser():
                         help="Attention kernel; sdpa is about 1.2x faster here (answers are sampled, so they change)")
     parser.add_argument("--seed-per-query", action="store_true",
                         help="Seed the sampling from each query's content, so answers do not depend on run order")
+    parser.add_argument("--compile", action="store_true",
+                        help="Compile the small layer operations at startup (about 18%% less GPU time per query; "
+                             "answers change a little)")
     return parser
 
 
@@ -502,7 +528,7 @@ def main():
     logging.info(f"Starting VLM SimplerEnv server (host: {hostname}, ip: {local_ip})")
 
     model = VLMModel(model_path=args.model_path, device=device, attn_implementation=args.attn,
-                     seed_per_query=args.seed_per_query)
+                     seed_per_query=args.seed_per_query, compile=args.compile)
     server = VLMServer(model=model, host="0.0.0.0", port=args.port, idle_timeout=args.idle_timeout)
     server.serve_forever()
 

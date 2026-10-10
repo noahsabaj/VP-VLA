@@ -18,34 +18,84 @@ import websockets.frames
 from msgpack_utils import packb, unpackb
 
 
+def _to_float32(x):
+    """Cast the floating tensors in a model output (or tuple of them) to fp32."""
+    if torch.is_tensor(x):
+        return x.float() if x.is_floating_point() else x
+    if isinstance(x, (tuple, list)):
+        return type(x)(_to_float32(v) for v in x)
+    if hasattr(x, "keys"):
+        for k in list(x.keys()):
+            x[k] = _to_float32(x[k])
+    return x
+
+
 class SAM3Model:
     """Wrapper for SAM3 model to handle segmentation requests."""
-    
-    def __init__(self, model_path: str, device: str = "cuda"):
+
+    def __init__(self, model_path: str, device: str = "cuda", fp16: bool = False):
         from transformers import Sam3Processor, Sam3Model
-        from PIL import Image
-        
+
         self.device = device
-        
+
         logging.info(f"Loading SAM3 model from {model_path}")
         self.model = Sam3Model.from_pretrained(model_path).to(device)
         self.processor = Sam3Processor.from_pretrained(model_path)
         self.model.eval()
-        # The eval segments each frame twice (object, then target): keep the image features of the
-        # last few frames so the second prompt skips the vision encoder, also when several eval
-        # clients share this server. Same computation, same output.
-        self._vision_cache = collections.OrderedDict()
-        logging.info("SAM3 model loaded successfully")
+        # fp16: run the image encoder in fp16 and the DETR encoder under fp16 autocast (together
+        # about 2/3 of the cost), each handing fp32 back, so the decoder and the box coordinates
+        # stay fp32. Masks and boxes can differ by about a pixel from all-fp32.
+        self._fp16 = fp16
+        if fp16:
+            self.model.vision_encoder.half()
+            detr_encoder_forward = self.model.detr_encoder.forward
 
-    def _vision(self, image: np.ndarray, pixel_values: torch.Tensor, keep: int = 4):
-        key = (image.shape, hashlib.blake2b(np.ascontiguousarray(image).tobytes(), digest_size=16).digest())
-        if key in self._vision_cache:
-            self._vision_cache.move_to_end(key)
+            def detr_encoder_fp16(*args, **kwargs):
+                with torch.autocast("cuda", dtype=torch.float16):
+                    return _to_float32(detr_encoder_forward(*args, **kwargs))
+
+            self.model.detr_encoder.forward = detr_encoder_fp16
+        # The eval segments each frame twice (object, then target): keep the image features of the
+        # last few frames so the second prompt skips the image encoder, also when several eval
+        # clients share this server. The prompts repeat from step to step, so keep their text
+        # features too. Same computation, same output.
+        self._vision_cache = collections.OrderedDict()
+        self._text_cache = collections.OrderedDict()
+        logging.info(f"SAM3 model loaded successfully (fp16: {fp16})")
+
+    @staticmethod
+    def _cached(cache: collections.OrderedDict, key, make, keep: int):
+        if key in cache:
+            cache.move_to_end(key)
         else:
-            self._vision_cache[key] = self.model.get_vision_features(pixel_values=pixel_values)
-            while len(self._vision_cache) > keep:
-                self._vision_cache.popitem(last=False)
-        return self._vision_cache[key]
+            cache[key] = make()
+            while len(cache) > keep:
+                cache.popitem(last=False)
+        return cache[key]
+
+    def _vision(self, image: np.ndarray):
+        """Image features and original size of a frame."""
+        from PIL import Image
+
+        def make():
+            inputs = self.processor(images=Image.fromarray(image).convert("RGB"), return_tensors="pt").to(self.device)
+            pixel_values = inputs["pixel_values"]
+            if not self._fp16:
+                return self.model.get_vision_features(pixel_values=pixel_values), inputs["original_sizes"].tolist()
+            features = self.model.get_vision_features(pixel_values=pixel_values.half())
+            return _to_float32(features), inputs["original_sizes"].tolist()
+
+        key = (image.shape, hashlib.blake2b(np.ascontiguousarray(image).tobytes(), digest_size=16).digest())
+        return self._cached(self._vision_cache, key, make, keep=4)
+
+    def _text(self, text_prompt: str):
+        """Attention mask and text features of a prompt."""
+        def make():
+            t = self.processor(text=text_prompt, return_tensors="pt").to(self.device)
+            features = self.model.get_text_features(input_ids=t["input_ids"], attention_mask=t["attention_mask"], return_dict=True)
+            return t["attention_mask"], features
+
+        return self._cached(self._text_cache, text_prompt, make, keep=64)
     
     def segment(
         self, 
@@ -69,30 +119,18 @@ class SAM3Model:
                 - scores: np.ndarray of shape (N,), confidence scores
                 - num_masks: int, number of detected masks
         """
-        from PIL import Image
-        
-        # Convert numpy to PIL
-        pil_image = Image.fromarray(image).convert("RGB")
-        original_size = pil_image.size  # (W, H)
-        
-        # Process inputs
-        inputs = self.processor(
-            images=pil_image, 
-            text=text_prompt, 
-            return_tensors="pt"
-        ).to(self.device)
-        
         # Run inference
         with torch.no_grad():
-            vision_embeds = self._vision(image, inputs["pixel_values"])
-            outputs = self.model(vision_embeds=vision_embeds, **{k: v for k, v in inputs.items() if k != "pixel_values"})
-        
+            vision_embeds, original_sizes = self._vision(image)
+            attention_mask, text_embeds = self._text(text_prompt)
+            outputs = self.model(vision_embeds=vision_embeds, text_embeds=text_embeds, attention_mask=attention_mask)
+
         # Post-process results
         results = self.processor.post_process_instance_segmentation(
             outputs,
             threshold=threshold,
             mask_threshold=mask_threshold,
-            target_sizes=inputs.get("original_sizes").tolist()
+            target_sizes=original_sizes
         )[0]
         
         masks = results.get("masks", torch.zeros((0, image.shape[0], image.shape[1]), dtype=torch.bool))
@@ -250,6 +288,8 @@ def build_argparser():
     parser.add_argument("--idle-timeout", type=int, default=1800, help="Idle timeout in seconds, -1 means never close")
     parser.add_argument("--tf32", action="store_true",
                         help="TF32 matmuls (about 1.5x faster on Ampere); masks can differ by a few pixels from fp32")
+    parser.add_argument("--fp16", action="store_true",
+                        help="Image encoder and DETR encoder in fp16 (about 2x faster); masks and boxes can differ by about a pixel from fp32")
     return parser
 
 
@@ -270,6 +310,7 @@ def main():
     model = SAM3Model(
         model_path=args.model_path,
         device=device,
+        fp16=args.fp16,
     )
     
     # Start server

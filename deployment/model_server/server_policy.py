@@ -24,6 +24,13 @@ def main(args) -> None:
         vla = vla.to(torch.bfloat16)
     vla = vla.to("cuda").eval()
 
+    if args.attn:  # e.g. sdpa: about 10% faster than flash_attention_2 for one short request
+        hf_config = vla.qwen_vl_interface.model.config
+        for config in (hf_config, getattr(hf_config, "text_config", None), getattr(hf_config, "vision_config", None)):
+            if config is not None:
+                config._attn_implementation = args.attn
+        logging.info("Attention implementation: %s", args.attn)
+
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)
     logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
@@ -45,6 +52,8 @@ def build_argparser():
     parser.add_argument("--ckpt_path", type=str, default="Qwen/Qwen2.5-VL-3B-Instruct")
     parser.add_argument("--port", type=int, default=10093)
     parser.add_argument("--use_bf16", action="store_true")
+    parser.add_argument("--attn", type=str, default=None, choices=["flash_attention_2", "sdpa"],
+                        help="Override the VLM attention implementation (default: as built)")
     parser.add_argument("--idle_timeout" , type=int, default=1800, help="Idle timeout in seconds, -1 means never close")
     return parser
 

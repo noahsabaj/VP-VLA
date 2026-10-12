@@ -284,7 +284,8 @@ class PlannerClient:
         """Find the object and plan to just above it."""
         first, self.first_look = self.first_look, False  # a grasp retry comes back here: no new features
         self.view = self._obstacle_view(obs, qpos)
-        grasp = self._locate(image, obs, env, which="grasp", record=first)
+        # One frame, one noisy depth picture: the object estimate and the obstacle map share it.
+        grasp = self._locate(image, obs, env, which="grasp", record=first, view=self.view)
         if first:  # the place target too, for the selector only: placing finds it again after the lift
             self._locate(image, obs, env, which="place", record=True, view=self.view)
         if grasp is None:

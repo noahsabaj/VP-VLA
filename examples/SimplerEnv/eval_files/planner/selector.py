@@ -47,7 +47,10 @@ FEATURES_V2 = [
     "plan_path_ratio",                                 # the path detours (planned / straight length)
     "pregrasp_corridor_points",                        # obstacle points on the straight way there
 ]
-FEATURE_SETS = {"v1": FEATURES, "v2": FEATURES_V2}
+# v3: only the two plan features. With harsh depth they are the only v2 features with signal; the other
+# nine score near chance alone, and dropping any one of them moves the selector by about 1 layout.
+FEATURES_V3 = ["plan_ok", "plan_path_ratio"]
+FEATURE_SETS = {"v1": FEATURES, "v2": FEATURES_V2, "v3": FEATURES_V3}
 
 
 def row_features(record: dict, names: List[str] = FEATURES) -> np.ndarray:
@@ -226,11 +229,12 @@ def choose(p_plan: np.ndarray, bar, y_plan: np.ndarray, y_vla: np.ndarray) -> np
 
 def print_table(x, y_plan, y_vla, tasks, chosen: Dict[str, np.ndarray], how: str,
                 names: List[str] = FEATURES) -> None:
-    rule = (x[:, names.index("plan_ok")] > 0) & (x[:, names.index("grasp_sam3_score")] >= 0.3)
-    rows = {"always planner": y_plan, "always VLA": y_vla,
-            "hand rule (plan ok and SAM3 >= 0.3)": np.where(rule, y_plan, y_vla),
-            **{f"{name} ({how})": v for name, v in chosen.items()},
-            "perfect selector": np.maximum(y_plan, y_vla)}
+    rows = {"always planner": y_plan, "always VLA": y_vla}
+    if "grasp_sam3_score" in names:  # the hand rule needs the SAM3 score, which v3 leaves out
+        rule = (x[:, names.index("plan_ok")] > 0) & (x[:, names.index("grasp_sam3_score")] >= 0.3)
+        rows["hand rule (plan ok and SAM3 >= 0.3)"] = np.where(rule, y_plan, y_vla)
+    rows.update({f"{name} ({how})": v for name, v in chosen.items()})
+    rows["perfect selector"] = np.maximum(y_plan, y_vla)
     print(f"{len(tasks)} layouts")
     print("| Setup | Spoon | Carrot | Stack | Eggplant | Avg |")
     for name, v in rows.items():
@@ -297,7 +301,8 @@ if __name__ == "__main__":
                     help="held-out layouts (--layout-seed runs): train on --planner-runs, test on these")
     ap.add_argument("--test-vla-runs", nargs="+", default=None, help="VLA runs on the held-out layouts")
     ap.add_argument("--features", choices=sorted(FEATURE_SETS), default="v1",
-                    help="v1: the first 16 features; v2: one per planner failure mode, with no units")
+                    help="v1: the first 16 features; v2: one per planner failure mode, with no units; "
+                         "v3: plan_ok and plan_path_ratio only")
     a = ap.parse_args()
     if bool(a.test_planner_runs) != bool(a.test_vla_runs):
         ap.error("--test-planner-runs and --test-vla-runs go together")

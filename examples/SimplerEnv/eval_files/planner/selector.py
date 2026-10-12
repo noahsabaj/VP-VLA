@@ -51,6 +51,11 @@ FEATURES_V2 = [
 # nine score near chance alone, and dropping any one of them moves the selector by about 1 layout.
 FEATURES_V3 = ["plan_ok", "plan_path_ratio"]
 FEATURE_SETS = {"v1": FEATURES, "v2": FEATURES_V2, "v3": FEATURES_V3}
+# Written into every planner record since the first-frame fix. Older records found the place target
+# only after a successful grasp, so their place features give the outcome away.
+FEATURES_VERSION = 2
+# Settings a folder's runs must share; --save stores them and the eval checks them.
+RUN_SETTINGS = ("depth_noise", "noise_seed", "robot_mask", "layout_seed")
 
 
 def row_features(record: dict, names: List[str] = FEATURES) -> np.ndarray:
@@ -65,30 +70,67 @@ def row_features(record: dict, names: List[str] = FEATURES) -> np.ndarray:
     return np.array([float(f.get(k, 0.0) or 0.0) for k in names])
 
 
-def load_planner(root: str) -> Dict[tuple, dict]:
-    out = {}
+def planner_records(root: str) -> List[dict]:
+    """Every record under root (`<task>/planner_stats.jsonl`, or run_eval.sh's `*<task>*/planner_stats.jsonl`),
+    checked so that a wrong join stops the load: planner-only mode, written since the first-frame
+    fix, one record per layout, and one value of each run setting in the folder."""
+    records, seen = [], set()
     for task in TASKS:
-        path = os.path.join(root, task, "planner_stats.jsonl")
-        if os.path.exists(path):
-            for line in open(path):
-                r = json.loads(line)
-                out[task, r["obj_episode_id"]] = r
+        paths = {os.path.normpath(p) for p in [os.path.join(root, task, "planner_stats.jsonl")] +
+                 glob.glob(os.path.join(root, f"**/*{task}*/planner_stats.jsonl"), recursive=True)}
+        for path in sorted(p for p in paths if os.path.exists(p)):
+            for n, line in enumerate(open(path), 1):
+                r, where = json.loads(line), f"{path}:{n}"
+                if r.get("mode") != "planner":  # a selector or hand-off try's success is not the planner's
+                    raise SystemExit(f"{where}: mode {r.get('mode')!r}; selector data must come from planner-only runs")
+                f = r.get("features", {})
+                if "features_version" not in r and "grasp_sam3_score" in f and "grasp_valid_depth_frac" not in f:
+                    raise SystemExit(f"{where}: written before the first-frame fix, so its place features leak the outcome")
+                if (task, r["obj_episode_id"]) in seen:
+                    raise SystemExit(f"{where}: a second record for {task} episode {r['obj_episode_id']}")
+                seen.add((task, r["obj_episode_id"]))
+                records.append({**r, "task_folder": task})
+    planner_settings(records, root)
+    return records
+
+
+def planner_settings(records: List[dict], root: str = "") -> dict:
+    """The run settings the records share (settings older logs did not write are left out)."""
+    out = {}
+    for name in RUN_SETTINGS:
+        values = {json.dumps(r[name]) for r in records if name in r}
+        if len(values) > 1:
+            raise SystemExit(f"{root}: runs with different {name} ({', '.join(sorted(values))}) in one folder")
+        if values:
+            out[name] = json.loads(values.pop())
     return out
 
 
+def load_planner(root: str) -> Dict[tuple, dict]:
+    return {(r["task_folder"], r["obj_episode_id"]): r for r in planner_records(root)}
+
+
+VIDEO = re.compile(r"/(success|failure)_obj_episode_(\d+)(?:_[^/]*)?\.mp4$")
+
+
 def load_vla(roots: List[str]) -> Dict[tuple, float]:
-    """VLA success rate per (task, episode), averaged over every run folder given."""
-    runs = defaultdict(list)
-    for root in roots:
-        for task in TASKS:
-            for f in glob.glob(os.path.join(root, f"**/*{task}*/**/*.mp4"), recursive=True) + \
-                     glob.glob(os.path.join(root, task, "**/*.mp4"), recursive=True):
-                m = re.search(r"/(success|failure)_obj_episode_(\d+)_", f.replace("\\", "/"))
-                if m:
-                    runs[task, int(m.group(2)), root].append(m.group(1) == "success")
+    """VLA success rate per (task, episode), averaged over the run folders given. Inside one folder a
+    layout must have one outcome: a success and a failure video for it (a rerun, or a planner run
+    written to the same folder) stop the load instead of one of them being picked at random."""
     per_layout = defaultdict(list)
-    for (task, ep, _), v in runs.items():
-        per_layout[task, ep].append(float(v[0]))
+    for root in roots:
+        outcomes = defaultdict(set)
+        for task in TASKS:
+            files = set(glob.glob(os.path.join(root, f"**/*{task}*/**/*.mp4"), recursive=True)) | \
+                    set(glob.glob(os.path.join(root, task, "**/*.mp4"), recursive=True))
+            for f in files:
+                m = VIDEO.search(f.replace("\\", "/"))
+                if m:
+                    outcomes[task, int(m.group(2))].add(m.group(1) == "success")
+        for (task, ep), v in outcomes.items():
+            if len(v) > 1:
+                raise SystemExit(f"{root}: {task} episode {ep} has both a success and a failure video")
+            per_layout[task, ep].append(float(v.pop()))
     return {k: float(np.mean(v)) for k, v in per_layout.items()}
 
 
@@ -199,10 +241,13 @@ MODELS = {"logreg": Selector, "trees": BoostedTrees}
 
 
 def load_saved(path: str):
-    """A model written by --save, for `--controller selector`: (model, its feature names)."""
+    """A model written by --save, for `--controller selector`: (model, its feature names). The model's
+    `trained_on` holds the run settings of its training data, which the eval checks against its own."""
     with open(path) as fh:
         d = json.load(fh)
-    return MODELS[d["model"]].from_json(d), d["features"]
+    model = MODELS[d["model"]].from_json(d)
+    model.trained_on = d.get("trained_on") or {}
+    return model, d["features"]
 
 
 def load_layouts(planner_root: str, vla_roots: List[str], names: List[str] = FEATURES):
@@ -211,6 +256,11 @@ def load_layouts(planner_root: str, vla_roots: List[str], names: List[str] = FEA
     keys = [k for k in planner if k in vla]
     if not keys:
         raise SystemExit(f"no layouts with both planner and VLA results in {planner_root}")
+    unmatched = {"planner only": [k for k in planner if k not in vla], "VLA only": [k for k in vla if k not in planner]}
+    for side, ks in unmatched.items():
+        if ks:  # left out of every score, so say so
+            per_task = ", ".join(f"{t.split('-')[0]} {sum(k[0] == t for k in ks)}" for t in TASKS if any(k[0] == t for k in ks))
+            print(f"warning: {len(ks)} layouts {side} ({per_task}), left out: {planner_root} / {', '.join(vla_roots)}")
     x = np.stack([row_features(planner[k], names) for k in keys])
     y_plan = np.array([float(planner[k]["success"]) for k in keys])
     y_vla = np.array([vla[k] for k in keys])
@@ -271,6 +321,8 @@ def evaluate(planner_root: str, vla_roots: List[str], save: Optional[str] = None
         print_table(tx, ty_plan, ty_vla, ttasks, rule_rows(p_plan, p_vla, task_rate, ty_plan, ty_vla),
                     "held-out layouts", names)
     else:
+        if len(set(tasks)) < 2:  # every fold would be skipped and the table would show zeros as results
+            raise SystemExit(f"leave one task out needs at least 2 tasks; {planner_root} has {len(set(tasks))}")
         p_plan = {name: np.zeros(len(tasks)) for name in MODELS}
         p_vla, task_rate = np.zeros(len(tasks)), np.zeros(len(tasks))
         for task in TASKS:  # leave one task out: train on the other three, test on this one
@@ -287,7 +339,8 @@ def evaluate(planner_root: str, vla_roots: List[str], save: Optional[str] = None
                     "leave one task out", names)
     if save:
         with open(save, "w") as fh:
-            json.dump({"model": model, **MODELS[model]().fit(x, y_plan).to_json(), "features": names}, fh, indent=1)
+            json.dump({"model": model, **MODELS[model]().fit(x, y_plan).to_json(), "features": names,
+                       "trained_on": planner_settings(planner_records(planner_root), planner_root)}, fh, indent=1)
         print("saved", save)
 
 

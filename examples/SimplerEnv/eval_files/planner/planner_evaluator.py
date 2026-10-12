@@ -118,7 +118,10 @@ def run_maniskill2_eval_single_episode(
     # Initialize model
     # CHANGED: name the episode first, so the model can seed its own randomness per episode.
     if hasattr(model, "set_episode"):
-        model.set_episode(f"{env_name}/{layout_seed}/{obj_episode_id}")
+        if obj_variation_mode == "xy":  # no episode id here: the object and robot positions name the try
+            model.set_episode(f"{env_name}/xy/{obj_init_x}/{obj_init_y}/{robot_init_x}/{robot_init_y}")
+        else:
+            model.set_episode(f"{env_name}/{layout_seed}/{obj_episode_id}")
     model.reset(task_description)
 
     timestep = 0
@@ -160,7 +163,7 @@ def run_maniskill2_eval_single_episode(
     # CHANGED: let the model log its own per-episode record.
     if hasattr(model, "finish_episode"):
         model.finish_episode(success == "success", {
-            "env_name": env_name, "obj_episode_id": obj_episode_id, "steps": timestep,
+            "env_name": env_name, "obj_episode_id": obj_episode_id, "layout_seed": layout_seed, "steps": timestep,
             "episode_stats": {k: bool(v) if isinstance(v, (bool, np.bool_)) else v for k, v in episode_stats.items()},
         })
 

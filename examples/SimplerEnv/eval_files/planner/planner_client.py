@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "Robocasa_tabletop"
 from .geometry import (CameraView, DepthNoise, corridor_points, depth_roughness, ee_delta_action, mat_to_pose,
                        path_length, pose_to_mat, short_width)
 from .planners import FINGER_OPEN, WORKSPACE, RobotSpheres, make_planner
-from .selector import row_features
+from .selector import FEATURES_VERSION, row_features
 
 GRIPPER_OPEN, GRIPPER_CLOSED = 1.0, -1.0
 PLACE_PREPOSITIONS = (" onto ", " on ", " into ", " in ")
@@ -140,8 +140,15 @@ class PlannerClient:
         self.vla = vla
         # (model, feature names) from selector.load_saved; needs a VLA to give tries to.
         self.selector = selector
-        if selector is not None and vla is None:
-            raise ValueError("the selector mode needs a VLA")
+        if selector is not None:
+            if vla is None:
+                raise ValueError("the selector mode needs a VLA")
+            if robot_mask != "joints":  # with "sim" the plan features would use the simulator's segmentation
+                raise ValueError("the selector mode needs --robot-mask joints, so its features come from the camera only")
+            trained = getattr(selector[0], "trained_on", None) or {}
+            for name, value in (("depth_noise", depth_noise), ("robot_mask", robot_mask)):
+                if trained.get(name) not in (None, value):
+                    raise ValueError(f"the selector was trained with {name}={trained[name]}, but this run uses {value}")
         # Planner then VLA: the VLA takes over above the object. In the selector mode the planner
         # works exactly as in planner only, because that is what the selector was trained on.
         self.hand_off = vla is not None and selector is None
@@ -158,6 +165,7 @@ class PlannerClient:
         self.episode_key: Optional[str] = None
         # How the robot is cut out of the obstacle map: the simulator's segmentation ("sim"),
         # or spheres placed from the joint angles ("joints"), which a real robot can do too.
+        self.robot_mask = robot_mask
         self.robot_spheres = RobotSpheres() if robot_mask == "joints" else None
         self.sam3 = None
         if target_source == "camera":
@@ -185,7 +193,9 @@ class PlannerClient:
         self.hold_steps = 0
         self.step_count = 0
         self.noise.new_episode(self.episode_key)
-        self.stats = {"plans": [], "depth_noise": self.noise.level, "features": {}}
+        # The run settings go into every record, so the selector can refuse to mix runs.
+        self.stats = {"plans": [], "depth_noise": self.noise.level, "noise_seed": self.noise.seed,
+                      "robot_mask": self.robot_mask, "features_version": FEATURES_VERSION, "features": {}}
         self.ee_trace: List[np.ndarray] = []
         self.transit_contact = False
         self.place_goal = None

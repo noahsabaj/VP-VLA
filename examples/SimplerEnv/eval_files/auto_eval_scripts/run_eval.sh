@@ -44,7 +44,7 @@ vlm_base_port=4550
 
 MODEL_PATH=$1
 EVAL_NAME=${2:-${EVAL_NAME:-"eval_vp_vla_simpler_env"}}
-# Who drives the arm (KAN-22): CONTROLLER=vla|planner|planner_then_vla, PLANNER=mplib|curobo
+# Who drives the arm: CONTROLLER=vla|planner|planner_then_vla, PLANNER=mplib|curobo
 CONTROLLER=${CONTROLLER:-vla}
 PLANNER=${PLANNER:-mplib}
 PLANNER_ARGS="--controller ${CONTROLLER} --planner ${PLANNER}"

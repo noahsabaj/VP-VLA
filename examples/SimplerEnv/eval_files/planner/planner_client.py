@@ -1,4 +1,4 @@
-"""Planner stand-ins for ModelClientVP in SimplerEnv (KAN-22).
+"""Planner stand-ins for ModelClientVP in SimplerEnv.
 
 `PlannerClient` has the same reset()/step()/visualize_epoch() as ModelClientVP, but it
 also reads the full observation (`obs`) and the simulator (`env`), which our copy of the
@@ -331,7 +331,7 @@ class PlannerClient:
             return None
         found = {"center": np.median(pts[:, :2], axis=0), "top": float(np.percentile(pts[:, 2], 95)),
                  "bottom": float(np.percentile(pts[:, 2], 5)), "prompt": name, "points_xy": pts[:, :2]}
-        if truth is not None:  # KAN-22 check: how far the camera estimate is from the real object
+        if truth is not None:  # check: how far the camera estimate is from the real object
             center3 = np.r_[found["center"], 0.5 * (found["top"] + found["bottom"])]
             self.stats[f"{which}_error_xy"] = float(np.linalg.norm(found["center"] - truth["center"]))
             self.stats[f"{which}_error_3d"] = float(np.linalg.norm(center3 - truth["center3"]))

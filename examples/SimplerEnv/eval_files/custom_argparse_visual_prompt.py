@@ -126,7 +126,7 @@ def get_args():
                         help="Save overlay visualization videos for debugging")
     parser.add_argument("--overlay-video-dir", type=str, default="./overlay_videos")
 
-    # ===== Motion planner (KAN-22) =====
+    # ===== Motion planner =====
     parser.add_argument("--controller", type=str, default="vla", choices=["vla", "planner", "planner_then_vla"],
                         help="Who drives the arm: the VLA, a motion planner, or the planner then the VLA")
     parser.add_argument("--planner", type=str, default="mplib", choices=["mplib", "curobo"])

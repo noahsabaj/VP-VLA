@@ -1,4 +1,4 @@
-"""Planner stand-ins for ModelClientVP in SimplerEnv (KAN-22).
+"""Planner stand-ins for ModelClientVP in SimplerEnv.
 
 `PlannerClient` has the same reset()/step()/visualize_epoch() as ModelClientVP, but it
 also reads the full observation (`obs`) and the simulator (`env`), which our copy of the
@@ -8,7 +8,7 @@ test loop passes in. Three modes:
   object, move there, then hand every later step to the VLA.
 * planner only (`vla=None`): same approach, then a scripted grasp, lift, planned move to
   above the place target, and release.
-* selector (`vla` and `selector` given, KAN-72): after the planner's first look, the selector
+* selector (`vla` and `selector` given): after the planner's first look, the selector
   gives the whole try either to the planner (as in planner only) or to the VLA.
 
 Targets come from the camera: SAM3 masks the object named in the instruction, and the
@@ -436,7 +436,7 @@ class PlannerClient:
             return None
         found = {"center": np.median(pts[:, :2], axis=0), "top": float(np.percentile(pts[:, 2], 95)),
                  "bottom": float(np.percentile(pts[:, 2], 5)), "prompt": name, "points_xy": pts[:, :2]}
-        if truth is not None:  # KAN-22 check: how far the camera estimate is from the real object
+        if truth is not None:  # check: how far the camera estimate is from the real object
             center3 = np.r_[found["center"], 0.5 * (found["top"] + found["bottom"])]
             self.stats[f"{which}_error_xy"] = float(np.linalg.norm(found["center"] - truth["center"]))
             self.stats[f"{which}_error_3d"] = float(np.linalg.norm(center3 - truth["center3"]))

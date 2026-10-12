@@ -34,8 +34,8 @@ vlm_base_port=4550
 
 MODEL_PATH=$1
 EVAL_NAME=${2:-${EVAL_NAME:-"eval_vp_vla_simpler_env"}}
-# Who drives the arm (KAN-22): CONTROLLER=vla|planner|planner_then_vla|selector, PLANNER=mplib|curobo
-# CONTROLLER=selector (KAN-72) also needs SELECTOR=<model.json> from planner/selector.py --save.
+# Who drives the arm: CONTROLLER=vla|planner|planner_then_vla|selector, PLANNER=mplib|curobo
+# CONTROLLER=selector also needs SELECTOR=<model.json> from planner/selector.py --save.
 CONTROLLER=${CONTROLLER:-vla}
 PLANNER=${PLANNER:-mplib}
 PLANNER_ARGS="--controller ${CONTROLLER} --planner ${PLANNER}${SELECTOR:+ --selector ${SELECTOR}}"

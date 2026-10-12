@@ -1,4 +1,4 @@
-"""Adaptive selector (KAN-72): predict from the first frame whether the planner will succeed.
+"""Adaptive selector: predict from the first frame whether the planner will succeed.
 
 Training data is one row per layout: the camera features the planner logged before moving
 (`planner_stats.jsonl`, under "features" and "plans"), the planner's outcome, and the VLA's

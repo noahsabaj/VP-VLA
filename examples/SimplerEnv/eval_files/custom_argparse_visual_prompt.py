@@ -130,7 +130,7 @@ def get_args():
     parser.add_argument("--no-action-plots", action="store_true", default=False,
                         help="Do not save the per-episode action plot PNG (about 0.6 s per episode)")
 
-    # ===== Motion planner (KAN-22) =====
+    # ===== Motion planner =====
     parser.add_argument("--controller", type=str, default="vla",
                         choices=["vla", "planner", "planner_then_vla", "selector"],
                         help="Who drives the arm: the VLA, a motion planner, the planner then the VLA, or "

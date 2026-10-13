@@ -341,7 +341,9 @@ class PlannerClient:
                 self.stats["failure"] = "grasp missed"
                 self.phase = "done"
                 return
-            place = self._locate(None, obs, env, which="place")
+            # One frame, one noisy depth picture: the target estimate and the obstacle map share it.
+            self.view = self._obstacle_view(obs, qpos)
+            place = self._locate(None, obs, env, which="place", view=self.view)
             if place is None:
                 self.stats["failure"] = "place target not found"
                 self.phase = "done"
@@ -349,7 +351,6 @@ class PlannerClient:
             self.place_top = place["top"]
             goal = np.concatenate([[place["center"][0], place["center"][1],
                                     max(place["top"] + self.place_height, target[2])], self.home_orientation])
-            self.view = self._obstacle_view(obs, qpos)
             self.view.ignore_sphere = (ee_pose_from_obs(obs)[:3], 0.08)  # the held object
             if not self._plan_to(qpos, goal, "place"):
                 self.phase = "done"

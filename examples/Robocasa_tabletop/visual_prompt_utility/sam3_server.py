@@ -308,12 +308,12 @@ class SAM3Server:
 
         elif mtype == "segment_batch":  # several prompts on one image; data is a list of segment results
             try:
-                data = self._model.segment_many(
-                    msg["image"],
-                    list(msg["text_prompts"]),
-                    threshold=msg.get("threshold", 0.5),
-                    mask_threshold=msg.get("mask_threshold", 0.5),
-                )
+                image, prompts = msg["image"], list(msg["text_prompts"])
+                kwargs = {"threshold": msg.get("threshold", 0.5), "mask_threshold": msg.get("mask_threshold", 0.5)}
+                if hasattr(self._model, "segment_many"):
+                    data = self._model.segment_many(image, prompts, **kwargs)
+                else:  # SAM 3.1 has no batched forward: one prompt at a time
+                    data = [self._model.segment(image, p, **kwargs) for p in prompts]
                 return {"status": "ok", "ok": True, "type": "segment_batch_result", "request_id": req_id, "data": data}
             except Exception as e:
                 logging.exception("SAM3 batch segmentation error (request_id=%s)", req_id)
@@ -360,7 +360,9 @@ def main():
     logging.basicConfig(level=logging.INFO, force=True)
     parser = build_argparser()
     args = parser.parse_args()
-    
+    if args.sam_version == "sam3.1" and (args.fp16 or args.compile):
+        parser.error("--fp16 and --compile are for --sam-version sam3 only (SAM 3.1 always runs under bf16 autocast)")
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.backends.cuda.matmul.allow_tf32 = args.tf32
     logging.info(f"TF32 matmuls: {args.tf32}")

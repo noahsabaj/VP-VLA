@@ -178,13 +178,14 @@ class VLMModel:
     """Wrapper for Qwen3-VL model for single-gripper subtask detection."""
 
     def __init__(self, model_path: str, device: str = "cuda", attn_implementation: str = "flash_attention_2",
-                 seed_per_query: bool = False, compile: bool = False):
+                 seed_per_query: bool = False, compile: bool = False, seed_offset: int = 0):
         from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
         from PIL import Image
 
         self.device = device
         self.Image = Image
         self.seed_per_query = seed_per_query
+        self.seed_offset = seed_offset
 
         logging.info(f"Loading Qwen3-VL model from {model_path}")
         self.model = Qwen3VLForConditionalGeneration.from_pretrained(
@@ -198,7 +199,7 @@ class VLMModel:
         if compile:
             self._compile()
         logging.info(f"Qwen3-VL model loaded successfully (attention: {attn_implementation}, "
-                     f"seed per query: {seed_per_query}, compiled: {compile})")
+                     f"seed per query: {seed_per_query}, seed offset: {seed_offset}, compiled: {compile})")
 
     def _compile(self) -> None:
         """Compile the small per-layer operations of the language model (RMSNorm, MLP, rotary), so that their
@@ -223,10 +224,13 @@ class VLMModel:
 
     def _seed(self, inputs) -> None:
         """The model samples its answers. Seed each query from its tokens and pixels, so the same
-        query gets the same answer whatever was asked before (run order, chunks, parallel clients)."""
+        query gets the same answer whatever was asked before (run order, chunks, parallel clients).
+        A seed offset other than 0 gives every query another seed, for repeat runs with new answers."""
         if not self.seed_per_query:
             return
         h = hashlib.blake2b(digest_size=8)
+        if self.seed_offset:  # offset 0 keeps the seeds of the runs made before the offset existed
+            h.update(f"seed offset {self.seed_offset}".encode())
         for key in sorted(inputs.keys()):
             value = inputs[key]
             if torch.is_tensor(value):
@@ -510,6 +514,8 @@ def build_argparser():
                         help="Attention kernel; sdpa is about 1.2x faster here (answers are sampled, so they change)")
     parser.add_argument("--seed-per-query", action="store_true",
                         help="Seed the sampling from each query's content, so answers do not depend on run order")
+    parser.add_argument("--seed-offset", type=int, default=0,
+                        help="With --seed-per-query: another seed for every query, for repeat runs (0 = the old seeds)")
     parser.add_argument("--compile", action="store_true",
                         help="Compile the small layer operations at startup (about 18%% less GPU time per query; "
                              "answers change a little)")
@@ -528,7 +534,7 @@ def main():
     logging.info(f"Starting VLM SimplerEnv server (host: {hostname}, ip: {local_ip})")
 
     model = VLMModel(model_path=args.model_path, device=device, attn_implementation=args.attn,
-                     seed_per_query=args.seed_per_query, compile=args.compile)
+                     seed_per_query=args.seed_per_query, compile=args.compile, seed_offset=args.seed_offset)
     server = VLMServer(model=model, host="0.0.0.0", port=args.port, idle_timeout=args.idle_timeout)
     server.serve_forever()
 

@@ -95,6 +95,10 @@ class MPlibPlanner:
         self.planning_time = planning_time
         self.cloud_voxel = cloud_voxel
 
+    def seed(self, seed: int) -> None:
+        """Seed MPlib's random steps (the IK's random restarts, RRT, FCL), so the same problem gets the same plan."""
+        self._mplib.set_global_seed(seed)
+
     def fk(self, q_arm: np.ndarray) -> np.ndarray:
         model = self.planner.pinocchio_model
         model.compute_forward_kinematics(np.concatenate([q_arm[:ARM_DOF], [FINGER_OPEN, FINGER_OPEN]]))

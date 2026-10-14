@@ -20,6 +20,7 @@ import json
 import math
 import re
 import sys
+import zlib
 from pathlib import Path
 from typing import List, Optional
 
@@ -134,6 +135,7 @@ class PlannerClient:
         noise_seed: Optional[int] = None,
         robot_mask: str = "sim",
         selector=None,
+        planner_seed: Optional[int] = None,
     ) -> None:
         self.planner = make_planner(planner)
         self.planner_name = planner
@@ -162,6 +164,11 @@ class PlannerClient:
         self.grasp_retries = grasp_retries
         self.log_path = log_path
         self.noise = DepthNoise(depth_noise, noise_seed)
+        # The planner's random steps (MPlib: IK restarts, RRT) are seeded per episode like the depth noise, so a
+        # try plans the same in every run, whatever ran before it in the process. None leaves them unseeded.
+        if planner_seed is not None and not hasattr(self.planner, "seed"):
+            raise ValueError(f"--planner-seed needs a planner that can be seeded (mplib), not {planner}")
+        self.planner_seed = planner_seed
         self.episode_key: Optional[str] = None
         # How the robot is cut out of the obstacle map: the simulator's segmentation ("sim"),
         # or spheres placed from the joint angles ("joints"), which a real robot can do too.
@@ -177,7 +184,7 @@ class PlannerClient:
     # ------------------------------------------------------------------ episode
 
     def set_episode(self, key: str) -> None:
-        """Called by planner_evaluator before reset(): this episode's depth noise comes from `key`."""
+        """Called by planner_evaluator before reset(): this episode's depth noise and planner seed come from `key`."""
         self.episode_key = key
 
     def reset(self, task_description: str) -> None:
@@ -193,9 +200,12 @@ class PlannerClient:
         self.hold_steps = 0
         self.step_count = 0
         self.noise.new_episode(self.episode_key)
+        if self.planner_seed is not None:
+            self.planner.seed(zlib.crc32(f"{self.planner_seed}/{self.episode_key}".encode()) % 2147483647 + 1)
         # The run settings go into every record, so the selector can refuse to mix runs.
         self.stats = {"plans": [], "depth_noise": self.noise.level, "noise_seed": self.noise.seed,
-                      "robot_mask": self.robot_mask, "features_version": FEATURES_VERSION, "features": {}}
+                      "planner_seed": self.planner_seed, "robot_mask": self.robot_mask,
+                      "features_version": FEATURES_VERSION, "features": {}}
         self.ee_trace: List[np.ndarray] = []
         self.transit_contact = False
         self.place_goal = None

@@ -41,8 +41,12 @@ PLANNER=${PLANNER:-mplib}
 # Planner camera: ROBOT_MASK=sim|joints, DEPTH_NOISE=none|realistic|harsh, NOISE_SEED=N. The selector needs
 # ROBOT_MASK=joints (its default here), so its features come from the camera only.
 ROBOT_MASK=${ROBOT_MASK:-$([ "${CONTROLLER}" = "selector" ] && echo joints || echo sim)}
+# PLANNER_SEED=N seeds the planner's random steps per try. A selector run's planner tries equal planner-only
+# tries only with the same seed, so the selector gets PLANNER_SEED=0 by default (give the planner-only run it too).
+PLANNER_SEED=${PLANNER_SEED:-$([ "${CONTROLLER}" = "selector" ] && echo 0)}
 PLANNER_ARGS="--controller ${CONTROLLER} --planner ${PLANNER}${SELECTOR:+ --selector ${SELECTOR}} --robot-mask ${ROBOT_MASK}"
 PLANNER_ARGS="${PLANNER_ARGS}${DEPTH_NOISE:+ --depth-noise ${DEPTH_NOISE}}${NOISE_SEED:+ --noise-seed ${NOISE_SEED}}"
+PLANNER_ARGS="${PLANNER_ARGS}${PLANNER_SEED:+ --planner-seed ${PLANNER_SEED}}"
 # Extra VLM server options. A selector run gives some tries to the VLA; they equal VLA-only tries only if
 # the VLM's sampled answers do not depend on the tries before them, so it needs --seed-per-query (and so
 # does the VLA-only run it is compared with).

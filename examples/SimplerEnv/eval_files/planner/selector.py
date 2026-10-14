@@ -55,7 +55,7 @@ FEATURE_SETS = {"v1": FEATURES, "v2": FEATURES_V2, "v3": FEATURES_V3}
 # only after a successful grasp, so their place features give the outcome away.
 FEATURES_VERSION = 2
 # Settings a folder's runs must share; --save stores them and the eval checks them.
-RUN_SETTINGS = ("depth_noise", "noise_seed", "robot_mask", "layout_seed")
+RUN_SETTINGS = ("depth_noise", "noise_seed", "robot_mask", "layout_seed", "planner_seed")
 
 
 def row_features(record: dict, names: List[str] = FEATURES) -> np.ndarray:

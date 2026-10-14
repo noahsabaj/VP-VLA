@@ -77,6 +77,7 @@ if __name__ == "__main__":
             depth_noise=args.depth_noise,
             noise_seed=args.noise_seed,
             robot_mask=args.robot_mask,
+            planner_seed=args.planner_seed,
         )
 
     success_arr = maniskill2_evaluator(model, args)

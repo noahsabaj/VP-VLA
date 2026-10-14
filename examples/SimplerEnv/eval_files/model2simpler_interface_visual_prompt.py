@@ -73,6 +73,8 @@ class ModelClientVP:
         overlay_video_dir: str = "./overlay_videos",
         # VLM-based task decomposition (alternative to rule-based parse_explicit_task)
         vlm_decompose_subtasks: bool = False,
+        # Folder for the policy's hidden states on each try's first step (for probes); None = off
+        hidden_dir: Optional[str] = None,
     ) -> None:
         self.client = WebsocketClientPolicy(host, port)
 
@@ -178,8 +180,26 @@ class ModelClientVP:
         if save_overlay_video:
             os.makedirs(overlay_video_dir, exist_ok=True)
 
+        self.hidden_dir = hidden_dir
+        self._episode_key: Optional[str] = None
+        self._episode_count = 0
+        if hidden_dir:
+            os.makedirs(hidden_dir, exist_ok=True)
+
         # Track gripper action history for visualization
         self.gripper_action_history = []
+
+    def set_episode(self, key: str) -> None:
+        """Called by planner_evaluator before reset(): names the file of this try's hidden states."""
+        self._episode_key = key
+
+    def _save_hidden(self, data: dict, lang: str) -> None:
+        if "action_hidden" not in data:
+            raise RuntimeError("the policy server returned no hidden states (its framework ignores return_hidden)")
+        name = (self._episode_key or f"episode_{self._episode_count}").replace("/", "_")
+        np.savez(os.path.join(self.hidden_dir, name + ".npz"), hidden=data["action_hidden"][0],
+                 layers=np.array(data["action_hidden_layers"]), lang=np.array(lang))
+        self._episode_count += 1
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
         self.image_history.append(image)
@@ -412,8 +432,13 @@ class ModelClientVP:
             "use_ddim": self.use_ddim,
             "num_ddim_steps": self.num_ddim_steps,
         }
+        first_step = self.hidden_dir is not None and self._step_count == 1
+        if first_step:
+            vla_input["return_hidden"] = True
 
         response = self.client.predict_action(vla_input)
+        if first_step:
+            self._save_hidden(response["data"], current_instruction)
 
         # Unnormalize the action
         normalized_actions = response["data"]["normalized_actions"]  # B, chunk, D

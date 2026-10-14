@@ -202,7 +202,15 @@ class Qwenvl_OFT(baseframework):
             pred_actions = self.action_model.predict_action(action_queries)  # (B, chunk_len, action_dim)
 
         normalized_actions = pred_actions.detach().float().cpu().numpy()
-        return {"normalized_actions": normalized_actions}
+        out = {"normalized_actions": normalized_actions}
+        if kwargs.get("return_hidden"):  # for probes: the action tokens' hidden states, mean over the chunk
+            layers = qwenvl_outputs.hidden_states  # the embeddings, then one per layer
+            picks = [len(layers) // 2, 3 * len(layers) // 4, len(layers) - 1]
+            hidden = [self._gather_action_token_embeddings(layers[i], input_ids, action_token_id=self.action_token_id)
+                      .float().mean(1) for i in picks]
+            out["action_hidden"] = torch.stack(hidden, 1).cpu().numpy()  # [B, 3, H]
+            out["action_hidden_layers"] = picks
+        return out
 
     def _gather_action_token_embeddings(
         self,

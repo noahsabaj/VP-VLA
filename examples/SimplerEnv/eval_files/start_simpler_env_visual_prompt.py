@@ -54,6 +54,7 @@ if __name__ == "__main__":
             # Overlay video
             save_overlay_video=args.save_overlay_video,
             overlay_video_dir=args.overlay_video_dir,
+            hidden_dir=args.vla_hidden_dir,
         )
 
     if args.controller == "vla":

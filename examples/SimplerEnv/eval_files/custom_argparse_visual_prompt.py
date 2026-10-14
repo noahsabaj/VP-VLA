@@ -140,6 +140,8 @@ def get_args():
     parser.add_argument("--planner", type=str, default="mplib", choices=["mplib", "curobo"])
     parser.add_argument("--target-source", type=str, default="camera", choices=["camera", "sim"],
                         help="Where the planner's targets come from (sim = simulator poses, debugging only)")
+    parser.add_argument("--planner-sam3-port", type=int, default=None,
+                        help="SAM3 server for the planner (default: the VLA's, --sam3-port), so the two can use different SAM3 settings")
     parser.add_argument("--pregrasp-height", type=float, default=0.06,
                         help="Meters above the object's top where the planner stops")
     parser.add_argument("--planner-log", type=str, default=None,

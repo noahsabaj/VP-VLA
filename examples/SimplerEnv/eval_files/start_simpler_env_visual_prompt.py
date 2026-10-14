@@ -69,7 +69,7 @@ if __name__ == "__main__":
             vla=make_vla() if args.controller in ("planner_then_vla", "selector") else None,
             selector=load_saved(args.selector) if args.controller == "selector" else None,
             sam3_host=args.sam3_host,
-            sam3_port=args.sam3_port,
+            sam3_port=args.sam3_port if args.planner_sam3_port is None else args.planner_sam3_port,
             target_source=args.target_source,
             pregrasp_height=args.pregrasp_height,
             log_path=args.planner_log or os.path.join(args.logging_dir, "planner_stats.jsonl"),

@@ -8,6 +8,7 @@ The changes, marked "CHANGED":
    can be checked on layouts nothing was tuned on. Off by default.
 4. Before each episode, `model.set_episode(key)` is called if the model has it, so the planner can
    seed its depth noise per episode.
+5. `action_plots=False` (`--no-action-plots`) skips the per-episode action plot. On by default.
 Everything else is unchanged, so the AI-only setup behaves exactly as with SimplerEnv's loop.
 """
 
@@ -192,6 +193,7 @@ def run_maniskill2_eval_single_episode(
     write_video(video_path, images, fps=5)
 
     # save action trajectory
+    # CHANGED: optionally skip the action plot.
     if action_plots:
         action_path = video_path.replace(".mp4", ".png")
         action_root = os.path.dirname(action_path) + "/actions/"

@@ -8,6 +8,7 @@ depth picture into its own map. `plan()` returns joint waypoints, `fk()` the han
 import os
 import shutil
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -74,12 +75,12 @@ class RobotSpheres:
         return np.concatenate(out, axis=0)
 
 
+@dataclass
 class PlanResult:
-    def __init__(self, success: bool, path: Optional[np.ndarray], plan_time: float, status: str):
-        self.success = success
-        self.path = path  # (N, 6) joint waypoints, first row is the start
-        self.plan_time = plan_time
-        self.status = status
+    success: bool
+    path: Optional[np.ndarray]  # (N, 6) joint waypoints, first row is the start
+    plan_time: float
+    status: str
 
 
 class MPlibPlanner:

@@ -147,13 +147,14 @@ class PlannerClient:
                 raise ValueError("the selector mode needs a VLA")
             if robot_mask != "joints":  # with "sim" the plan features would use the simulator's segmentation
                 raise ValueError("the selector mode needs --robot-mask joints, so its features come from the camera only")
-            trained = getattr(selector[0], "trained_on", None) or {}
+            trained = selector[0].trained_on
             for name, value in (("depth_noise", depth_noise), ("robot_mask", robot_mask)):
                 if trained.get(name) not in (None, value):
                     raise ValueError(f"the selector was trained with {name}={trained[name]}, but this run uses {value}")
+        self.mode = "selector" if selector is not None else "planner_then_vla" if vla is not None else "planner"
         # Planner then VLA: the VLA takes over above the object. In the selector mode the planner
         # works exactly as in planner only, because that is what the selector was trained on.
-        self.hand_off = vla is not None and selector is None
+        self.hand_off = self.mode == "planner_then_vla"
         self.target_source = target_source
         self.pregrasp_height = pregrasp_height
         self.place_height = place_height
@@ -215,8 +216,7 @@ class PlannerClient:
     def finish_episode(self, success: bool, info: dict) -> None:
         if self.log_path is None:
             return
-        mode = "selector" if self.selector is not None else "planner_then_vla" if self.vla is not None else "planner"
-        record = {"planner": self.planner_name, "mode": mode,
+        record = {"planner": self.planner_name, "mode": self.mode,
                   "task": self.task_description, "success": bool(success), **info, **self.stats,
                   "ee_path_length_planner": path_length(np.array(self.ee_trace)) if self.ee_trace else 0.0,
                   "transit_contact": self.transit_contact}
@@ -247,10 +247,8 @@ class PlannerClient:
             self._start(image, obs, env, qpos, target)
             if self.selector is not None:
                 self._choose()
-        if self.phase == "vla":
-            return self.vla.step(image, task_description)
-        if self.phase == "done":
-            return self._action(target, target, ee_pose, terminate=True)
+        if (out := self._end_action(image, task_description, target, ee_pose)) is not None:
+            return out
 
         if self.phase.startswith("transit"):
             self.ee_trace.append(ee_pose[:3])
@@ -265,13 +263,19 @@ class PlannerClient:
 
         if not self.queue:
             self._next_phase(env, obs, qpos, target)
-            if self.phase == "vla":
-                return self.vla.step(image, task_description)
-            if self.phase == "done":
-                return self._action(target, target, ee_pose, terminate=True)
+            if (out := self._end_action(image, task_description, target, ee_pose)) is not None:
+                return out
             if self.hold_steps > 0 or not self.queue:
                 return self._action(target, target, ee_pose)
         return self._action(target, self.queue.pop(0), ee_pose)
+
+    def _end_action(self, image, task_description, target, ee_pose):
+        """Once the planner's part is over: the VLA's action (phase "vla") or a stop (phase "done"); else None."""
+        if self.phase == "vla":
+            return self.vla.step(image, task_description)
+        if self.phase == "done":
+            return self._action(target, target, ee_pose, terminate=True)
+        return None
 
     # ------------------------------------------------------------------- phases
 
@@ -470,11 +474,11 @@ class PlannerClient:
         scores = np.sort(np.asarray(scores, dtype=float))
         m = np.asarray(mask).astype(bool)
         f[f"{which}_sam3_score"] = float(scores[-1])
-        f[f"{which}_sam3_count"] = int(len(scores))
+        f[f"{which}_sam3_count"] = len(scores)
         # second-best over best SAM3 score: near 1 when two objects look alike
         f[f"{which}_sam3_ambiguity"] = float(scores[-2] / max(scores[-1], 1e-6)) if len(scores) > 1 else 0.0
         f[f"{which}_mask_px"] = int(m.sum())
-        f[f"{which}_points"] = int(len(pts))
+        f[f"{which}_points"] = len(pts)
         f[f"{which}_valid_depth_frac"] = float((m & (view.depth > 1e-3) & (view.depth < 2.0)).sum() / max(m.sum(), 1))
         roughness = depth_roughness(view.depth, m)
         f[f"{which}_depth_roughness"] = roughness

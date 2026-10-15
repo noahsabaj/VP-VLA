@@ -1,9 +1,13 @@
 """Our copy of SimplerEnv's test loop (simpler_env/evaluation/maniskill2_evaluator.py, commit 06accac).
 
-Two changes, both marked "CHANGED":
+The changes, marked "CHANGED":
 1. `model.step()` also gets the full observation and the simulator (`obs=obs, env=env`),
    so a planner can see depth, camera settings and joint angles. ModelClientVP ignores them.
 2. After each episode, `model.finish_episode(success, info)` is called if the model has it.
+3. `layout_seed` (optional): swap the task's 24 fixed layouts for new random ones, so results
+   can be checked on layouts nothing was tuned on. Off by default.
+4. Before each episode, `model.set_episode(key)` is called if the model has it, so the planner can
+   seed its depth noise per episode.
 Everything else is unchanged, so the AI-only setup behaves exactly as with SimplerEnv's loop.
 """
 
@@ -40,6 +44,8 @@ def run_maniskill2_eval_single_episode(
     enable_raytracing=False,
     additional_env_save_tags=None,
     logging_dir="./results",
+    layout_seed=None,
+    action_plots=True,
 ):
 
     if additional_env_build_kwargs is None:
@@ -67,6 +73,10 @@ def run_maniskill2_eval_single_episode(
         **additional_env_build_kwargs,
         **kwargs,
     )
+
+    # CHANGED: optionally replace the task's fixed layouts with held-out random ones.
+    if layout_seed is not None:
+        randomize_layouts(env.unwrapped, layout_seed)
 
     # initialize environment
     env_reset_options = {
@@ -106,6 +116,12 @@ def run_maniskill2_eval_single_episode(
     predicted_terminated, done, truncated = False, False, False
 
     # Initialize model
+    # CHANGED: name the episode first, so the model can seed its own randomness per episode.
+    if hasattr(model, "set_episode"):
+        if obj_variation_mode == "xy":  # no episode id here: the object and robot positions name the try
+            model.set_episode(f"{env_name}/xy/{obj_init_x}/{obj_init_y}/{robot_init_x}/{robot_init_y}")
+        else:
+            model.set_episode(f"{env_name}/{layout_seed}/{obj_episode_id}")
     model.reset(task_description)
 
     timestep = 0
@@ -147,7 +163,7 @@ def run_maniskill2_eval_single_episode(
     # CHANGED: let the model log its own per-episode record.
     if hasattr(model, "finish_episode"):
         model.finish_episode(success == "success", {
-            "env_name": env_name, "obj_episode_id": obj_episode_id, "steps": timestep,
+            "env_name": env_name, "obj_episode_id": obj_episode_id, "layout_seed": layout_seed, "steps": timestep,
             "episode_stats": {k: bool(v) if isinstance(v, (bool, np.bool_)) else v for k, v in episode_stats.items()},
         })
 
@@ -176,13 +192,46 @@ def run_maniskill2_eval_single_episode(
     write_video(video_path, images, fps=5)
 
     # save action trajectory
-    action_path = video_path.replace(".mp4", ".png")
-    action_root = os.path.dirname(action_path) + "/actions/"
-    os.makedirs(action_root, exist_ok=True)
-    action_path = action_root + os.path.basename(action_path)
-    model.visualize_epoch(predicted_actions, images, save_path=action_path)
+    if action_plots:
+        action_path = video_path.replace(".mp4", ".png")
+        action_root = os.path.dirname(action_path) + "/actions/"
+        os.makedirs(action_root, exist_ok=True)
+        action_path = action_root + os.path.basename(action_path)
+        model.visualize_epoch(predicted_actions, images, save_path=action_path)
 
     return success == "success"
+
+
+def randomize_layouts(env, seed: int, n_xy: int = 12, n_quat: int = 4, margin: float = 0.03,
+                      min_gap: float = 0.08) -> None:
+    """Replace a bridge task's layout lists with random ones drawn near the original layouts.
+
+    Episode ids then index n_xy * n_quat new layouts (48 by default). Object positions are drawn
+    uniformly in each object's original area plus `margin`, keeping the two objects `min_gap`
+    apart unless the target never moves (eggplant). The object to move gets a random turn about
+    the vertical on top of its first original orientation; the target keeps its orientation.
+    Same seed, same layouts.
+    """
+    from transforms3d.euler import euler2quat
+    from transforms3d.quaternions import qmult
+
+    rng = np.random.default_rng(seed)
+    xys = np.array(env._xy_configs)  # (K, 2 objects, 2)
+    lo, hi = xys.min(axis=0) - margin, xys.max(axis=0) + margin
+    fixed_target = np.ptp(xys[:, 1], axis=0).max() < 1e-6
+    if fixed_target:
+        lo[1] = hi[1] = xys[0, 1]
+    new_xy = []
+    while len(new_xy) < n_xy:
+        pair = rng.uniform(lo, hi)
+        if fixed_target or np.linalg.norm(pair[0] - pair[1]) >= min_gap:
+            new_xy.append(pair)
+    base = np.array(env._quat_configs[0])
+    new_quat = []
+    for _ in range(n_quat):
+        turn = euler2quat(0, 0, rng.uniform(-np.pi, np.pi))
+        new_quat.append(np.array([qmult(turn, base[0]), base[1]]))
+    env._xy_configs, env._quat_configs = new_xy, new_quat
 
 
 def maniskill2_evaluator(model, args):
@@ -212,6 +261,8 @@ def maniskill2_evaluator(model, args):
                     additional_env_save_tags=args.additional_env_save_tags,
                     obs_camera_name=args.obs_camera_name,
                     logging_dir=args.logging_dir,
+                    layout_seed=getattr(args, "layout_seed", None),
+                    action_plots=not getattr(args, "no_action_plots", False),
                 )
                 if args.obj_variation_mode == "xy":
                     for obj_init_x in args.obj_init_xs:

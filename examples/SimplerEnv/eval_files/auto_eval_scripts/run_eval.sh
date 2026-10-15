@@ -44,10 +44,26 @@ vlm_base_port=4550
 
 MODEL_PATH=$1
 EVAL_NAME=${2:-${EVAL_NAME:-"eval_vp_vla_simpler_env"}}
-# Who drives the arm: CONTROLLER=vla|planner|planner_then_vla, PLANNER=mplib|curobo
+# Who drives the arm: CONTROLLER=vla|planner|planner_then_vla|selector, PLANNER=mplib|curobo
+# CONTROLLER=selector also needs SELECTOR=<model.json> from planner/selector.py --save.
 CONTROLLER=${CONTROLLER:-vla}
 PLANNER=${PLANNER:-mplib}
-PLANNER_ARGS="--controller ${CONTROLLER} --planner ${PLANNER}"
+# Planner camera: ROBOT_MASK=sim|joints, DEPTH_NOISE=none|realistic|harsh, NOISE_SEED=N. The selector needs
+# ROBOT_MASK=joints (its default here), so its features come from the camera only.
+ROBOT_MASK=${ROBOT_MASK:-$([ "${CONTROLLER}" = "selector" ] && echo joints || echo sim)}
+# PLANNER_SEED=N seeds the planner's random steps per try. A selector run's planner tries equal planner-only
+# tries only with the same seed, so the selector gets PLANNER_SEED=0 by default (give the planner-only run it too).
+PLANNER_SEED=${PLANNER_SEED:-$([ "${CONTROLLER}" = "selector" ] && echo 0)}
+PLANNER_ARGS="--controller ${CONTROLLER} --planner ${PLANNER}${SELECTOR:+ --selector ${SELECTOR}} --robot-mask ${ROBOT_MASK}"
+PLANNER_ARGS="${PLANNER_ARGS}${DEPTH_NOISE:+ --depth-noise ${DEPTH_NOISE}}${NOISE_SEED:+ --noise-seed ${NOISE_SEED}}"
+PLANNER_ARGS="${PLANNER_ARGS}${PLANNER_SEED:+ --planner-seed ${PLANNER_SEED}}"
+# Extra VLM server options. A selector run gives some tries to the VLA; they equal VLA-only tries only if
+# the VLM's sampled answers do not depend on the tries before them, so it needs --seed-per-query (and so
+# does the VLA-only run it is compared with).
+VLM_ARGS=${VLM_ARGS:-}
+if [ "${CONTROLLER}" = "selector" ] && [[ " ${VLM_ARGS} " != *" --seed-per-query "* ]]; then
+  VLM_ARGS="${VLM_ARGS} --seed-per-query"
+fi
 TSET_NUM=1
 run_count=0
 
@@ -140,7 +156,7 @@ start_vlm_service() {
   echo "Starting VLM server (SimplerEnv single-gripper) on GPU ${gpu_id}, port ${port}"
   CUDA_VISIBLE_DEVICES=${gpu_id} ${sam3_python} \
     examples/SimplerEnv/eval_files/vlm_server_subtask_simpler.py \
-    --port ${port} \
+    --port ${port} ${VLM_ARGS} \
     > "${svc_log}" 2>&1 &
 
   local pid=$!

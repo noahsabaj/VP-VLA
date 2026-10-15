@@ -42,6 +42,7 @@ if __name__ == "__main__":
             target_location_prompt_mode=args.target_location_prompt_mode,
             sam3_threshold=args.sam3_threshold,
             sam3_mask_threshold=args.sam3_mask_threshold,
+            sam3_batch_prompts=args.sam3_batch_prompts,
             # VLM options
             use_vlm=args.use_vlm,
             vlm_host=args.vlm_host,
@@ -53,21 +54,30 @@ if __name__ == "__main__":
             # Overlay video
             save_overlay_video=args.save_overlay_video,
             overlay_video_dir=args.overlay_video_dir,
+            hidden_dir=args.vla_hidden_dir,
         )
 
     if args.controller == "vla":
         model = make_vla()
     else:
         from examples.SimplerEnv.eval_files.planner.planner_client import PlannerClient
+        from examples.SimplerEnv.eval_files.planner.selector import load_saved
 
+        if args.controller == "selector" and not args.selector:
+            raise SystemExit("--controller selector needs --selector <model.json>")
         model = PlannerClient(
             planner=args.planner,
-            vla=make_vla() if args.controller == "planner_then_vla" else None,
+            vla=make_vla() if args.controller in ("planner_then_vla", "selector") else None,
+            selector=load_saved(args.selector) if args.controller == "selector" else None,
             sam3_host=args.sam3_host,
-            sam3_port=args.sam3_port,
+            sam3_port=args.sam3_port if args.planner_sam3_port is None else args.planner_sam3_port,
             target_source=args.target_source,
             pregrasp_height=args.pregrasp_height,
             log_path=args.planner_log or os.path.join(args.logging_dir, "planner_stats.jsonl"),
+            depth_noise=args.depth_noise,
+            noise_seed=args.noise_seed,
+            robot_mask=args.robot_mask,
+            planner_seed=args.planner_seed,
         )
 
     success_arr = maniskill2_evaluator(model, args)

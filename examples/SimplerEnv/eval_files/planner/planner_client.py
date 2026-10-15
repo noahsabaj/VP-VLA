@@ -2,12 +2,14 @@
 
 `PlannerClient` has the same reset()/step()/visualize_epoch() as ModelClientVP, but it
 also reads the full observation (`obs`) and the simulator (`env`), which our copy of the
-test loop passes in. Two modes:
+test loop passes in. Three modes:
 
 * planner then VLA (`vla` given): plan from the camera to a pre-grasp spot above the
   object, move there, then hand every later step to the VLA.
 * planner only (`vla=None`): same approach, then a scripted grasp, lift, planned move to
   above the place target, and release.
+* selector (`vla` and `selector` given): after the planner's first look, the selector
+  gives the whole try either to the planner (as in planner only) or to the VLA.
 
 Targets come from the camera: SAM3 masks the object named in the instruction, and the
 masked depth pixels give its 3D position. `target_source="sim"` reads them from the
@@ -15,20 +17,23 @@ simulator instead (debugging only). One JSON line per episode is written to `log
 """
 
 import json
-import logging
 import math
 import re
 import sys
+import zlib
 from pathlib import Path
 from typing import List, Optional
 
+import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "Robocasa_tabletop" / "visual_prompt_utility"))
 
-from .geometry import CameraView, ee_delta_action, mat_to_pose, path_length, pose_to_mat
-from .planners import make_planner
+from .geometry import (CameraView, DepthNoise, corridor_points, depth_roughness, ee_delta_action, mat_to_pose,
+                       path_length, pose_to_mat, short_width)
+from .planners import FINGER_OPEN, WORKSPACE, RobotSpheres, make_planner
+from .selector import FEATURES_VERSION, row_features
 
 GRIPPER_OPEN, GRIPPER_CLOSED = 1.0, -1.0
 PLACE_PREPOSITIONS = (" onto ", " on ", " into ", " in ")
@@ -53,16 +58,24 @@ def ee_pose_from_obs(obs) -> np.ndarray:
 def grasp_orientation(home_quat: np.ndarray, points_xy: Optional[np.ndarray]) -> np.ndarray:
     """Turn the hand about the vertical so the fingers close across the object's short side.
 
-    The fingers close along the hand's y axis; the object's long side comes from PCA of its
-    top-down points. Without points, keep the starting orientation.
+    The fingers close along the hand's y axis. For long objects the long side comes from PCA of
+    the top-down points. For squarish ones (a cube) PCA's axis is arbitrary and can put the
+    fingers on the corners, so use the smallest rectangle around the points to find a face.
+    Without points, keep the starting orientation.
     """
     if points_xy is None or len(points_xy) < 10:
         return home_quat
     home = Rotation.from_quat(home_quat[[1, 2, 3, 0]])
     closing = home.as_matrix()[:2, 1]
     centered = points_xy - points_xy.mean(axis=0)
-    major = np.linalg.eigh(centered.T @ centered)[1][:, -1]
-    want = np.arctan2(major[0], -major[1])  # perpendicular to the long side
+    evals, evecs = np.linalg.eigh(centered.T @ centered)
+    if evals[1] > 1.7 * evals[0]:  # long side at least ~1.3x the short side
+        major = evecs[:, -1]
+        side = np.arctan2(major[1], major[0])
+    else:
+        (_, _), (w, h), angle = cv2.minAreaRect((points_xy * 1000.0).astype(np.float32))
+        side = np.deg2rad(angle if w >= h else angle + 90.0)
+    want = side + np.pi / 2  # close across the long side
     turn = (want - np.arctan2(closing[1], closing[0]) + np.pi / 2) % np.pi - np.pi / 2
     xyzw = (Rotation.from_euler("z", turn) * home).as_quat()
     return xyzw[[3, 0, 1, 2]]
@@ -115,18 +128,52 @@ class PlannerClient:
         max_step_pos: float = 0.02,
         max_step_rot: float = 0.15,
         settle_steps: int = 3,
+        min_grip: float = 0.0165,
+        grasp_retries: int = 1,
         log_path: Optional[str] = None,
+        depth_noise: str = "none",
+        noise_seed: Optional[int] = None,
+        robot_mask: str = "sim",
+        selector=None,
+        planner_seed: Optional[int] = None,
     ) -> None:
         self.planner = make_planner(planner)
         self.planner_name = planner
         self.vla = vla
+        # (model, feature names) from selector.load_saved; needs a VLA to give tries to.
+        self.selector = selector
+        if selector is not None:
+            if vla is None:
+                raise ValueError("the selector mode needs a VLA")
+            if robot_mask != "joints":  # with "sim" the plan features would use the simulator's segmentation
+                raise ValueError("the selector mode needs --robot-mask joints, so its features come from the camera only")
+            trained = getattr(selector[0], "trained_on", None) or {}
+            for name, value in (("depth_noise", depth_noise), ("robot_mask", robot_mask)):
+                if trained.get(name) not in (None, value):
+                    raise ValueError(f"the selector was trained with {name}={trained[name]}, but this run uses {value}")
+        # Planner then VLA: the VLA takes over above the object. In the selector mode the planner
+        # works exactly as in planner only, because that is what the selector was trained on.
+        self.hand_off = vla is not None and selector is None
         self.target_source = target_source
         self.pregrasp_height = pregrasp_height
         self.place_height = place_height
         self.max_step_pos = max_step_pos
         self.max_step_rot = max_step_rot
         self.settle_steps = settle_steps
+        self.min_grip = min_grip  # finger joint (m); fully closed on nothing reads 0.015
+        self.grasp_retries = grasp_retries
         self.log_path = log_path
+        self.noise = DepthNoise(depth_noise, noise_seed)
+        # The planner's random steps (MPlib: IK restarts, RRT) are seeded per episode like the depth noise, so a
+        # try plans the same in every run, whatever ran before it in the process. None leaves them unseeded.
+        if planner_seed is not None and not hasattr(self.planner, "seed"):
+            raise ValueError(f"--planner-seed needs a planner that can be seeded (mplib), not {planner}")
+        self.planner_seed = planner_seed
+        self.episode_key: Optional[str] = None
+        # How the robot is cut out of the obstacle map: the simulator's segmentation ("sim"),
+        # or spheres placed from the joint angles ("joints"), which a real robot can do too.
+        self.robot_mask = robot_mask
+        self.robot_spheres = RobotSpheres() if robot_mask == "joints" else None
         self.sam3 = None
         if target_source == "camera":
             from sam3_client import SAM3Client
@@ -135,6 +182,10 @@ class PlannerClient:
         self._clear("")
 
     # ------------------------------------------------------------------ episode
+
+    def set_episode(self, key: str) -> None:
+        """Called by planner_evaluator before reset(): this episode's depth noise and planner seed come from `key`."""
+        self.episode_key = key
 
     def reset(self, task_description: str) -> None:
         self._clear(task_description)
@@ -148,15 +199,24 @@ class PlannerClient:
         self.gripper = GRIPPER_OPEN
         self.hold_steps = 0
         self.step_count = 0
-        self.stats = {"plans": []}
+        self.noise.new_episode(self.episode_key)
+        if self.planner_seed is not None:
+            self.planner.seed(zlib.crc32(f"{self.planner_seed}/{self.episode_key}".encode()) % 2147483647 + 1)
+        # The run settings go into every record, so the selector can refuse to mix runs.
+        self.stats = {"plans": [], "depth_noise": self.noise.level, "noise_seed": self.noise.seed,
+                      "planner_seed": self.planner_seed, "robot_mask": self.robot_mask,
+                      "features_version": FEATURES_VERSION, "features": {}}
         self.ee_trace: List[np.ndarray] = []
         self.transit_contact = False
         self.place_goal = None
+        self.retries_left = self.grasp_retries
+        self.first_look = True  # the selector's features come from the first frame only
 
     def finish_episode(self, success: bool, info: dict) -> None:
         if self.log_path is None:
             return
-        record = {"planner": self.planner_name, "mode": "planner_then_vla" if self.vla else "planner",
+        mode = "selector" if self.selector is not None else "planner_then_vla" if self.vla is not None else "planner"
+        record = {"planner": self.planner_name, "mode": mode,
                   "task": self.task_description, "success": bool(success), **info, **self.stats,
                   "ee_path_length_planner": path_length(np.array(self.ee_trace)) if self.ee_trace else 0.0,
                   "transit_contact": self.transit_contact}
@@ -185,6 +245,8 @@ class PlannerClient:
 
         if self.phase == "start":
             self._start(image, obs, env, qpos, target)
+            if self.selector is not None:
+                self._choose()
         if self.phase == "vla":
             return self.vla.step(image, task_description)
         if self.phase == "done":
@@ -215,19 +277,45 @@ class PlannerClient:
 
     def _start(self, image, obs, env, qpos, target) -> None:
         self.home_orientation = target[3:].copy()
-        self.view = CameraView(obs)
         self.robot_ids = [link.id for link in env.unwrapped.agent.robot.get_links()]
-        grasp = self._locate(image, obs, env, which="grasp")
+        self._approach(image, obs, env, qpos, target)
+
+    def _choose(self) -> None:
+        """Selector mode: from the first look's features and first plan, give the whole try to the
+        planner or to the VLA. The robot has not moved yet, so the VLA starts as in a VLA-only run."""
+        model, names = self.selector
+        p = float(model.prob(row_features(self.stats, names)[None])[0])
+        self.stats["selector_p_planner"] = p
+        self.stats["selector_choice"] = "planner" if p >= model.threshold else "vla"
+        if self.stats["selector_choice"] == "vla":
+            self.phase, self.queue = "vla", []
+
+    def _approach(self, image, obs, env, qpos, target) -> None:
+        """Find the object and plan to just above it."""
+        first, self.first_look = self.first_look, False  # a grasp retry comes back here: no new features
+        self.view = self._obstacle_view(obs, qpos)
+        # One frame, one noisy depth picture: the object estimate and the obstacle map share it.
+        grasp = self._locate(image, obs, env, which="grasp", record=first, view=self.view)
+        if first:  # the place target too, for the selector only: placing finds it again after the lift
+            self._locate(image, obs, env, which="place", record=True, view=self.view)
         if grasp is None:
             self.stats["failure"] = "grasp object not found"
             self._give_up()
             return
         self.grasp = grasp
         # The VLA picks its own grasp after the hand-off, so only the planner-only setup turns the hand.
-        orientation = self.home_orientation if self.vla is not None \
+        orientation = self.home_orientation if self.hand_off \
             else grasp_orientation(self.home_orientation, grasp.get("points_xy"))
         goal = np.concatenate([[grasp["center"][0], grasp["center"][1], grasp["top"] + self.pregrasp_height],
                                orientation])
+        if first:
+            f = self.stats["features"]
+            f["grasp_turn_rad"] = rotation_angle(
+                np.r_[np.zeros(3), self.home_orientation],
+                np.r_[np.zeros(3), grasp_orientation(self.home_orientation, grasp.get("points_xy"))])
+            f["grasp_reach_m"] = float(np.linalg.norm(grasp["center"] - target[:2]))
+            cloud = self.view.obstacle_cloud(self.robot_ids, voxel=0.01, workspace=WORKSPACE)
+            f["pregrasp_corridor_points"] = corridor_points(cloud, ee_pose_from_obs(obs)[:3], goal[:3])
         if not self._plan_to(qpos, goal, "pregrasp"):
             self._give_up()
             return
@@ -241,33 +329,62 @@ class PlannerClient:
         if phase == "transit_pregrasp":
             self.stats["handoff_step"] = self.step_count
             self.stats["pregrasp_error"] = float(np.linalg.norm(ee_pose_from_obs(obs)[:3] - self.queue_goal[:3]))
-            if self.vla is not None:
+            if self.hand_off:
                 self.phase = "vla"
                 return
             grasp_z = max(0.5 * (self.grasp["top"] + self.grasp["bottom"]), self.grasp["bottom"] + 0.01)
+            self.hold_offset = grasp_z - self.grasp["bottom"]  # hand height above the held object's bottom
             self._straight_to(target, np.r_[target[:2], grasp_z, target[3:]], "descend")
         elif phase == "descend":
             self.phase, self.gripper, self.hold_steps = "close", GRIPPER_CLOSED, 5
         elif phase == "close":
             self._straight_to(target, np.r_[target[:2], target[2] + 0.08, target[3:]], "lift")
         elif phase == "lift":
-            place = self._locate(None, obs, env, which="place")
+            grip = float(np.mean(qpos[6:8]))
+            self.stats.setdefault("grip_after_lift", []).append(grip)
+            if grip < self.min_grip:  # fingers closed on nothing
+                if self.retries_left > 0:
+                    self.retries_left -= 1
+                    self.stats["grasp_retries"] = self.stats.get("grasp_retries", 0) + 1
+                    self.phase, self.gripper, self.hold_steps = "reopen", GRIPPER_OPEN, 5
+                    return
+                self.stats["failure"] = "grasp missed"
+                self.phase = "done"
+                return
+            # One frame, one noisy depth picture: the target estimate and the obstacle map share it.
+            self.view = self._obstacle_view(obs, qpos)
+            place = self._locate(None, obs, env, which="place", view=self.view)
             if place is None:
                 self.stats["failure"] = "place target not found"
                 self.phase = "done"
                 return
+            self.place_top = place["top"]
             goal = np.concatenate([[place["center"][0], place["center"][1],
                                     max(place["top"] + self.place_height, target[2])], self.home_orientation])
-            self.view = CameraView(obs)
             self.view.ignore_sphere = (ee_pose_from_obs(obs)[:3], 0.08)  # the held object
             if not self._plan_to(qpos, goal, "place"):
                 self.phase = "done"
                 return
             self.phase = "transit_place"
+        elif phase == "reopen":
+            self._approach(None, obs, env, qpos, target)
         elif phase == "transit_place":
+            # Lower until the held object is 1 cm above the target, so it isn't dropped from height.
+            release_z = self.place_top + self.hold_offset + 0.01
+            if release_z < target[2] - 0.005:
+                self._straight_to(target, np.r_[target[:2], release_z, target[3:]], "lower")
+            else:
+                self.phase, self.gripper, self.hold_steps = "open", GRIPPER_OPEN, 5
+        elif phase == "lower":
             self.phase, self.gripper, self.hold_steps = "open", GRIPPER_OPEN, 5
         elif phase == "open":
             self.phase = "done"
+
+    def _obstacle_view(self, obs, qpos) -> CameraView:
+        view = CameraView(obs, noise=self.noise)
+        if self.robot_spheres is not None:
+            view.robot_spheres = self.robot_spheres(qpos)
+        return view
 
     def _plan_to(self, qpos, goal, label: str) -> bool:
         result = self.planner.plan(qpos, goal, self.view, self.robot_ids)
@@ -279,6 +396,7 @@ class PlannerClient:
         poses = [self.planner.fk(q) for q in result.path]
         record["joint_path_length"] = float(np.abs(np.diff(result.path, axis=0)).sum())
         record["ee_path_length"] = path_length(np.array([p[:3] for p in poses]))
+        record["ee_straight_length"] = float(np.linalg.norm(np.asarray(goal[:3]) - poses[0][:3]))
         poses[-1] = goal  # end exactly on the goal, not on the planner's IK tolerance
         self.queue = resample_poses(poses, self.max_step_pos, self.max_step_rot)
         self.queue_goal = goal
@@ -298,13 +416,18 @@ class PlannerClient:
         self.phase = phase
 
     def _give_up(self) -> None:
-        self.phase = "vla" if self.vla is not None else "done"
-        self.stats["handoff_step"] = self.step_count if self.vla is not None else None
+        self.phase = "vla" if self.hand_off else "done"
+        self.stats["handoff_step"] = self.step_count if self.hand_off else None
 
     # --------------------------------------------------------------- perception
 
-    def _locate(self, image, obs, env, which: str) -> Optional[dict]:
-        """Center, top and bottom of the grasp object or place target, in the base frame."""
+    def _locate(self, image, obs, env, which: str, record: bool = False,
+                view: Optional[CameraView] = None) -> Optional[dict]:
+        """Center, top and bottom of the grasp object or place target, in the base frame.
+
+        `record` writes the selector's features for this object. `view` reuses a depth picture
+        already taken (and noised) for this frame instead of taking a new one.
+        """
         truth = self._sim_object(obs, env, which)
         if self.target_source == "sim":
             return truth
@@ -326,7 +449,11 @@ class PlannerClient:
         else:
             return None
         self.stats[f"{which}_sam3_score"] = float(scores.max())
-        pts = CameraView(obs).object_points(np.asarray(masks[int(np.argmax(scores))]))
+        mask = np.asarray(masks[int(np.argmax(scores))])
+        view = view if view is not None else CameraView(obs, noise=self.noise)
+        pts = view.object_points(mask)
+        if record:
+            self._record_features(which, scores, mask, pts, view)
         if len(pts) < 5:
             return None
         found = {"center": np.median(pts[:, :2], axis=0), "top": float(np.percentile(pts[:, 2], 95)),
@@ -336,6 +463,33 @@ class PlannerClient:
             self.stats[f"{which}_error_xy"] = float(np.linalg.norm(found["center"] - truth["center"]))
             self.stats[f"{which}_error_3d"] = float(np.linalg.norm(center3 - truth["center3"]))
         return found
+
+    def _record_features(self, which: str, scores, mask, pts, view: CameraView) -> None:
+        """What the adaptive selector sees about an object: all from the camera, none from the simulator."""
+        f = self.stats["features"]
+        scores = np.sort(np.asarray(scores, dtype=float))
+        m = np.asarray(mask).astype(bool)
+        f[f"{which}_sam3_score"] = float(scores[-1])
+        f[f"{which}_sam3_count"] = int(len(scores))
+        # second-best over best SAM3 score: near 1 when two objects look alike
+        f[f"{which}_sam3_ambiguity"] = float(scores[-2] / max(scores[-1], 1e-6)) if len(scores) > 1 else 0.0
+        f[f"{which}_mask_px"] = int(m.sum())
+        f[f"{which}_points"] = int(len(pts))
+        f[f"{which}_valid_depth_frac"] = float((m & (view.depth > 1e-3) & (view.depth < 2.0)).sum() / max(m.sum(), 1))
+        roughness = depth_roughness(view.depth, m)
+        f[f"{which}_depth_roughness"] = roughness
+        if len(pts) >= 5:
+            xy = pts[:, :2] - pts[:, :2].mean(axis=0)
+            spread = np.sqrt(np.maximum(np.linalg.eigvalsh(xy.T @ xy / len(xy)), 0.0))
+            f[f"{which}_height"] = float(np.percentile(pts[:, 2], 95) - np.percentile(pts[:, 2], 5))
+            f[f"{which}_extent_long"], f[f"{which}_extent_short"] = float(4 * spread[1]), float(4 * spread[0])
+            f[f"{which}_depth_spread"] = float(np.std(pts[:, 2]))
+            width = short_width(pts[:, :2])
+            f[f"{which}_width"] = width
+            f[f"{which}_depth_roughness_rel"] = roughness / max(width, 0.005)  # noise against object size
+            if which == "grasp":  # room left in the open hand; each finger opens from 0.015 to FINGER_OPEN
+                span = 2 * (FINGER_OPEN - 0.015)
+                f["grasp_grip_margin"] = (span - width) / span
 
     @staticmethod
     def _sim_object(obs, env, which: str) -> Optional[dict]:

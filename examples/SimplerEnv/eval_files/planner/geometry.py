@@ -4,6 +4,7 @@ Poses are 7-vectors [x, y, z, qw, qx, qy, qz] (SAPIEN convention). Everything th
 planners see is expressed in the robot base frame.
 """
 
+import zlib
 from typing import Optional
 
 import cv2
@@ -40,10 +41,67 @@ def ee_delta_action(target_pose: np.ndarray, desired_pose: np.ndarray, ee_pos: n
     return world_vector, Rotation.from_matrix(r_delta).as_rotvec()
 
 
+class DepthNoise:
+    """A real depth camera's errors, so the planner doesn't get the simulator's perfect depth.
+
+    * Per-pixel noise that grows with distance squared (RealSense-like: sigma = k * z^2).
+    * Dropped pixels: random ones, plus holes along depth edges (object borders).
+    * A camera pose error drawn once per episode (calibration error), in mm and degrees.
+
+    With a seed and an episode key, an episode's draws depend only on (seed, key), not on the
+    episodes run before it, so splitting or reordering a run gives the same noise.
+    """
+
+    LEVELS = {
+        "none": None,
+        "realistic": dict(k=0.004, drop=0.02, edge_drop=0.5, edge_jump=0.02, pos_mm=3.0, rot_deg=0.3),
+        "harsh": dict(k=0.012, drop=0.08, edge_drop=0.9, edge_jump=0.01, pos_mm=10.0, rot_deg=1.0),
+    }
+
+    def __init__(self, level: str = "none", seed: Optional[int] = None):
+        self.level = level
+        self.cfg = self.LEVELS[level]
+        self.seed = seed
+        self.rng = np.random.default_rng(seed)
+        self.pose_error = np.eye(4)
+
+    @property
+    def active(self) -> bool:
+        return self.cfg is not None
+
+    def new_episode(self, key: Optional[str] = None) -> None:
+        """Draw this episode's camera pose error (fixed for the whole episode, like a bad calibration).
+
+        `key` names the episode (task, layout seed, episode id). Without it, the draws go on from
+        the previous episode's.
+        """
+        if self.seed is not None and key is not None:
+            self.rng = np.random.default_rng([self.seed, zlib.crc32(key.encode())])
+        self.pose_error = np.eye(4)
+        if not self.active:
+            return
+        axis = self.rng.normal(size=3)
+        angle = np.deg2rad(self.cfg["rot_deg"]) * self.rng.normal()
+        self.pose_error[:3, :3] = Rotation.from_rotvec(axis / np.linalg.norm(axis) * angle).as_matrix()
+        self.pose_error[:3, 3] = self.rng.normal(size=3) * self.cfg["pos_mm"] / 1000.0
+
+    def apply(self, depth: np.ndarray) -> np.ndarray:
+        if not self.active:
+            return depth
+        c = self.cfg
+        valid = depth > 1e-3
+        noisy = depth + self.rng.normal(size=depth.shape) * c["k"] * depth ** 2
+        gy, gx = np.gradient(depth)
+        edges = np.hypot(gx, gy) > c["edge_jump"]
+        dropped = (self.rng.random(depth.shape) < c["drop"]) | (edges & (self.rng.random(depth.shape) < c["edge_drop"]))
+        noisy[dropped | ~valid] = 0.0
+        return noisy
+
+
 class CameraView:
     """One observation's depth picture, turned into 3D points in the robot base frame."""
 
-    def __init__(self, obs: dict, camera: str = CAMERA):
+    def __init__(self, obs: dict, camera: str = CAMERA, noise: Optional[DepthNoise] = None):
         image = obs["image"][camera]
         param = obs["camera_param"][camera]
         self.rgb = image["rgb"]
@@ -53,7 +111,11 @@ class CameraView:
         world_from_cam = np.linalg.inv(np.asarray(param["extrinsic_cv"], dtype=np.float64))
         base_from_world = np.linalg.inv(pose_to_mat(obs["agent"]["base_pose"]))
         self.base_from_cam = base_from_world @ world_from_cam
+        if noise is not None and noise.active:
+            self.depth = noise.apply(self.depth)
+            self.base_from_cam = self.base_from_cam @ noise.pose_error  # we believe the camera is where it isn't
         self.ignore_sphere = None  # (center, radius): e.g. the object held in the gripper
+        self.robot_spheres = None  # (N, 4) [x, y, z, r] in the base frame: the arm, from its joint angles
 
     def pixel_points(self) -> np.ndarray:
         """(H, W, 3) base-frame point for every pixel."""
@@ -73,12 +135,30 @@ class CameraView:
         return self.pixel_points()[valid]
 
     def obstacle_mask(self, robot_actor_ids) -> np.ndarray:
-        """Pixels that count as obstacles: not the robot, not inside ignore_sphere."""
-        mask = ~np.isin(self.actor_seg, np.asarray(list(robot_actor_ids)))
+        """Pixels that count as obstacles: not the robot, not inside ignore_sphere.
+
+        The robot is cut out using `robot_spheres` (from its joint angles, as a real robot would)
+        when they are set, and with the simulator's segmentation otherwise.
+        """
+        if self.robot_spheres is not None:
+            mask = ~self.inside_spheres(self.robot_spheres)
+        else:
+            mask = ~np.isin(self.actor_seg, np.asarray(list(robot_actor_ids)))
         if self.ignore_sphere is not None:
             center, radius = self.ignore_sphere
             mask &= np.linalg.norm(self.pixel_points() - np.asarray(center), axis=-1) > radius
         return mask
+
+    def inside_spheres(self, spheres: np.ndarray) -> np.ndarray:
+        """(H, W) mask of pixels whose 3D point lies inside any sphere, given as rows [x, y, z, r]."""
+        pts = self.pixel_points()
+        inside = np.zeros(pts.shape[:2], dtype=bool)
+        lo, hi = spheres[:, :3].min(0) - spheres[:, 3].max(), spheres[:, :3].max(0) + spheres[:, 3].max()
+        near = np.all((pts >= lo) & (pts <= hi), axis=-1) & (self.depth > 1e-3)
+        cand = pts[near]
+        d2 = ((cand[:, None, :] - spheres[None, :, :3]) ** 2).sum(-1)
+        inside[near] = (d2 < spheres[None, :, 3] ** 2).any(axis=1)
+        return inside
 
     def obstacle_cloud(self, robot_actor_ids, voxel: float = 0.01, workspace=None) -> np.ndarray:
         """Everything the camera sees except the robot, downsampled to one point per voxel."""
@@ -98,6 +178,49 @@ class CameraView:
             return pts
         dist = np.linalg.norm(pts - np.median(pts, axis=0), axis=1)
         return pts[dist < max(0.05, 3 * np.median(dist))]
+
+
+def depth_roughness(depth: np.ndarray, mask: np.ndarray) -> float:
+    """Median |discrete Laplacian| of depth (m) over mask pixels whose 4 neighbours also have depth.
+
+    Near 0 on a smooth surface and grows with sensor noise, so it measures depth noise on the object
+    without knowing its shape. 0 when too few pixels qualify (the valid-depth share then shows why).
+    """
+    valid = depth > 1e-3
+    core = np.zeros_like(valid)
+    core[1:-1, 1:-1] = (mask.astype(bool) & valid)[1:-1, 1:-1] & valid[:-2, 1:-1] & valid[2:, 1:-1] \
+        & valid[1:-1, :-2] & valid[1:-1, 2:]
+    if core.sum() < 5:
+        return 0.0
+    lap = np.zeros_like(depth)
+    lap[1:-1, 1:-1] = 4 * depth[1:-1, 1:-1] - depth[:-2, 1:-1] - depth[2:, 1:-1] - depth[1:-1, :-2] - depth[1:-1, 2:]
+    return float(np.median(np.abs(lap[core])))
+
+
+def short_width(points_xy: np.ndarray) -> float:
+    """Object width across its short side (m): the 5-95 percentile spread along the minor axis."""
+    xy = points_xy - points_xy.mean(axis=0)
+    minor = np.linalg.eigh(xy.T @ xy)[1][:, 0]
+    proj = xy @ minor
+    return float(np.percentile(proj, 95) - np.percentile(proj, 5))
+
+
+def corridor_points(cloud: np.ndarray, start: np.ndarray, end: np.ndarray, radius: float = 0.03,
+                    skip: float = 0.05) -> int:
+    """Obstacle points within `radius` of the straight line start -> end, past the first `skip` m.
+
+    With good depth the straight way from the hand to above the object is nearly empty; depth noise
+    puts false obstacles there, which the planner then has to go around.
+    """
+    d = np.asarray(end, float) - np.asarray(start, float)
+    length = float(np.linalg.norm(d))
+    if length < 1e-6 or len(cloud) == 0:
+        return 0
+    u = d / length
+    rel = cloud - np.asarray(start, float)
+    t = rel @ u
+    perp = np.linalg.norm(rel - np.outer(t, u), axis=1)
+    return int(((t > skip) & (t < length) & (perp < radius)).sum())
 
 
 def voxel_downsample(points: np.ndarray, voxel: float) -> np.ndarray:

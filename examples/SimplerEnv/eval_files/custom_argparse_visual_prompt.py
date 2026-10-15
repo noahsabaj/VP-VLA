@@ -101,6 +101,8 @@ def get_args():
     )
     parser.add_argument("--sam3-threshold", type=float, default=0.5)
     parser.add_argument("--sam3-mask-threshold", type=float, default=0.5)
+    parser.add_argument("--sam3-batch-prompts", action="store_true", default=False,
+                        help="Send the object and target prompts to SAM3 in one request (one batched forward)")
 
     # ===== VLM subtask detection arguments =====
     parser.add_argument("--use-vlm", action="store_true", help="Enable VLM subtask detection")
@@ -125,17 +127,37 @@ def get_args():
     parser.add_argument("--save-overlay-video", action="store_true", default=False,
                         help="Save overlay visualization videos for debugging")
     parser.add_argument("--overlay-video-dir", type=str, default="./overlay_videos")
+    parser.add_argument("--no-action-plots", action="store_true", default=False,
+                        help="Do not save the per-episode action plot PNG (about 0.6 s per episode)")
+    parser.add_argument("--vla-hidden-dir", type=str, default=None,
+                        help="Save the policy's hidden states at the action tokens on each try's first step here (for probes)")
 
     # ===== Motion planner =====
-    parser.add_argument("--controller", type=str, default="vla", choices=["vla", "planner", "planner_then_vla"],
-                        help="Who drives the arm: the VLA, a motion planner, or the planner then the VLA")
+    parser.add_argument("--controller", type=str, default="vla",
+                        choices=["vla", "planner", "planner_then_vla", "selector"],
+                        help="Who drives the arm: the VLA, a motion planner, the planner then the VLA, or "
+                             "whichever of the two the selector picks on the first frame (needs --selector)")
+    parser.add_argument("--selector", type=str, default=None,
+                        help="Selector model saved by planner/selector.py --save, for --controller selector")
     parser.add_argument("--planner", type=str, default="mplib", choices=["mplib", "curobo"])
     parser.add_argument("--target-source", type=str, default="camera", choices=["camera", "sim"],
                         help="Where the planner's targets come from (sim = simulator poses, debugging only)")
+    parser.add_argument("--planner-sam3-port", type=int, default=None,
+                        help="SAM3 server for the planner (default: the VLA's, --sam3-port), so the two can use different SAM3 settings")
     parser.add_argument("--pregrasp-height", type=float, default=0.06,
                         help="Meters above the object's top where the planner stops")
     parser.add_argument("--planner-log", type=str, default=None,
                         help="JSON-lines file for per-episode planner stats (default: <logging-dir>/planner_stats.jsonl)")
+    parser.add_argument("--depth-noise", type=str, default="none", choices=["none", "realistic", "harsh"],
+                        help="Simulated depth-camera errors for the planner (the simulator's depth is perfect)")
+    parser.add_argument("--noise-seed", type=int, default=0)
+    parser.add_argument("--planner-seed", type=int, default=None,
+                        help="Seed the planner's random steps (MPlib's IK restarts and RRT) per episode from this seed "
+                             "and the episode, so a try plans the same in every run (default: unseeded)")
+    parser.add_argument("--layout-seed", type=int, default=None,
+                        help="Replace the task's 24 fixed layouts with 48 random held-out ones from this seed")
+    parser.add_argument("--robot-mask", type=str, default="sim", choices=["sim", "joints"],
+                        help="Cut the robot out of the depth picture using the simulator (sim) or its joint angles (joints)")
 
     args = parser.parse_args()
 

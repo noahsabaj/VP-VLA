@@ -8,7 +8,7 @@ beyond what the eval uses.
 
     python -m examples.SimplerEnv.eval_files.planner.selector \\
         --planner-runs <dir with <task>/planner_stats.jsonl> --vla-runs <dir with <task>/...mp4> \\
-        [--save selector.json [--model logreg|trees]] \\
+        [--features v1|v2|v3] [--save selector.json [--model logreg|trees]] \\
         [--test-planner-runs <held-out dir> --test-vla-runs <held-out VLA dir>]
 
 prints leave-one-task-out results for both models against "always planner", "always VLA", a hand
@@ -26,16 +26,17 @@ import glob
 import json
 import os
 import re
-from collections import defaultdict
-from typing import Dict, List, Optional
+from collections import Counter, defaultdict
+from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
 TASKS = ["PutSpoonOnTableClothInScene-v0", "PutCarrotOnPlateInScene-v0",
          "StackGreenCubeOnYellowCubeBakedTexInScene-v0", "PutEggplantInBasketScene-v0"]
-FEATURES = ["grasp_sam3_score", "grasp_sam3_count", "grasp_mask_px", "grasp_points", "grasp_height",
-            "grasp_extent_long", "grasp_extent_short", "grasp_depth_spread", "grasp_turn_rad", "grasp_reach_m",
-            "place_sam3_score", "place_mask_px", "place_points", "plan_ok", "plan_time", "plan_ee_length"]
+# v1: the first 16 features.
+FEATURES_V1 = ["grasp_sam3_score", "grasp_sam3_count", "grasp_mask_px", "grasp_points", "grasp_height",
+               "grasp_extent_long", "grasp_extent_short", "grasp_depth_spread", "grasp_turn_rad", "grasp_reach_m",
+               "place_sam3_score", "place_mask_px", "place_points", "plan_ok", "plan_time", "plan_ee_length"]
 # v2: one feature per way the planner fails, with no units, so no feature says which task it is.
 FEATURES_V2 = [
     "grasp_sam3_score", "place_sam3_score",            # SAM3 finds the object / the target
@@ -50,7 +51,9 @@ FEATURES_V2 = [
 # v3: only the two plan features. With harsh depth they are the only v2 features with signal; the other
 # nine score near chance alone, and dropping any one of them moves the selector by about 1 layout.
 FEATURES_V3 = ["plan_ok", "plan_path_ratio"]
-FEATURE_SETS = {"v1": FEATURES, "v2": FEATURES_V2, "v3": FEATURES_V3}
+FEATURE_SETS = {"v1": FEATURES_V1, "v2": FEATURES_V2, "v3": FEATURES_V3}
+# The hand rule (the heuristic baseline) needs these features; v3 leaves out the SAM3 score.
+HEURISTIC_FEATURES = ["plan_ok", "grasp_sam3_score"]
 # Written into every planner record since the first-frame fix. Older records found the place target
 # only after a successful grasp, so their place features give the outcome away.
 FEATURES_VERSION = 2
@@ -58,7 +61,7 @@ FEATURES_VERSION = 2
 RUN_SETTINGS = ("depth_noise", "noise_seed", "robot_mask", "layout_seed", "planner_seed")
 
 
-def row_features(record: dict, names: List[str] = FEATURES) -> np.ndarray:
+def row_features(record: dict, names: List[str]) -> np.ndarray:
     """Feature vector for one try, from what the planner knew before its first move."""
     f = dict(record.get("features", {}))
     first = record["plans"][0] if record.get("plans") else {}
@@ -70,22 +73,31 @@ def row_features(record: dict, names: List[str] = FEATURES) -> np.ndarray:
     return np.array([float(f.get(k, 0.0) or 0.0) for k in names])
 
 
+def heuristic_uses_planner(x: np.ndarray, names: List[str]) -> np.ndarray:
+    """The hand rule: the planner when it found a plan and SAM3's best score for the object is at least 0.3."""
+    return (x[:, names.index("plan_ok")] > 0) & (x[:, names.index("grasp_sam3_score")] >= 0.3)
+
+
 def planner_records(root: str) -> List[dict]:
     """Every record under root (`<task>/planner_stats.jsonl`, or run_eval.sh's `*<task>*/planner_stats.jsonl`),
     checked so that a wrong join stops the load: planner-only mode, written since the first-frame
     fix, one record per layout, and one value of each run setting in the folder."""
     records, seen = [], set()
     for task in TASKS:
-        paths = {os.path.normpath(p) for p in [os.path.join(root, task, "planner_stats.jsonl")] +
-                 glob.glob(os.path.join(root, f"**/*{task}*/planner_stats.jsonl"), recursive=True)}
+        paths = {os.path.normpath(p) for p in [os.path.join(root, task, "planner_stats.jsonl"),
+                                               *glob.glob(os.path.join(root, f"**/*{task}*/planner_stats.jsonl"),
+                                                          recursive=True)]}
         for path in sorted(p for p in paths if os.path.exists(p)):
-            for n, line in enumerate(open(path), 1):
+            with open(path) as fh:
+                lines = list(fh)
+            for n, line in enumerate(lines, 1):
                 r, where = json.loads(line), f"{path}:{n}"
                 if r.get("mode") != "planner":  # a selector or hand-off try's success is not the planner's
                     raise SystemExit(f"{where}: mode {r.get('mode')!r}; selector data must come from planner-only runs")
                 f = r.get("features", {})
                 if "features_version" not in r and "grasp_sam3_score" in f and "grasp_valid_depth_frac" not in f:
-                    raise SystemExit(f"{where}: written before the first-frame fix, so its place features leak the outcome")
+                    raise SystemExit(f"{where}: written before the first-frame fix, so its place features leak "
+                                     "the outcome")
                 if (task, r["obj_episode_id"]) in seen:
                     raise SystemExit(f"{where}: a second record for {task} episode {r['obj_episode_id']}")
                 seen.add((task, r["obj_episode_id"]))
@@ -134,41 +146,58 @@ def load_vla(roots: List[str]) -> Dict[tuple, float]:
     return {k: float(np.mean(v)) for k, v in per_layout.items()}
 
 
-class Selector:
-    """Logistic regression on standardized features: P(planner succeeds)."""
+def sigmoid(z: np.ndarray) -> np.ndarray:
+    return 1 / (1 + np.exp(-z))
+
+
+class Classifier:
+    """P(y = 1) from the features: with y = the planner's success, the planner gets the try when P >= threshold.
+    `trained_on` holds the run settings of the training data (load_saved fills it in), which the eval checks."""
+
+    def __init__(self, threshold: float):
+        self.threshold = threshold
+        self.trained_on: dict = {}
+
+    def prob(self, x: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    def use_planner(self, x: np.ndarray) -> np.ndarray:
+        return self.prob(x) >= self.threshold
+
+
+class LogisticRegression(Classifier):
+    """Logistic regression on standardized features, with an L2 penalty, fit by gradient descent."""
 
     def __init__(self, l2: float = 1.0, threshold: float = 0.5):
-        self.l2, self.threshold = l2, threshold
+        super().__init__(threshold)
+        self.l2 = l2
 
-    def fit(self, x: np.ndarray, y: np.ndarray, steps: int = 3000, lr: float = 0.1) -> "Selector":
+    def fit(self, x: np.ndarray, y: np.ndarray, steps: int = 3000, lr: float = 0.1) -> "LogisticRegression":
         self.mean, self.std = x.mean(0), x.std(0) + 1e-6
         z = (x - self.mean) / self.std
         self.w, self.b = np.zeros(z.shape[1]), 0.0
         for _ in range(steps):
-            p = 1 / (1 + np.exp(-(z @ self.w + self.b)))
+            p = sigmoid(z @ self.w + self.b)
             self.w -= lr * (z.T @ (p - y) / len(y) + self.l2 * self.w / len(y))
             self.b -= lr * float(np.mean(p - y))
         return self
 
     def prob(self, x: np.ndarray) -> np.ndarray:
-        return 1 / (1 + np.exp(-(((x - self.mean) / self.std) @ self.w + self.b)))
-
-    def use_planner(self, x: np.ndarray) -> np.ndarray:
-        return self.prob(x) >= self.threshold
+        return sigmoid(((x - self.mean) / self.std) @ self.w + self.b)
 
     def to_json(self) -> dict:
-        return {"features": FEATURES, "mean": self.mean.tolist(), "std": self.std.tolist(),
-                "w": self.w.tolist(), "b": self.b, "threshold": self.threshold}
+        return {"mean": self.mean.tolist(), "std": self.std.tolist(), "w": self.w.tolist(), "b": self.b,
+                "threshold": self.threshold}
 
     @classmethod
-    def from_json(cls, d: dict) -> "Selector":
+    def from_json(cls, d: dict) -> "LogisticRegression":
         s = cls(threshold=d["threshold"])
         s.mean, s.std, s.w, s.b = (np.array(d["mean"]), np.array(d["std"]), np.array(d["w"]), d["b"])
         return s
 
 
-class BoostedTrees:
-    """Gradient-boosted trees on the logistic loss: P(planner succeeds).
+class BoostedTrees(Classifier):
+    """Gradient-boosted trees on the logistic loss.
 
     Each round fits a small tree to Newton steps (gradient over hessian, as in XGBoost). Leaves
     need at least `min_leaf` layouts, so a tree can't single out one layout.
@@ -176,15 +205,15 @@ class BoostedTrees:
 
     def __init__(self, rounds: int = 100, depth: int = 2, lr: float = 0.1, min_leaf: int = 5,
                  l2: float = 1.0, threshold: float = 0.5):
+        super().__init__(threshold)
         self.rounds, self.depth, self.lr, self.min_leaf, self.l2 = rounds, depth, lr, min_leaf, l2
-        self.threshold = threshold
 
     def fit(self, x: np.ndarray, y: np.ndarray) -> "BoostedTrees":
         p0 = float(np.clip(y.mean(), 1e-3, 1 - 1e-3))
         self.base, self.trees = float(np.log(p0 / (1 - p0))), []
         f = np.full(len(y), self.base)
         for _ in range(self.rounds):
-            p = 1 / (1 + np.exp(-f))
+            p = sigmoid(f)
             tree = self._grow(x, p - y, p * (1 - p), self.depth)
             self.trees.append(tree)
             f += self.lr * self._tree_value(tree, x)
@@ -220,15 +249,10 @@ class BoostedTrees:
         return out
 
     def prob(self, x: np.ndarray) -> np.ndarray:
-        f = self.base + self.lr * sum(self._tree_value(t, x) for t in self.trees)
-        return 1 / (1 + np.exp(-f))
-
-    def use_planner(self, x: np.ndarray) -> np.ndarray:
-        return self.prob(x) >= self.threshold
+        return sigmoid(self.base + self.lr * sum(self._tree_value(t, x) for t in self.trees))
 
     def to_json(self) -> dict:
-        return {"features": FEATURES, "base": self.base, "lr": self.lr, "trees": self.trees,
-                "threshold": self.threshold}
+        return {"base": self.base, "lr": self.lr, "trees": self.trees, "threshold": self.threshold}
 
     @classmethod
     def from_json(cls, d: dict) -> "BoostedTrees":
@@ -237,12 +261,11 @@ class BoostedTrees:
         return s
 
 
-MODELS = {"logreg": Selector, "trees": BoostedTrees}
+MODELS = {"logreg": LogisticRegression, "trees": BoostedTrees}
 
 
-def load_saved(path: str):
-    """A model written by --save, for `--controller selector`: (model, its feature names). The model's
-    `trained_on` holds the run settings of its training data, which the eval checks against its own."""
+def load_saved(path: str) -> Tuple[Classifier, List[str]]:
+    """A model written by --save, for `--controller selector`: (model, its feature names)."""
     with open(path) as fh:
         d = json.load(fh)
     model = MODELS[d["model"]].from_json(d)
@@ -250,7 +273,20 @@ def load_saved(path: str):
     return model, d["features"]
 
 
-def load_layouts(planner_root: str, vla_roots: List[str], names: List[str] = FEATURES):
+class Layouts(NamedTuple):
+    """One row per layout that both controllers ran."""
+
+    x: np.ndarray       # features
+    y_plan: np.ndarray  # planner success (0/1)
+    y_vla: np.ndarray   # VLA success: 0/1 with one VLA run, the mean over the runs with several
+    tasks: np.ndarray   # task names
+
+    @staticmethod
+    def concat(parts: List["Layouts"]) -> "Layouts":
+        return Layouts(*[np.concatenate(z) for z in zip(*parts, strict=True)])
+
+
+def load_layouts(planner_root: str, vla_roots: List[str], names: List[str]) -> Layouts:
     """Features, planner outcome, VLA outcome and task name for every layout both controllers ran."""
     planner, vla = load_planner(planner_root), load_vla(vla_roots)
     keys = [k for k in planner if k in vla]
@@ -259,12 +295,35 @@ def load_layouts(planner_root: str, vla_roots: List[str], names: List[str] = FEA
     unmatched = {"planner only": [k for k in planner if k not in vla], "VLA only": [k for k in vla if k not in planner]}
     for side, ks in unmatched.items():
         if ks:  # left out of every score, so say so
-            per_task = ", ".join(f"{t.split('-')[0]} {sum(k[0] == t for k in ks)}" for t in TASKS if any(k[0] == t for k in ks))
+            count = Counter(k[0] for k in ks)
+            per_task = ", ".join(f"{t.split('-')[0]} {count[t]}" for t in TASKS if count[t])
             print(f"warning: {len(ks)} layouts {side} ({per_task}), left out: {planner_root} / {', '.join(vla_roots)}")
     x = np.stack([row_features(planner[k], names) for k in keys])
     y_plan = np.array([float(planner[k]["success"]) for k in keys])
     y_vla = np.array([vla[k] for k in keys])
-    return x, y_plan, y_vla, np.array([k[0] for k in keys])
+    return Layouts(x, y_plan, y_vla, np.array([k[0] for k in keys]))
+
+
+def leave_one_task_out(tasks: np.ndarray, predict: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> np.ndarray:
+    """predict(train, test) once per task, with test = that task's rows and train = all other rows (boolean
+    masks): every row's prediction comes from a model that never saw its task."""
+    out = np.zeros(len(tasks))
+    for task in TASKS:
+        test = tasks == task
+        if test.any():
+            out[test] = predict(~test, test)
+    return out
+
+
+def task_rate(y: np.ndarray, tasks: np.ndarray, test_tasks: np.ndarray) -> np.ndarray:
+    """For each test row, the success rate of its task in (y, tasks); the overall rate for a task not there."""
+    rate = {k: y[tasks == k].mean() for k in TASKS if (tasks == k).any()}
+    return np.array([rate.get(k, y.mean()) for k in test_tasks])
+
+
+def other_layouts_rate(v: np.ndarray) -> np.ndarray:
+    """Each layout's rate from the other layouts of its task: what a few VLA tries on a new task give."""
+    return (v.sum() - v) / max(len(v) - 1, 1)
 
 
 def with_tasks(x: np.ndarray, tasks: np.ndarray, seen: List[str]) -> np.ndarray:
@@ -277,12 +336,10 @@ def choose(p_plan: np.ndarray, bar, y_plan: np.ndarray, y_vla: np.ndarray) -> np
     return np.where(p_plan >= bar, y_plan, y_vla)
 
 
-def print_table(x, y_plan, y_vla, tasks, chosen: Dict[str, np.ndarray], how: str,
-                names: List[str] = FEATURES) -> None:
+def print_table(x, y_plan, y_vla, tasks, chosen: Dict[str, np.ndarray], how: str, names: List[str]) -> None:
     rows = {"always planner": y_plan, "always VLA": y_vla}
-    if "grasp_sam3_score" in names:  # the hand rule needs the SAM3 score, which v3 leaves out
-        rule = (x[:, names.index("plan_ok")] > 0) & (x[:, names.index("grasp_sam3_score")] >= 0.3)
-        rows["hand rule (plan ok and SAM3 >= 0.3)"] = np.where(rule, y_plan, y_vla)
+    if all(n in names for n in HEURISTIC_FEATURES):
+        rows["hand rule (plan ok and SAM3 >= 0.3)"] = np.where(heuristic_uses_planner(x, names), y_plan, y_vla)
     rows.update({f"{name} ({how})": v for name, v in chosen.items()})
     rows["perfect selector"] = np.maximum(y_plan, y_vla)
     print(f"{len(tasks)} layouts")
@@ -292,7 +349,7 @@ def print_table(x, y_plan, y_vla, tasks, chosen: Dict[str, np.ndarray], how: str
         print(f"| {name} | " + " | ".join(f"{p:.1f}" for p in per) + f" | {100 * v.mean():.1f} |")
 
 
-def rule_rows(p_plan: Dict[str, np.ndarray], p_vla: np.ndarray, task_rate: np.ndarray,
+def rule_rows(p_plan: Dict[str, np.ndarray], p_vla: np.ndarray, task_rates: np.ndarray,
               y_plan: np.ndarray, y_vla: np.ndarray) -> Dict[str, np.ndarray]:
     """The two decision rules. The threshold rule treats the VLA as a coin flip on every layout;
     the two-model rule (Bayes-optimal when both estimates are right) compares the planner's
@@ -300,12 +357,13 @@ def rule_rows(p_plan: Dict[str, np.ndarray], p_vla: np.ndarray, task_rate: np.nd
     return {"logistic regression, P >= 0.5": choose(p_plan["logreg"], 0.5, y_plan, y_vla),
             "boosted trees, P >= 0.5": choose(p_plan["trees"], 0.5, y_plan, y_vla),
             "two-model: logistic regression P >= learned P_VLA": choose(p_plan["logreg"], p_vla, y_plan, y_vla),
-            "two-model: logistic regression P >= the task's VLA rate": choose(p_plan["logreg"], task_rate, y_plan, y_vla)}
+            "two-model: logistic regression P >= the task's VLA rate": choose(p_plan["logreg"], task_rates, y_plan,
+                                                                               y_vla)}
 
 
 def evaluate(planner_root: str, vla_roots: List[str], save: Optional[str] = None,
              model: str = "logreg", test_planner_root: Optional[str] = None,
-             test_vla_roots: Optional[List[str]] = None, features: str = "v1") -> None:
+             test_vla_roots: Optional[List[str]] = None, features: str = "v3") -> None:
     names = FEATURE_SETS[features]
     x, y_plan, y_vla, tasks = load_layouts(planner_root, vla_roots, names)
 
@@ -314,32 +372,27 @@ def evaluate(planner_root: str, vla_roots: List[str], save: Optional[str] = None
         p_plan = {name: cls().fit(x, y_plan).prob(tx) for name, cls in MODELS.items()}
         # The tasks were seen in training, so P_VLA may use them; the task's VLA rate comes from training.
         seen = [k for k in TASKS if (tasks == k).any()]
-        p_vla = Selector().fit(with_tasks(x, tasks, seen), y_vla).prob(with_tasks(tx, ttasks, seen))
-        rate = {k: y_vla[tasks == k].mean() for k in seen}
-        task_rate = np.array([rate.get(k, y_vla.mean()) for k in ttasks])
+        p_vla = LogisticRegression().fit(with_tasks(x, tasks, seen), y_vla).prob(with_tasks(tx, ttasks, seen))
         print(f"trained on {len(tasks)} layouts from {planner_root}, tested on {test_planner_root}")
-        print_table(tx, ty_plan, ty_vla, ttasks, rule_rows(p_plan, p_vla, task_rate, ty_plan, ty_vla),
+        print_table(tx, ty_plan, ty_vla, ttasks,
+                    rule_rows(p_plan, p_vla, task_rate(y_vla, tasks, ttasks), ty_plan, ty_vla),
                     "held-out layouts", names)
     else:
         if len(set(tasks)) < 2:  # every fold would be skipped and the table would show zeros as results
             raise SystemExit(f"leave one task out needs at least 2 tasks; {planner_root} has {len(set(tasks))}")
-        p_plan = {name: np.zeros(len(tasks)) for name in MODELS}
-        p_vla, task_rate = np.zeros(len(tasks)), np.zeros(len(tasks))
-        for task in TASKS:  # leave one task out: train on the other three, test on this one
-            test = tasks == task
-            if not test.any() or (~test).sum() == 0:
-                continue
-            for name, cls in MODELS.items():
-                p_plan[name][test] = cls().fit(x[~test], y_plan[~test]).prob(x[test])
-            p_vla[test] = Selector().fit(x[~test], y_vla[~test]).prob(x[test])
-            # The unseen task's VLA rate from its other layouts: what a few VLA tries on a new task give.
-            v = y_vla[test]
-            task_rate[test] = (v.sum() - v) / max(len(v) - 1, 1)
-        print_table(x, y_plan, y_vla, tasks, rule_rows(p_plan, p_vla, task_rate, y_plan, y_vla),
+
+        def fit_prob(cls, y):  # leave one task out: train on the other three tasks, test on this one
+            return leave_one_task_out(tasks, lambda train, test: cls().fit(x[train], y[train]).prob(x[test]))
+
+        p_plan = {name: fit_prob(cls, y_plan) for name, cls in MODELS.items()}
+        p_vla = fit_prob(LogisticRegression, y_vla)
+        # The unseen task's VLA rate from its other layouts.
+        rates = leave_one_task_out(tasks, lambda train, test: other_layouts_rate(y_vla[test]))
+        print_table(x, y_plan, y_vla, tasks, rule_rows(p_plan, p_vla, rates, y_plan, y_vla),
                     "leave one task out", names)
     if save:
         with open(save, "w") as fh:
-            json.dump({"model": model, **MODELS[model]().fit(x, y_plan).to_json(), "features": names,
+            json.dump({"model": model, "features": names, **MODELS[model]().fit(x, y_plan).to_json(),
                        "trained_on": planner_settings(planner_records(planner_root), planner_root)}, fh, indent=1)
         print("saved", save)
 
@@ -353,9 +406,9 @@ if __name__ == "__main__":
     ap.add_argument("--test-planner-runs", default=None,
                     help="held-out layouts (--layout-seed runs): train on --planner-runs, test on these")
     ap.add_argument("--test-vla-runs", nargs="+", default=None, help="VLA runs on the held-out layouts")
-    ap.add_argument("--features", choices=sorted(FEATURE_SETS), default="v1",
-                    help="v1: the first 16 features; v2: one per planner failure mode, with no units; "
-                         "v3: plan_ok and plan_path_ratio only")
+    ap.add_argument("--features", choices=sorted(FEATURE_SETS), default="v3",
+                    help="v3 (default): plan_ok and plan_path_ratio only; v2: one per planner failure mode, "
+                         "with no units; v1: the first 16 features")
     a = ap.parse_args()
     if bool(a.test_planner_runs) != bool(a.test_vla_runs):
         ap.error("--test-planner-runs and --test-vla-runs go together")

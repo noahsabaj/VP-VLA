@@ -131,6 +131,10 @@ def get_args():
                         help="Do not save the per-episode action plot PNG (about 0.6 s per episode)")
     parser.add_argument("--vla-hidden-dir", type=str, default=None,
                         help="Save the policy's hidden states at the action tokens on each try's first step here (for probes)")
+    parser.add_argument("--vla-perturb", type=int, default=0,
+                        help="On each try's first step, also run the policy on this many slightly changed copies of its "
+                             "input and save their actions with the hidden states (needs --vla-hidden-dir; the try goes "
+                             "on with the unchanged input)")
 
     # ===== Motion planner =====
     parser.add_argument("--controller", type=str, default="vla",
@@ -156,6 +160,9 @@ def get_args():
                              "and the episode, so a try plans the same in every run (default: unseeded)")
     parser.add_argument("--layout-seed", type=int, default=None,
                         help="Replace the task's 24 fixed layouts with 48 random held-out ones from this seed")
+    parser.add_argument("--layout-per-episode", action="store_true", default=False,
+                        help="With --layout-seed: give each episode a random layout of its own (from the seed and the "
+                             "episode number) instead of one of 12 placements x 4 turns")
     parser.add_argument("--robot-mask", type=str, default="sim", choices=["sim", "joints"],
                         help="Cut the robot out of the depth picture using the simulator (sim) or its joint angles (joints)")
 

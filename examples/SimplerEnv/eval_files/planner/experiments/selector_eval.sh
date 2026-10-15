@@ -3,9 +3,11 @@
 # the VLA. One server set for the VLA (policy, SAM3, VLM; as in vla_eval.sh) and one SAM3 server for the planner,
 # shared by K sim clients.
 # Usage: selector_eval.sh GPU PORT_BASE NAME LAYOUTS MODELS K [JOB...]
-#   MODELS: the folder with the ASM models, MODELS/sel_v3_LEVEL.json (from selector.py --save). JOB =
-#   LEVEL:TASK:START:END (LEVEL: none | realistic | harsh) writes to $RUNS_DIR/NAME/LEVEL/TASK/eps_START_END.
-#   Default jobs: every episode of the layout set at every level, one job per level and task.
+#   MODELS: the folder with the ASM models, MODELS/sel_v3_LEVEL.json (from selector.py --save), or a file name with
+#   {} for the level (e.g. two_model/asm_{}.json). JOB = LEVEL:TASK:START:END (LEVEL: none | realistic | harsh) writes
+#   to $RUNS_DIR/NAME/LEVEL/TASK/eps_START_END.
+#   Default jobs: every episode of the layout set at each level of DEPTHS (default: harsh realistic none), in
+#   chunks of CHUNK_SIZE episodes (default: all of a task's episodes in one job).
 #   Ports: policy PORT_BASE, SAM3 PORT_BASE + 1, VLM PORT_BASE + 2, planner SAM3 PORT_BASE + 3.
 # Environment: FAST and MPS as in vla_eval.sh. PLANNER_SAM3_ARGS: the planner's SAM3 server options (default:
 #   none, as in planner_eval.sh). PLANNER_SEED as in planner_eval.sh: give it the same value as the planner-only
@@ -14,11 +16,14 @@
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 GPU=$1; PB=$2; NAME=$3; LAYOUTS=$4; MODELS=$(run_dir "$5"); K=$6
 shift 6
+case $MODELS in *"{}"*) ;; *) MODELS=$MODELS/sel_v3_{}.json ;; esac
 LS=$(layout_args "$LAYOUTS") || exit 1
 JOBS=("$@")
 if [ ${#JOBS[@]} -eq 0 ]; then
-  for level in harsh realistic none; do
-    for task in "${TASKS[@]}"; do JOBS+=("$level:$task:0:$(layout_episodes "$LAYOUTS")"); done
+  for level in ${DEPTHS:-harsh realistic none}; do
+    for chunk in $(all_chunks "$LAYOUTS" "${CHUNK_SIZE:-$(layout_episodes "$LAYOUTS")}"); do
+      JOBS+=("$level:$chunk")
+    done
   done
 fi
 PS=${PLANNER_SEED-0}
@@ -47,7 +52,7 @@ job() {
   IFS=: read -r level task start end <<< "$1"
   out=$OUT/$level/$task/eps_${start}_$end
   stats=$out/planner_stats.jsonl
-  sim $GPU $task $start $end "$out" --controller selector --selector "$MODELS/sel_v3_$level.json" --planner mplib \
+  sim $GPU $task $start $end "$out" --controller selector --selector "${MODELS//\{\}/$level}" --planner mplib \
     --target-source camera --depth-noise $level --robot-mask joints --noise-seed 0 ${PS:+--planner-seed $PS} \
     --port $PB --sam3-port $((PB + 1)) --vlm-port $((PB + 2)) --planner-sam3-port $((PB + 3)) $LS $VP_ARGS $SIM_ARGS
   rc=$?

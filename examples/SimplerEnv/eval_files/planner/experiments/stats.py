@@ -1,7 +1,7 @@
 """Tests and scores for paired episode outcomes (numpy only)."""
 
 import math
-from typing import Tuple
+from typing import List, Tuple
 
 import numpy as np
 
@@ -44,6 +44,37 @@ def auc(p: np.ndarray, y: np.ndarray) -> float:
 def logloss(p: np.ndarray, y: np.ndarray) -> float:
     p = np.clip(p, 1e-6, 1 - 1e-6)
     return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
+
+
+def brier(p: np.ndarray, y: np.ndarray) -> float:
+    return float(np.mean((p - y) ** 2))
+
+
+def calibration_bins(p: np.ndarray, y: np.ndarray, bins: int = 10) -> List[Tuple[float, float, int, float, float]]:
+    """(low, high, episodes, mean p, mean y) for each of `bins` equal-width bins of p that has episodes."""
+    edges = np.linspace(0, 1, bins + 1)
+    idx = np.clip(np.searchsorted(edges, p, side="right") - 1, 0, bins - 1)
+    return [(float(edges[b]), float(edges[b + 1]), int((idx == b).sum()), float(p[idx == b].mean()),
+             float(y[idx == b].mean())) for b in range(bins) if (idx == b).any()]
+
+
+def ece(p: np.ndarray, y: np.ndarray, bins: int = 10) -> float:
+    """Expected calibration error: the gap between p and the success rate in each equal-width bin of p, weighted
+    by the bin's episodes."""
+    return float(sum(n * abs(mp - my) for _, _, n, mp, my in calibration_bins(p, y, bins)) / len(p))
+
+
+def bootstrap_interval(v: np.ndarray, strata: np.ndarray, draws: int = 10000, seed: int = 0,
+                       level: float = 0.95) -> Tuple[float, float]:
+    """Percentile bootstrap interval of mean(v): each draw takes, in each stratum (task), as many of its episodes
+    as it has, with replacement, as the layout sets do. For a paired difference, v = new - base."""
+    rng = np.random.default_rng(seed)
+    sums = np.zeros(draws)
+    for k in sorted(set(strata.tolist())):
+        g = v[strata == k]
+        sums += g[rng.integers(0, len(g), size=(draws, len(g)))].sum(1)
+    lo, hi = np.quantile(sums / len(v), [(1 - level) / 2, (1 + level) / 2])
+    return float(lo), float(hi)
 
 
 def fleiss_kappa(v: np.ndarray) -> float:

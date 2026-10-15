@@ -8,7 +8,7 @@ test loop passes in. Three modes:
   object, move there, then hand every later step to the VLA.
 * planner only (`vla=None`): same approach, then a scripted grasp, lift, planned move to
   above the place target, and release.
-* selector (`vla` and `selector` given): after the planner's first look, the selector
+* selector (`vla` and `selector` given): after the planner's first look, the selector (the ASM)
   gives the whole try either to the planner (as in planner only) or to the VLA.
 
 Targets come from the camera: SAM3 masks the object named in the instruction, and the
@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "Robocasa_tabletop"
 from .geometry import (CameraView, DepthNoise, corridor_points, depth_roughness, ee_delta_action, mat_to_pose,
                        path_length, pose_to_mat, short_width)
 from .planners import FINGER_OPEN, WORKSPACE, RobotSpheres, make_planner
-from .selector import FEATURES_VERSION, row_features
+from .selector import FEATURES_VERSION
 
 GRIPPER_OPEN, GRIPPER_CLOSED = 1.0, -1.0
 PLACE_PREPOSITIONS = (" onto ", " on ", " into ", " in ")
@@ -140,14 +140,14 @@ class PlannerClient:
         self.planner = make_planner(planner)
         self.planner_name = planner
         self.vla = vla
-        # (model, feature names) from selector.load_saved; needs a VLA to give tries to.
+        # The ASM from selector.load_asm; it needs a VLA to give tries to.
         self.selector = selector
         if selector is not None:
             if vla is None:
                 raise ValueError("the selector mode needs a VLA")
             if robot_mask != "joints":  # with "sim" the plan features would use the simulator's segmentation
                 raise ValueError("the selector mode needs --robot-mask joints, so its features come from the camera only")
-            trained = selector[0].trained_on
+            trained = selector.trained_on
             for name, value in (("depth_noise", depth_noise), ("robot_mask", robot_mask)):
                 if trained.get(name) not in (None, value):
                     raise ValueError(f"the selector was trained with {name}={trained[name]}, but this run uses {value}")
@@ -287,11 +287,11 @@ class PlannerClient:
     def _choose(self) -> None:
         """Selector mode: from the first look's features and first plan, give the whole try to the
         planner or to the VLA. The robot has not moved yet, so the VLA starts as in a VLA-only run."""
-        model, names = self.selector
-        p = float(model.prob(row_features(self.stats, names)[None])[0])
-        self.stats["selector_p_planner"] = p
-        self.stats["selector_choice"] = "planner" if p >= model.threshold else "vla"
-        if self.stats["selector_choice"] == "vla":
+        if self.episode_key is None:
+            raise ValueError("the selector mode needs the episode key (planner_evaluator sets it): its task")
+        decision = self.selector.decide(self.stats, self.episode_key.split("/")[0])
+        self.stats.update({f"selector_{k}": v for k, v in decision.items()})
+        if decision["choice"] == "vla":
             self.phase, self.queue = "vla", []
 
     def _approach(self, image, obs, env, qpos, target) -> None:

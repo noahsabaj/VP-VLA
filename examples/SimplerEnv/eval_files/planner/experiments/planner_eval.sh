@@ -2,7 +2,8 @@
 # Planner-only eval of one layout set at one depth-noise level, with the first-frame selector features in each
 # task's planner_stats.jsonl. The 4 tasks run at the same time on one SAM3 server.
 # Usage: planner_eval.sh GPU PORT NAME LEVEL LAYOUTS
-#   NAME: the run folder ($RUNS_DIR/NAME/TASK). LEVEL: none | realistic | harsh. LAYOUTS: paper | heldout | seedN.
+#   NAME: the run folder ($RUNS_DIR/NAME/TASK). LEVEL: none | realistic | harsh. LAYOUTS: paper | heldout | seedN
+#   | iidN (layout_args in common.sh).
 # Environment:
 #   SAM3_ARGS      SAM3 server options (default: none, as in every planner-only eval; the fast SAM3 settings
 #                  change planner episodes).

@@ -5,7 +5,8 @@ The changes, marked "CHANGED":
    so a planner can see depth, camera settings and joint angles. ModelClientVP ignores them.
 2. After each episode, `model.finish_episode(success, info)` is called if the model has it.
 3. `layout_seed` (optional): swap the task's 24 fixed layouts for new random ones, so results
-   can be checked on layouts nothing was tuned on. Off by default.
+   can be checked on layouts nothing was tuned on. Off by default. With `layout_per_episode`, each
+   episode gets a layout of its own instead of one of 12 placements x 4 turns.
 4. Before each episode, `model.set_episode(key)` is called if the model has it, so the planner can
    seed its depth noise per episode.
 5. `action_plots=False` (`--no-action-plots`) skips the per-episode action plot. On by default.
@@ -47,6 +48,7 @@ def run_maniskill2_eval_single_episode(
     logging_dir="./results",
     layout_seed=None,
     action_plots=True,
+    layout_per_episode=False,
 ):
 
     if additional_env_build_kwargs is None:
@@ -76,8 +78,14 @@ def run_maniskill2_eval_single_episode(
     )
 
     # CHANGED: optionally replace the task's fixed layouts with held-out random ones.
+    if layout_per_episode and layout_seed is None:
+        raise ValueError("a layout per episode needs a layout seed")
     if layout_seed is not None:
-        randomize_layouts(env.unwrapped, layout_seed)
+        if layout_per_episode:
+            episode_layout(env.unwrapped, layout_seed, obj_episode_id)
+        else:
+            randomize_layouts(env.unwrapped, layout_seed)
+    layout_name = layout_label(layout_seed, layout_per_episode)
 
     # initialize environment
     env_reset_options = {
@@ -122,7 +130,7 @@ def run_maniskill2_eval_single_episode(
         if obj_variation_mode == "xy":  # no episode id here: the object and robot positions name the try
             model.set_episode(f"{env_name}/xy/{obj_init_x}/{obj_init_y}/{robot_init_x}/{robot_init_y}")
         else:
-            model.set_episode(f"{env_name}/{layout_seed}/{obj_episode_id}")
+            model.set_episode(f"{env_name}/{layout_name}/{obj_episode_id}")
     model.reset(task_description)
 
     timestep = 0
@@ -164,8 +172,10 @@ def run_maniskill2_eval_single_episode(
     # CHANGED: let the model log its own per-episode record.
     if hasattr(model, "finish_episode"):
         model.finish_episode(success == "success", {
-            "env_name": env_name, "obj_episode_id": obj_episode_id, "layout_seed": layout_seed, "steps": timestep,
+            "env_name": env_name, "obj_episode_id": obj_episode_id, "layout_seed": layout_seed,
+            "layout_per_episode": bool(layout_per_episode), "steps": timestep,
             "episode_stats": {k: bool(v) if isinstance(v, (bool, np.bool_)) else v for k, v in episode_stats.items()},
+            "layout": episode_layout_truth(env.unwrapped, obj_episode_id) if obj_variation_mode == "episode" else None,
         })
 
     # save video
@@ -204,21 +214,19 @@ def run_maniskill2_eval_single_episode(
     return success == "success"
 
 
-def randomize_layouts(env, seed: int, n_xy: int = 12, n_quat: int = 4, margin: float = 0.03,
-                      min_gap: float = 0.08) -> None:
-    """Replace a bridge task's layout lists with random ones drawn near the original layouts.
+def draw_layouts(xy_configs, quat_configs, rng: np.random.Generator, n_xy: int, n_quat: int,
+                 margin: float = 0.03, min_gap: float = 0.08):
+    """n_xy object placements and n_quat turns, drawn near a bridge task's original layouts.
 
-    Episode ids then index n_xy * n_quat new layouts (48 by default). Object positions are drawn
-    uniformly in each object's original area plus `margin`, keeping the two objects `min_gap`
-    apart unless the target never moves (eggplant). The object to move gets a random turn about
-    the vertical on top of its first original orientation; the target keeps its orientation.
-    Same seed, same layouts.
+    Object positions are drawn uniformly in each object's original area plus `margin`, keeping the
+    two objects `min_gap` apart unless the target never moves (eggplant). A turn is a random rotation
+    of the object to move about the vertical on top of its first original orientation; the target
+    keeps its orientation.
     """
     from transforms3d.euler import euler2quat
     from transforms3d.quaternions import qmult
 
-    rng = np.random.default_rng(seed)
-    xys = np.array(env._xy_configs)  # (K, 2 objects, 2)
+    xys = np.array(xy_configs)  # (K, 2 objects, 2)
     lo, hi = xys.min(axis=0) - margin, xys.max(axis=0) + margin
     fixed_target = np.ptp(xys[:, 1], axis=0).max() < 1e-6
     if fixed_target:
@@ -228,12 +236,52 @@ def randomize_layouts(env, seed: int, n_xy: int = 12, n_quat: int = 4, margin: f
         pair = rng.uniform(lo, hi)
         if fixed_target or np.linalg.norm(pair[0] - pair[1]) >= min_gap:
             new_xy.append(pair)
-    base = np.array(env._quat_configs[0])
+    base = np.array(quat_configs[0])
     new_quat = []
     for _ in range(n_quat):
         turn = euler2quat(0, 0, rng.uniform(-np.pi, np.pi))
         new_quat.append(np.array([qmult(turn, base[0]), base[1]]))
-    env._xy_configs, env._quat_configs = new_xy, new_quat
+    return new_xy, new_quat
+
+
+def randomize_layouts(env, seed: int, n_xy: int = 12, n_quat: int = 4, margin: float = 0.03,
+                      min_gap: float = 0.08) -> None:
+    """Replace a bridge task's layout lists with random ones drawn near the original layouts.
+
+    Episode ids then index n_xy * n_quat new layouts (48 by default): every placement with every
+    turn (draw_layouts). Same seed, same layouts.
+    """
+    env._xy_configs, env._quat_configs = draw_layouts(env._xy_configs, env._quat_configs,
+                                                      np.random.default_rng(seed), n_xy, n_quat, margin, min_gap)
+
+
+def episode_layout(env, seed: int, episode: int, margin: float = 0.03, min_gap: float = 0.08) -> None:
+    """Replace a bridge task's layout lists with one random layout for this episode only.
+
+    One placement and one turn, drawn as in randomize_layouts but from a generator seeded with
+    (seed, episode): each episode's layout is independent of the other episodes and of the order
+    they run in. Same seed and episode, same layout.
+    """
+    env._xy_configs, env._quat_configs = draw_layouts(env._xy_configs, env._quat_configs,
+                                                      np.random.default_rng([seed, episode]), 1, 1, margin, min_gap)
+
+
+def layout_label(layout_seed, layout_per_episode: bool) -> str:
+    """The layout set's part of the episode key (for the depth noise, the planner seed and the
+    hidden-state file names): the layout seed; with a layout per episode, "e" and the seed."""
+    return f"e{layout_seed}" if layout_per_episode else f"{layout_seed}"
+
+
+def episode_layout_truth(env, episode: int):
+    """Where the episode's two objects start (x, y in m, simulator frame) and the yaw of the object to
+    move (rad, about the vertical: its random turn plus its first original yaw). Logged for analysis
+    only; no controller reads it."""
+    if not hasattr(env, "_xy_configs"):
+        return None
+    k, q = len(env._xy_configs), len(env._quat_configs)
+    xy = np.asarray(env._xy_configs[(episode % (k * q)) // q])
+    quat = np.asarray(env._quat_configs[episode % q])
+    return {"source_xy": xy[0].tolist(), "target_xy": xy[1].tolist(), "source_yaw": float(quat2euler(quat[0])[2])}
 
 
 def maniskill2_evaluator(model, args):
@@ -265,6 +313,7 @@ def maniskill2_evaluator(model, args):
                     logging_dir=args.logging_dir,
                     layout_seed=getattr(args, "layout_seed", None),
                     action_plots=not getattr(args, "no_action_plots", False),
+                    layout_per_episode=getattr(args, "layout_per_episode", False),
                 )
                 if args.obj_variation_mode == "xy":
                     for obj_init_x in args.obj_init_xs:

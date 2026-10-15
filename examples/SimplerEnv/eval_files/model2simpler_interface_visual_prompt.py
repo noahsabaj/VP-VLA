@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "Robocasa
 
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
 from examples.SimplerEnv.eval_files.adaptive_ensemble import AdaptiveEnsembler
+from examples.SimplerEnv.eval_files.vla_perturbation import perturb_images, perturbation_rng
 from starVLA.model.tools import read_mode_config
 
 # SimplerEnv gripper threshold: unnormalized value > 0.5 => OPEN, <= 0.5 => CLOSE
@@ -75,7 +76,12 @@ class ModelClientVP:
         vlm_decompose_subtasks: bool = False,
         # Folder for the policy's hidden states on each try's first step (for probes); None = off
         hidden_dir: Optional[str] = None,
+        # First step: also the actions for this many changed copies of the input (vla_perturbation), saved with the
+        # hidden states; 0 = off
+        perturb_k: int = 0,
     ) -> None:
+        if perturb_k and not hidden_dir:
+            raise ValueError("perturb_k needs hidden_dir: the actions are saved with the hidden states")
         self.client = WebsocketClientPolicy(host, port)
 
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -181,6 +187,7 @@ class ModelClientVP:
             os.makedirs(overlay_video_dir, exist_ok=True)
 
         self.hidden_dir = hidden_dir
+        self.perturb_k = perturb_k
         self._episode_key: Optional[str] = None
         self._episode_count = 0
         if hidden_dir:
@@ -193,13 +200,28 @@ class ModelClientVP:
         """Called by planner_evaluator before reset(): names the file of this try's hidden states."""
         self._episode_key = key
 
-    def _save_hidden(self, data: dict, lang: str) -> None:
+    def _save_hidden(self, data: dict, lang: str, example: dict) -> None:
         if "action_hidden" not in data:
             raise RuntimeError("the policy server returned no hidden states (its framework ignores return_hidden)")
-        name = (self._episode_key or f"episode_{self._episode_count}").replace("/", "_")
-        np.savez(os.path.join(self.hidden_dir, name + ".npz"), hidden=data["action_hidden"][0],
-                 layers=np.array(data["action_hidden_layers"]), lang=np.array(lang))
+        key = self._episode_key or f"episode_{self._episode_count}"
+        extra = {"perturbed_actions": self._perturbed_actions(example, key)} if self.perturb_k else {}
+        np.savez(os.path.join(self.hidden_dir, key.replace("/", "_") + ".npz"), hidden=data["action_hidden"][0],
+                 layers=np.array(data["action_hidden_layers"]), lang=np.array(lang),
+                 actions=data["normalized_actions"][0], **extra)
         self._episode_count += 1
+
+    def _perturbed_actions(self, example: dict, key: str) -> np.ndarray:
+        """The policy's normalized action chunks for perturb_k changed copies of this step's input, [K, chunk, D].
+        Only measured: the policy keeps no state between calls, and the episode goes on with the action for the
+        unchanged input."""
+        rng = perturbation_rng(key)
+        chunks = []
+        for _ in range(self.perturb_k):
+            response = self.client.predict_action({
+                "examples": [{"image": perturb_images(example["image"], rng), "lang": example["lang"]}],
+                "do_sample": False, "use_ddim": self.use_ddim, "num_ddim_steps": self.num_ddim_steps})
+            chunks.append(response["data"]["normalized_actions"][0])
+        return np.stack(chunks)
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
         self.image_history.append(image)
@@ -438,7 +460,7 @@ class ModelClientVP:
 
         response = self.client.predict_action(vla_input)
         if first_step:
-            self._save_hidden(response["data"], current_instruction)
+            self._save_hidden(response["data"], current_instruction, example)
 
         # Unnormalize the action
         normalized_actions = response["data"]["normalized_actions"]  # B, chunk, D

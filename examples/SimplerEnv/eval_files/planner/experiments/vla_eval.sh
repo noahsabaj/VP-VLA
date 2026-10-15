@@ -3,13 +3,15 @@
 # splitting them into chunks gives the same videos as one client.
 # Usage: vla_eval.sh GPU PORT_BASE NAME LAYOUTS K [CHUNK...]
 #   NAME: the run folder; chunk TASK:START:END writes to $RUNS_DIR/NAME/TASK/eps_START_END. LAYOUTS: paper |
-#   heldout | seedN. Default chunks: every episode of the layout set, CHUNK_SIZE (default 8) per chunk.
+#   heldout | seedN | iidN (layout_args in common.sh). Default chunks: every episode of the layout set, CHUNK_SIZE
+#   (default 8) per chunk.
 #   Ports: policy PORT_BASE, SAM3 PORT_BASE + 1, VLM PORT_BASE + 2.
 # Environment:
 #   FAST=1 (default): the fast settings (fast_defaults in common.sh) for each of SAM3_ARGS, VLM_ARGS, POLICY_ARGS
 #     and SIM_ARGS that is not set; FAST=0: the paper's settings.
 #   SEED_OFFSET=N: the VLM's --seed-offset (another repeatable seed per query, for reruns; default 0).
 #   HIDDEN=1: save the policy's first-step hidden states in NAME/hidden (for the linear probe).
+#   PERTURB=K: with HIDDEN=1, also save the first-step actions for K changed copies of the input (vla_perturbation.py).
 #   MPS=1 (default): the servers share the GPU through an MPS daemon of this run only (start_mps in common.sh);
 #     MPS=0: no daemon.
 [ $# -ge 5 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
@@ -25,6 +27,10 @@ LOG=$OUT/status.log
 fast_defaults
 [ "${SEED_OFFSET:-0}" != 0 ] && VLM_ARGS="$VLM_ARGS --seed-offset $SEED_OFFSET"
 [ "${HIDDEN:-0}" = 1 ] && SIM_ARGS="$SIM_ARGS --vla-hidden-dir $OUT/hidden"
+if [ "${PERTURB:-0}" != 0 ]; then
+  [ "${HIDDEN:-0}" = 1 ] || { echo "PERTURB needs HIDDEN=1" >&2; exit 1; }
+  SIM_ARGS="$SIM_ARGS --vla-perturb $PERTURB"
+fi
 
 SERVER_ENV=(CUDA_VISIBLE_DEVICES=$GPU)
 trap stop_servers EXIT

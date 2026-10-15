@@ -38,18 +38,27 @@ wait_port() {
 }
 
 # layout_args LAYOUTS: the sim options of a layout set: paper = SimplerEnv's 24 fixed layouts per task (the test
-# set), heldout = --layout-seed 1 (the training set), seedN = --layout-seed N (seed2: the held-out test set).
+# set), heldout = --layout-seed 1 (the training set), seedN = --layout-seed N (seed2: the held-out test set),
+# iidN = a random layout of its own for each episode from layout seed N (iid11: the two-model ASM's training set,
+# iid12: its test set).
 layout_args() {
   case $1 in
     paper) ;;
     heldout) echo "--layout-seed 1" ;;
     seed[0-9]*) echo "--layout-seed ${1#seed}" ;;
-    *) echo "LAYOUTS must be paper, heldout or seedN, not '$1'" >&2; return 1 ;;
+    iid[0-9]*) echo "--layout-seed ${1#iid} --layout-per-episode" ;;
+    *) echo "LAYOUTS must be paper, heldout, seedN or iidN, not '$1'" >&2; return 1 ;;
   esac
 }
 
-# layout_episodes LAYOUTS: episodes per task in the layout set.
-layout_episodes() { if [ "$1" = paper ]; then echo 24; else echo 48; fi; }
+# layout_episodes LAYOUTS: episodes per task in the layout set (iidN: IID_EPISODES, default 100).
+layout_episodes() {
+  case $1 in
+    paper) echo 24 ;;
+    iid[0-9]*) echo "${IID_EPISODES:-100}" ;;
+    *) echo 48 ;;
+  esac
+}
 
 # all_chunks LAYOUTS SIZE: TASK:START:END for every episode of the layout set, in chunks of SIZE, the tasks taking
 # turns.

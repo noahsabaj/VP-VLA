@@ -55,20 +55,21 @@ if __name__ == "__main__":
             save_overlay_video=args.save_overlay_video,
             overlay_video_dir=args.overlay_video_dir,
             hidden_dir=args.vla_hidden_dir,
+            perturb_k=args.vla_perturb,
         )
 
     if args.controller == "vla":
         model = make_vla()
     else:
         from examples.SimplerEnv.eval_files.planner.planner_client import PlannerClient
-        from examples.SimplerEnv.eval_files.planner.selector import load_saved
+        from examples.SimplerEnv.eval_files.planner.selector import load_asm
 
         if args.controller == "selector" and not args.selector:
             raise SystemExit("--controller selector needs --selector <model.json>")
         model = PlannerClient(
             planner=args.planner,
             vla=make_vla() if args.controller in ("planner_then_vla", "selector") else None,
-            selector=load_saved(args.selector) if args.controller == "selector" else None,
+            selector=load_asm(args.selector) if args.controller == "selector" else None,
             sam3_host=args.sam3_host,
             sam3_port=args.sam3_port if args.planner_sam3_port is None else args.planner_sam3_port,
             target_source=args.target_source,

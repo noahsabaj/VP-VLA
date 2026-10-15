@@ -1,4 +1,4 @@
-"""Adaptive selector: predict from the first frame whether the planner will succeed.
+"""Adaptive selector (ASM): from the first frame, give each episode to the planner or to the VLA.
 
 Training data is one row per layout: the camera features the planner logged before moving
 (`planner_stats.jsonl`, under "features" and "plans"), the planner's outcome, and the VLA's
@@ -19,6 +19,13 @@ Two decision rules are scored. The threshold rule uses the planner when P(planne
 The two-model rule uses it when P(planner succeeds) >= P(VLA succeeds), with P(VLA succeeds)
 either learned from the same features or taken as the task's VLA success rate. --save stores
 only the planner model; the eval runs it with `--controller selector --selector <model.json>`.
+
+    python -m examples.SimplerEnv.eval_files.planner.selector --rule two-model \\
+        --planner-runs <training set> --vla-runs <its VLA runs> --save asm.json
+
+trains and saves the two-model ASM (TwoModelASM): one success model per method, each a logistic
+regression on the task and its method's first-frame features (PLANNER_FEATURES, VLA_FEATURES), and
+the planner when P(planner succeeds) >= P(VLA succeeds). experiments/score_two_model.py scores it.
 """
 
 import argparse
@@ -52,13 +59,19 @@ FEATURES_V2 = [
 # nine score near chance alone, and dropping any one of them moves the selector by about 1 layout.
 FEATURES_V3 = ["plan_ok", "plan_path_ratio"]
 FEATURE_SETS = {"v1": FEATURES_V1, "v2": FEATURES_V2, "v3": FEATURES_V3}
+# The two-model ASM's success models, each with one column per task as well. The planner fails when it finds no
+# path to above the object, or a long detour (v3). The VLA fails when the grasp needs a large turn of the wrist
+# (on the test set: spoon 100% at 0 deg, 33% at 90 deg; carrot 92% at 180 deg, 3% at -90 deg) or the object is
+# far from the hand. Both come from the planner's first look at the object.
+PLANNER_FEATURES = FEATURES_V3
+VLA_FEATURES = ["grasp_turn_rad", "grasp_reach_m"]
 # The hand rule (the heuristic baseline) needs these features; v3 leaves out the SAM3 score.
 HEURISTIC_FEATURES = ["plan_ok", "grasp_sam3_score"]
 # Written into every planner record since the first-frame fix. Older records found the place target
 # only after a successful grasp, so their place features give the outcome away.
 FEATURES_VERSION = 2
 # Settings a folder's runs must share; --save stores them and the eval checks them.
-RUN_SETTINGS = ("depth_noise", "noise_seed", "robot_mask", "layout_seed", "planner_seed")
+RUN_SETTINGS = ("depth_noise", "noise_seed", "robot_mask", "layout_seed", "planner_seed", "layout_per_episode")
 
 
 def row_features(record: dict, names: List[str]) -> np.ndarray:
@@ -265,12 +278,94 @@ MODELS = {"logreg": LogisticRegression, "trees": BoostedTrees}
 
 
 def load_saved(path: str) -> Tuple[Classifier, List[str]]:
-    """A model written by --save, for `--controller selector`: (model, its feature names)."""
+    """A planner model written by --save: (model, its feature names)."""
     with open(path) as fh:
         d = json.load(fh)
     model = MODELS[d["model"]].from_json(d)
     model.trained_on = d.get("trained_on") or {}
     return model, d["features"]
+
+
+class SuccessModel:
+    """P(one method succeeds) from first-frame features: a logistic regression on the features and one column per
+    task (so each task has its own base rate; the tasks are the same in training and in use)."""
+
+    def __init__(self, features: List[str], l2: float = 1.0):
+        self.features = list(features)
+        self.model = LogisticRegression(l2=l2)
+
+    def x(self, records: List[dict]) -> np.ndarray:
+        return np.stack([row_features(r, self.features) for r in records])
+
+    def fit(self, x: np.ndarray, tasks: np.ndarray, y: np.ndarray) -> "SuccessModel":
+        self.model.fit(with_tasks(x, np.asarray(tasks), TASKS), y)
+        return self
+
+    def prob(self, x: np.ndarray, tasks: np.ndarray) -> np.ndarray:
+        return self.model.prob(with_tasks(x, np.asarray(tasks), TASKS))
+
+    def plain(self) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """The model in the features' own units: logit P = intercept[task] + sum of slope[feature] * feature."""
+        m, k = self.model, len(self.features)
+        slope = m.w / m.std
+        base = m.b - float(slope @ m.mean)
+        return ({t: base + float(slope[k + i]) for i, t in enumerate(TASKS)},
+                {f: float(slope[i]) for i, f in enumerate(self.features)})
+
+    def to_json(self) -> dict:
+        return {"features": self.features, "tasks": TASKS, **self.model.to_json()}
+
+    @classmethod
+    def from_json(cls, d: dict) -> "SuccessModel":
+        if d["tasks"] != TASKS:
+            raise ValueError(f"saved with the task columns {d['tasks']}, not {TASKS}")
+        m = cls(d["features"])
+        m.model = LogisticRegression.from_json(d)
+        return m
+
+
+class ThresholdASM:
+    """The first ASM: the planner when P(planner succeeds) >= the model's threshold (0.5), else the VLA. It has no
+    estimate of P(VLA succeeds), so it treats the VLA as a coin flip in every episode."""
+
+    def __init__(self, model: Classifier, features: List[str]):
+        self.model, self.features, self.trained_on = model, features, model.trained_on
+
+    def decide(self, record: dict, task: str) -> dict:
+        p = float(self.model.prob(row_features(record, self.features)[None])[0])
+        return {"p_planner": p, "choice": "planner" if p >= self.model.threshold else "vla"}
+
+
+class TwoModelASM:
+    """The ASM with a success model for each method: the planner when P(planner succeeds) >= P(VLA succeeds), else
+    the VLA. When both probabilities are right, no other choice gives a higher expected success."""
+
+    def __init__(self, planner: SuccessModel, vla: SuccessModel, trained_on: Optional[dict] = None):
+        self.planner, self.vla, self.trained_on = planner, vla, trained_on or {}
+
+    def probs(self, records: List[dict], tasks) -> Tuple[np.ndarray, np.ndarray]:
+        tasks = np.asarray(tasks)
+        return self.planner.prob(self.planner.x(records), tasks), self.vla.prob(self.vla.x(records), tasks)
+
+    def decide(self, record: dict, task: str) -> dict:
+        p_plan, p_vla = (float(p[0]) for p in self.probs([record], [task]))
+        return {"p_planner": p_plan, "p_vla": p_vla, "choice": "planner" if p_plan >= p_vla else "vla"}
+
+    def to_json(self) -> dict:
+        return {"rule": "two-model", "planner": self.planner.to_json(), "vla": self.vla.to_json(),
+                "trained_on": self.trained_on}
+
+    @classmethod
+    def from_json(cls, d: dict) -> "TwoModelASM":
+        return cls(SuccessModel.from_json(d["planner"]), SuccessModel.from_json(d["vla"]), d.get("trained_on"))
+
+
+def load_asm(path: str):
+    """The ASM in a file written by --save, for `--controller selector`: a TwoModelASM (--rule two-model), or a
+    ThresholdASM for a planner model."""
+    with open(path) as fh:
+        d = json.load(fh)
+    return TwoModelASM.from_json(d) if d.get("rule") == "two-model" else ThresholdASM(*load_saved(path))
 
 
 class Layouts(NamedTuple):
@@ -286,8 +381,9 @@ class Layouts(NamedTuple):
         return Layouts(*[np.concatenate(z) for z in zip(*parts, strict=True)])
 
 
-def load_layouts(planner_root: str, vla_roots: List[str], names: List[str]) -> Layouts:
-    """Features, planner outcome, VLA outcome and task name for every layout both controllers ran."""
+def matched_layouts(planner_root: str, vla_roots: List[str]) -> Tuple[Dict[tuple, dict], Dict[tuple, float], list]:
+    """(planner records, VLA success rates, the keys of the layouts both controllers ran); the other layouts are
+    left out, with a warning."""
     planner, vla = load_planner(planner_root), load_vla(vla_roots)
     keys = [k for k in planner if k in vla]
     if not keys:
@@ -298,6 +394,12 @@ def load_layouts(planner_root: str, vla_roots: List[str], names: List[str]) -> L
             count = Counter(k[0] for k in ks)
             per_task = ", ".join(f"{t.split('-')[0]} {count[t]}" for t in TASKS if count[t])
             print(f"warning: {len(ks)} layouts {side} ({per_task}), left out: {planner_root} / {', '.join(vla_roots)}")
+    return planner, vla, keys
+
+
+def load_layouts(planner_root: str, vla_roots: List[str], names: List[str]) -> Layouts:
+    """Features, planner outcome, VLA outcome and task name for every layout both controllers ran."""
+    planner, vla, keys = matched_layouts(planner_root, vla_roots)
     x = np.stack([row_features(planner[k], names) for k in keys])
     y_plan = np.array([float(planner[k]["success"]) for k in keys])
     y_vla = np.array([vla[k] for k in keys])
@@ -397,6 +499,41 @@ def evaluate(planner_root: str, vla_roots: List[str], save: Optional[str] = None
         print("saved", save)
 
 
+def fit_two_model(records: List[dict], tasks: np.ndarray, y_plan: np.ndarray, y_vla: np.ndarray,
+                  trained_on: Optional[dict] = None) -> TwoModelASM:
+    """The two-model ASM fit to these episodes: their planner records, tasks and the two controllers' outcomes."""
+    asm = TwoModelASM(SuccessModel(PLANNER_FEATURES), SuccessModel(VLA_FEATURES), trained_on)
+    asm.planner.fit(asm.planner.x(records), tasks, y_plan)
+    asm.vla.fit(asm.vla.x(records), tasks, y_vla)
+    return asm
+
+
+def train_two_model(planner_root: str, vla_roots: List[str]) -> TwoModelASM:
+    """The two-model ASM, with both success models trained on every layout both controllers ran."""
+    planner, vla, keys = matched_layouts(planner_root, vla_roots)
+    records = [planner[k] for k in keys]
+    return fit_two_model(records, np.array([k[0] for k in keys]), np.array([float(r["success"]) for r in records]),
+                         np.array([vla[k] for k in keys]), planner_settings(list(planner.values()), planner_root))
+
+
+def describe(asm: TwoModelASM) -> List[str]:
+    """The two success models in the features' own units, one line each."""
+    lines = []
+    for name, m in (("planner", asm.planner), ("VLA", asm.vla)):
+        intercepts, slopes = m.plain()
+        lines.append(f"P({name} succeeds): logit = " + " + ".join(f"{v:.3f} x {f}" for f, v in slopes.items())
+                     + " + intercept (" + ", ".join(f"{t.split('-')[0]} {v:.3f}" for t, v in intercepts.items()) + ")")
+    return lines
+
+
+def save_two_model(planner_root: str, vla_roots: List[str], save: str) -> None:
+    asm = train_two_model(planner_root, vla_roots)
+    print("\n".join(describe(asm)))
+    with open(save, "w") as fh:
+        json.dump(asm.to_json(), fh, indent=1)
+    print("saved", save)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--planner-runs", required=True)
@@ -409,7 +546,15 @@ if __name__ == "__main__":
     ap.add_argument("--features", choices=sorted(FEATURE_SETS), default="v3",
                     help="v3 (default): plan_ok and plan_path_ratio only; v2: one per planner failure mode, "
                          "with no units; v1: the first 16 features")
+    ap.add_argument("--rule", choices=["threshold", "two-model"], default="threshold",
+                    help="two-model: train the two-model ASM on --planner-runs and --vla-runs and save it (--save); "
+                         "experiments/score_two_model.py scores it")
     a = ap.parse_args()
     if bool(a.test_planner_runs) != bool(a.test_vla_runs):
         ap.error("--test-planner-runs and --test-vla-runs go together")
-    evaluate(a.planner_runs, a.vla_runs, a.save, a.model, a.test_planner_runs, a.test_vla_runs, a.features)
+    if a.rule == "two-model":
+        if not a.save or a.test_planner_runs:
+            ap.error("--rule two-model trains and saves the ASM: give --save, and no --test-* runs")
+        save_two_model(a.planner_runs, a.vla_runs, a.save)
+    else:
+        evaluate(a.planner_runs, a.vla_runs, a.save, a.model, a.test_planner_runs, a.test_vla_runs, a.features)

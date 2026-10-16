@@ -133,6 +133,7 @@ class PlannerClient:
         log_path: Optional[str] = None,
         depth_noise: str = "none",
         noise_seed: Optional[int] = None,
+        rgb_noise: str = "none",
         robot_mask: str = "sim",
         selector=None,
         planner_seed: Optional[int] = None,
@@ -148,9 +149,12 @@ class PlannerClient:
             if robot_mask != "joints":  # with "sim" the plan features would use the simulator's segmentation
                 raise ValueError("the selector mode needs --robot-mask joints, so its features come from the camera only")
             trained = selector.trained_on
-            for name, value in (("depth_noise", depth_noise), ("robot_mask", robot_mask)):
-                if trained.get(name) not in (None, value):
-                    raise ValueError(f"the selector was trained with {name}={trained[name]}, but this run uses {value}")
+            # A selector saved before the RGB noise existed was trained without it.
+            for name, value, old in (("depth_noise", depth_noise, None), ("rgb_noise", rgb_noise, "none"),
+                                     ("robot_mask", robot_mask, None)):
+                if trained.get(name, old) not in (None, value):
+                    raise ValueError(f"the selector was trained with {name}={trained.get(name, old)}, but this run "
+                                     f"uses {value}")
         self.mode = "selector" if selector is not None else "planner_then_vla" if vla is not None else "planner"
         # Planner then VLA: the VLA takes over above the object. In the selector mode the planner
         # works exactly as in planner only, because that is what the selector was trained on.
@@ -165,6 +169,8 @@ class PlannerClient:
         self.grasp_retries = grasp_retries
         self.log_path = log_path
         self.noise = DepthNoise(depth_noise, noise_seed)
+        # The evaluator puts the RGB noise into the picture (camera_noise.py); the planner only logs its level.
+        self.rgb_noise = rgb_noise
         # The planner's random steps (MPlib: IK restarts, RRT) are seeded per episode like the depth noise, so a
         # try plans the same in every run, whatever ran before it in the process. None leaves them unseeded.
         if planner_seed is not None and not hasattr(self.planner, "seed"):
@@ -204,8 +210,8 @@ class PlannerClient:
         if self.planner_seed is not None:
             self.planner.seed(zlib.crc32(f"{self.planner_seed}/{self.episode_key}".encode()) % 2147483647 + 1)
         # The run settings go into every record, so the selector can refuse to mix runs.
-        self.stats = {"plans": [], "depth_noise": self.noise.level, "noise_seed": self.noise.seed,
-                      "planner_seed": self.planner_seed, "robot_mask": self.robot_mask,
+        self.stats = {"plans": [], "depth_noise": self.noise.level, "rgb_noise": self.rgb_noise,
+                      "noise_seed": self.noise.seed, "planner_seed": self.planner_seed, "robot_mask": self.robot_mask,
                       "features_version": FEATURES_VERSION, "features": {}}
         self.ee_trace: List[np.ndarray] = []
         self.transit_contact = False

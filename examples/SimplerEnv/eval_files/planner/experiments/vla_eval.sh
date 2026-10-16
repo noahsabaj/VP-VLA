@@ -16,6 +16,7 @@
 #     MPS=0: no daemon.
 #   SAM_VERSION=sam3 (default, the paper's setup) | sam3.1: the segmentation model of the visual prompts
 #     (start_vla_servers in common.sh).
+#   RGB_NOISE=none (default) | realistic | harsh: a real color camera's errors in the picture (camera_noise.py).
 [ $# -ge 5 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 GPU=$1; PB=$2; NAME=$3; LAYOUTS=$4; K=$5
@@ -28,6 +29,7 @@ mkdir -p "$OUT"
 LOG=$OUT/status.log
 fast_defaults
 [ "${SEED_OFFSET:-0}" != 0 ] && VLM_ARGS="$VLM_ARGS --seed-offset $SEED_OFFSET"
+RGB=$(rgb_args "${RGB_NOISE:-none}") || exit 1
 [ "${HIDDEN:-0}" = 1 ] && SIM_ARGS="$SIM_ARGS --vla-hidden-dir $OUT/hidden"
 if [ "${PERTURB:-0}" != 0 ]; then
   [ "${HIDDEN:-0}" = 1 ] || { echo "PERTURB needs HIDDEN=1" >&2; exit 1; }
@@ -40,7 +42,7 @@ if [ "${MPS:-1}" = 1 ]; then start_mps $GPU "$OUT/mps_log" || { log "MPS daemon 
 T0=$SECONDS
 start_vla_servers $PB "$OUT" && wait_port $PB && wait_port $((PB + 1)) && wait_port $((PB + 2)) ||
   { log "servers did not start"; exit 1; }
-log "START K=$K MPS=${MPS:-1} LAYOUTS=$LAYOUTS SAM_VERSION=${SAM_VERSION:-sam3} SAM3_ARGS=[$SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \
+log "START K=$K MPS=${MPS:-1} LAYOUTS=$LAYOUTS RGB_NOISE=${RGB_NOISE:-none} SAM_VERSION=${SAM_VERSION:-sam3} SAM3_ARGS=[$SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \
   "SIM_ARGS=[$SIM_ARGS] on GPU $GPU, commit $(git log -1 --format=%h), servers up in $((SECONDS - T0)) s: ${CHUNKS[*]}"
 nvidia-smi dmon -i $GPU -s um -d 5 > "$OUT/dmon.txt" 2>&1 &
 DMON=$!
@@ -50,7 +52,7 @@ chunk() {
   IFS=: read -r task start end <<< "$1"
   out=$OUT/$task/eps_${start}_$end
   sim $GPU $task $start $end "$out" --controller vla --port $PB --sam3-port $((PB + 1)) --vlm-port $((PB + 2)) \
-    $LS $VP_ARGS $SIM_ARGS
+    $LS $RGB $VP_ARGS $SIM_ARGS
   rc=$?
   log "chunk $1 exit=$rc videos=$(find "$out" -name "*.mp4" | wc -l)" \
     "$(grep "Average success" "$out/sim.log" | tail -1 | xargs) ($((SECONDS - t0)) s)"

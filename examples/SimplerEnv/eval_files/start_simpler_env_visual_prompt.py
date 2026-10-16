@@ -77,6 +77,7 @@ if __name__ == "__main__":
             log_path=args.planner_log or os.path.join(args.logging_dir, "planner_stats.jsonl"),
             depth_noise=args.depth_noise,
             noise_seed=args.noise_seed,
+            rgb_noise=args.rgb_noise,
             robot_mask=args.robot_mask,
             planner_seed=args.planner_seed,
         )

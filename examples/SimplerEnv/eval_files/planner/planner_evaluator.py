@@ -10,6 +10,9 @@ The changes, marked "CHANGED":
 4. Before each episode, `model.set_episode(key)` is called if the model has it, so the planner can
    seed its depth noise per episode.
 5. `action_plots=False` (`--no-action-plots`) skips the per-episode action plot. On by default.
+6. `rgb_noise` (`--rgb-noise`): a real color camera's errors (camera_noise.py) in the picture, seeded per episode
+   like the depth noise. The noisy picture is what the model gets and also replaces the camera's picture in `obs`,
+   so the VLA and the planner see the same pixels. Off by default.
 Everything else is unchanged, so the AI-only setup behaves exactly as with SimplerEnv's loop.
 """
 
@@ -21,6 +24,8 @@ from transforms3d.euler import quat2euler
 from simpler_env.utils.env.env_builder import build_maniskill2_env, get_robot_control_mode
 from simpler_env.utils.env.observation_utils import get_image_from_maniskill2_obs_dict
 from simpler_env.utils.visualization import write_video
+
+from ..camera_noise import RGBNoise
 
 
 def run_maniskill2_eval_single_episode(
@@ -49,6 +54,7 @@ def run_maniskill2_eval_single_episode(
     layout_seed=None,
     action_plots=True,
     layout_per_episode=False,
+    rgb_noise=None,
 ):
 
     if additional_env_build_kwargs is None:
@@ -118,19 +124,24 @@ def run_maniskill2_eval_single_episode(
         task_description = env.get_language_instruction()
     print(task_description)
 
+    # CHANGED: name the episode first, so the camera noise and the model can seed their randomness per episode.
+    if obj_variation_mode == "xy":  # no episode id here: the object and robot positions name the try
+        episode_key = f"{env_name}/xy/{obj_init_x}/{obj_init_y}/{robot_init_x}/{robot_init_y}"
+    else:
+        episode_key = f"{env_name}/{layout_name}/{obj_episode_id}"
+    if rgb_noise is not None:
+        rgb_noise.new_episode(episode_key)
+
     # Initialize logging
-    image = get_image_from_maniskill2_obs_dict(env, obs, camera_name=obs_camera_name)
+    # CHANGED: the camera's picture through the RGB noise.
+    image = camera_image(env, obs, obs_camera_name, rgb_noise)
     images = [image]
     predicted_actions = []
     predicted_terminated, done, truncated = False, False, False
 
     # Initialize model
-    # CHANGED: name the episode first, so the model can seed its own randomness per episode.
     if hasattr(model, "set_episode"):
-        if obj_variation_mode == "xy":  # no episode id here: the object and robot positions name the try
-            model.set_episode(f"{env_name}/xy/{obj_init_x}/{obj_init_y}/{robot_init_x}/{robot_init_y}")
-        else:
-            model.set_episode(f"{env_name}/{layout_name}/{obj_episode_id}")
+        model.set_episode(episode_key)
     model.reset(task_description)
 
     timestep = 0
@@ -163,7 +174,7 @@ def run_maniskill2_eval_single_episode(
 
         print(timestep, info)
 
-        image = get_image_from_maniskill2_obs_dict(env, obs, camera_name=obs_camera_name)
+        image = camera_image(env, obs, obs_camera_name, rgb_noise)
         images.append(image)
         timestep += 1
 
@@ -212,6 +223,12 @@ def run_maniskill2_eval_single_episode(
         model.visualize_epoch(predicted_actions, images, save_path=action_path)
 
     return success == "success"
+
+
+def camera_image(env, obs, camera_name, rgb_noise=None):
+    """The camera's picture for the model, through the RGB noise (which also puts the noisy picture into obs)."""
+    image = get_image_from_maniskill2_obs_dict(env, obs, camera_name=camera_name)
+    return image if rgb_noise is None else rgb_noise.apply_to_obs(obs, image)
 
 
 def draw_layouts(xy_configs, quat_configs, rng: np.random.Generator, n_xy: int, n_quat: int,
@@ -287,6 +304,8 @@ def episode_layout_truth(env, episode: int):
 def maniskill2_evaluator(model, args):
     control_mode = get_robot_control_mode(args.robot, args.policy_model)
     success_arr = []
+    # CHANGED: one RGB camera noise for the run; each episode reseeds it.
+    rgb_noise = RGBNoise(getattr(args, "rgb_noise", "none"), getattr(args, "noise_seed", None))
 
     # run inference
     for robot_init_x in args.robot_init_xs:
@@ -314,6 +333,7 @@ def maniskill2_evaluator(model, args):
                     layout_seed=getattr(args, "layout_seed", None),
                     action_plots=not getattr(args, "no_action_plots", False),
                     layout_per_episode=getattr(args, "layout_per_episode", False),
+                    rgb_noise=rgb_noise,
                 )
                 if args.obj_variation_mode == "xy":
                     for obj_init_x in args.obj_init_xs:

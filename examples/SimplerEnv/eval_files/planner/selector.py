@@ -71,7 +71,8 @@ HEURISTIC_FEATURES = ["plan_ok", "grasp_sam3_score"]
 # only after a successful grasp, so their place features give the outcome away.
 FEATURES_VERSION = 2
 # Settings a folder's runs must share; --save stores them and the eval checks them.
-RUN_SETTINGS = ("depth_noise", "noise_seed", "robot_mask", "layout_seed", "planner_seed", "layout_per_episode")
+RUN_SETTINGS = ("depth_noise", "rgb_noise", "noise_seed", "robot_mask", "layout_seed", "planner_seed",
+                "layout_per_episode")
 
 
 def row_features(record: dict, names: List[str]) -> np.ndarray:

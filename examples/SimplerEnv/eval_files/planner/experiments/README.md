@@ -37,7 +37,8 @@ Planner-only evals are named `{prefix}_{layouts}_{level}`, with the depth-noise 
 `fast3_train_g0/g1` (test set), `heldout_vla_g0/g1` (training set), `seed2_vla` (held-out test set), `vla_iid11`
 and `vla_iid12`, all with the fast settings, and the reruns `rep1_*`, `rep2_*` (VLM seed offsets 1 and 2).
 `exact_vla_1` to `exact_vla_5` link to the 5 VLA-only evals of the test set with the paper's settings
-(`run_eval.sh`). `runs.py` has these names.
+(`run_eval.sh`). `runs.py` has these names. The camera-noise study's evals are `cam_{layouts}_{level}`
+(planner-only) and `vla_{layouts}_{level}` (VLA-only), where the level is the camera's (see "Camera-noise study").
 
 ## Evals (GPU)
 
@@ -52,7 +53,9 @@ and `vla_iid12`, all with the fast settings, and the reruns `rep1_*`, `rep2_*` (
 Each script's header lists its options. The VLA runners use the fast settings by default (`FAST=1`, see
 `fast_defaults` in `common.sh`; `FAST=0`: the paper's settings) and an MPS daemon of their own (`MPS=1`). A
 run's `status.log` has a START line with its exact settings and commit, one line per chunk or task, and a DONE
-line. Examples:
+line. `RGB_NOISE=realistic|harsh` puts a real color camera's errors (`camera_noise.py`) in the picture of every
+controller (default `none`; in `planner_eval.sh` and `selector_eval.sh`, `same` = the depth noise's level).
+Examples:
 
 ```bash
 E=examples/SimplerEnv/eval_files/planner/experiments
@@ -100,6 +103,31 @@ done
 DEPTHS=harsh CHUNK_SIZE=25 bash $E/selector_eval.sh 0 10510 closed_loop_iid12 iid12 'two_model/asm_{}.json' 6
 ```
 
+The camera-noise study's evals and ASMs (see "Camera-noise study" below). Its none level is the two-model
+study's evals, linked under the study's names:
+
+```bash
+for set in iid11 iid12; do
+  ln -s pseed_${set}_none $RUNS_DIR/cam_${set}_none
+  ln -s vla_$set $RUNS_DIR/vla_${set}_none
+done
+RGB_NOISE=same bash $E/planner_evals.sh 0 10320 2 cam_iid11_realistic:realistic:iid11 cam_iid11_harsh:harsh:iid11 \
+    cam_iid12_realistic:realistic:iid12 cam_iid12_harsh:harsh:iid12
+for set in iid11 iid12; do
+  for level in realistic harsh; do
+    RGB_NOISE=$level bash $E/vla_eval.sh 0 10400 vla_${set}_$level $set 4
+  done
+done
+mkdir -p $RUNS_DIR/cam_model
+for level in none realistic harsh; do
+  python -m examples.SimplerEnv.eval_files.planner.selector --rule two-model \
+      --planner-runs $RUNS_DIR/cam_iid11_$level --vla-runs $RUNS_DIR/vla_iid11_$level \
+      --save $RUNS_DIR/cam_model/asm_$level.json > $RUNS_DIR/cam_model/train_$level.txt
+done
+RGB_NOISE=same DEPTHS=harsh CHUNK_SIZE=25 bash $E/selector_eval.sh 0 10510 cam_closed_loop_iid12 iid12 \
+    'cam_model/asm_{}.json' 6
+```
+
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
 `TASK:0:8 TASK:8:16 TASK:16:24` for each task and `heldout_vla_g1` the episodes 24 to 47.
 
@@ -119,7 +147,9 @@ The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g
 
 `compare_runs RUN_A:RUN_B...` compares two planner-only evals episode by episode. The two-model study's scorers:
 `score_two_model` (all its tables and tests) and `check_closed_loop closed_loop_iid12 --planner 'pseed_iid12_{}'
---models 'two_model/asm_{}.json' --vla vla_iid12` (its closed-loop eval).
+--models 'two_model/asm_{}.json' --vla vla_iid12` (its closed-loop eval). The camera-noise study's: `score_two_model
+--runs cam --vla 'vla_{set}_{level}' --noise camera --other` and `check_closed_loop cam_closed_loop_iid12 --planner
+'cam_iid12_{}' --models 'cam_model/asm_{}.json' --vla vla_iid12_harsh`.
 
 The `dfix_*` and `seeded_*` runs and `heldout_planner_none` (the evals before the planner seed and before the
 depth fix) were archived on 2026-10-15; restore them into `$RUNS_DIR` for the result files that read them.
@@ -185,3 +215,45 @@ chunk over 8 changed copies of the input, `vla_perturbation.py`); the linear pro
 numbers, as planned before); the previous ASM v3 and the heuristic baseline; the success models' AUC, within-task
 AUC, log-loss, Brier score and calibration (ECE, 10 equal bins) against the task's rate; the closed-loop eval
 against the offline result (`check_closed_loop`).
+
+## Camera-noise study
+
+The plan below was fixed on 2026-10-16, before any of the study's evals ran (the RGB noise did not exist before),
+and the scorers follow it. The results of the two-model study and of this study do not change it. A result that
+is not in the plan is reported as exploratory.
+
+**Question.** In the two-model study, the noise levels change only the planner's depth picture. The VLA uses only
+the color picture, which stays perfect, so the comparison favors the VLA. Does the two-model ASM still beat both
+methods when both of them get a noisy camera?
+
+**Camera levels.** At camera level L (none, realistic or harsh), the color picture of every controller has RGB
+noise L, and the planner's depth picture (only the planner uses depth) has depth noise L, as in the two-model
+study. The RGB noise (`camera_noise.py`) is a real color camera's errors:
+
+| Level | Sensor noise at mid-gray | Exposure error (1 sd) | White-balance error (1 sd, per channel) | Blur (sigma) |
+|---|---|---|---|---|
+| realistic | 4/255 | 5% | 2% | 0.5 px |
+| harsh | 11/255 | 16% (a quarter stop) | 5% | 1.5 px |
+
+The exposure, white balance and blur are fixed for an episode (one camera setup); the sensor noise (shot and read
+noise) is new in every frame. The noise goes into the picture once per frame, before any controller sees it, so
+the VLA's input, its SAM3 visual prompts and its VLM, and the planner's SAM3 masks all see the same pixels. It is
+seeded by the noise seed (0) and the episode, so every controller gets the same first frame, and the depth noise's
+draws are the same as without it.
+
+**Evals.** Planner-only `cam_iid11_{level}` and `cam_iid12_{level}` (planner seed 0) and VLA-only
+`vla_iid11_{level}` and `vla_iid12_{level}` (fast settings, no first-step files) at the realistic and harsh camera
+levels; the closed-loop eval `cam_closed_loop_iid12` (harsh camera) with the saved ASMs `cam_model/asm_{level}.json`.
+The none level is the two-model study's evals, which have the same settings. The commands are above. About 15 GPU
+hours on one GPU (the 4 VLA-only evals about 13 hours).
+
+**Models, rule and tests.** As in the two-model study: one ASM per camera level, trained on `iid11` at that level,
+with the same success models, features and decision rule. The planned tests are the same three, in the same fixed
+order, on the 400 episodes of `iid12` at the harsh camera level: the two-model ASM against (1) the better single
+method on the training set, (2) rule A and (3) rule C. Each is the exact two-sided paired test at 0.05 and counts
+only when every test before it was significant; the intervals are as in the two-model study.
+
+**Secondary (reported, no claims).** The none and realistic camera levels; each method's success rate at each
+level (how much the camera noise lowers the VLA and the planner); the success models' AUC, within-task AUC,
+log-loss, Brier score and calibration; the closed-loop eval against the offline result (`check_closed_loop`). The
+action spread and the linear probe are not part of this study.

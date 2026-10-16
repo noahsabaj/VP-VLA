@@ -6,17 +6,18 @@ against the baselines and the other decision rules with the planned tests, and t
 the other layout sets.
 
     python -m examples.SimplerEnv.eval_files.planner.experiments.score_two_model \\
-        [--runs pseed] [--train iid11] [--test iid12] [--other paper seed2]
+        [--runs pseed] [--train iid11] [--test iid12] [--other paper seed2] [--vla 'vla_{set}_{level}' --noise camera]
 
-Each layout set needs the planner-only evals {runs}_{set}_{level} and the VLA-only evals runs.FAST_VLA[set]. The
+Each layout set needs the planner-only evals {runs}_{set}_{level} and the VLA-only evals runs.FAST_VLA[set], or
+with --vla one VLA-only eval per set and level (the camera-noise study, where the VLA's picture is noisy too). The
 rows with the action spread and the linear probe also need the first-step files runs.PERTURB[set] of the training
-set and of the test set. selector.py --rule two-model saves the same ASMs for the closed-loop eval.
+set and of the test set (not with --vla). selector.py --rule two-model saves the same ASMs for the closed-loop eval.
 """
 
 import argparse
 import glob
 import os
-from typing import Dict, List, NamedTuple
+from typing import Dict, List, NamedTuple, Optional
 
 import numpy as np
 
@@ -48,8 +49,9 @@ class LayoutSet(NamedTuple):
     y_vla: np.ndarray
 
 
-def load(prefix: str, name: str, level: str) -> LayoutSet:
-    planner, vla, keys = s.matched_layouts(runs.path(f"{prefix}_{name}_{level}"), runs.paths(runs.FAST_VLA[name]))
+def load(prefix: str, name: str, level: str, vla_pattern: Optional[str] = None) -> LayoutSet:
+    vla_runs = [vla_pattern.format(set=name, level=level)] if vla_pattern else runs.FAST_VLA[name]
+    planner, vla, keys = s.matched_layouts(runs.path(f"{prefix}_{name}_{level}"), runs.paths(vla_runs))
     records = [planner[k] for k in keys]
     return LayoutSet(keys, records, np.array([k[0] for k in keys]), np.array([float(r["success"]) for r in records]),
                      np.array([vla[k] for k in keys]))
@@ -74,9 +76,9 @@ def first_step(name: str) -> Dict[tuple, tuple]:
     return out
 
 
-def score(train: LayoutSet, test: LayoutSet, f_train: dict, f_test: dict, name: str):
+def score(train: LayoutSet, test: LayoutSet, f_train: Optional[dict], f_test: Optional[dict], name: str):
     """The ASM trained on `train`, and on `test`: each setup's outcomes, its VLA picks, and each success model's
-    (P, outcome)."""
+    (P, outcome). f_train and f_test are the first-step files (first_step), or None when they are not used."""
     asm = s.fit_two_model(train.records, train.tasks, train.y_plan, train.y_vla)
     p_plan, p_vla = asm.probs(test.records, test.tasks)
     p_rate = s.task_rate(train.y_vla, train.tasks, test.tasks)
@@ -89,7 +91,7 @@ def score(train: LayoutSet, test: LayoutSet, f_train: dict, f_test: dict, name: 
     probs = {"P(planner)": (p_plan, test.y_plan),
              "P(planner): the task's rate": (s.task_rate(train.y_plan, train.tasks, test.tasks), test.y_plan),
              "P(VLA)": (p_vla, test.y_vla), "P(VLA): the task's rate": (p_rate, test.y_vla)}
-    if all(k in f_train for k in train.keys) and all(k in f_test for k in test.keys):
+    if f_train is not None and all(k in f_train for k in train.keys) and all(k in f_test for k in test.keys):
         spread = s.SuccessModel([*s.VLA_FEATURES, "log_action_spread"])
 
         def xs(d, f):
@@ -103,7 +105,7 @@ def score(train: LayoutSet, test: LayoutSet, f_train: dict, f_test: dict, name: 
         use_planner.update({SPREAD: p_plan >= p_spread, PROBE: p_plan >= p_probe})
         probs.update({"P(VLA) with the action spread": (p_spread, test.y_vla),
                       "P(VLA): the linear probe": (p_probe, test.y_vla)})
-    elif name in runs.PERTURB:
+    elif f_train is not None and name in runs.PERTURB:
         print(f"warning: {name}: episodes with no first-step file; the action-spread and probe rows are left out")
     hx = np.stack([s.row_features(r, s.HEURISTIC_FEATURES) for r in test.records])
     use_planner = {"planner-only": np.ones(len(test.keys), bool), "VLA-only": np.zeros(len(test.keys), bool),
@@ -172,19 +174,22 @@ def main():
     ap.add_argument("--train", default="iid11", help="the training set")
     ap.add_argument("--test", default="iid12", help="the test set of the planned tests")
     ap.add_argument("--other", nargs="*", default=["paper", "seed2"], help="more test sets (secondary)")
+    ap.add_argument("--vla", default=None, help="the VLA-only evals: a run name with {set} and {level}, one eval per "
+                    "set and level (default: runs.FAST_VLA[set] at every level); without the first-step rows")
+    ap.add_argument("--noise", default="depth", help="what the level is the noise of, for the headings")
     a = ap.parse_args()
     levels = [PRIMARY_LEVEL] + [lvl for lvl in LEVELS if lvl != PRIMARY_LEVEL]
-    train = {lvl: load(a.runs, a.train, lvl) for lvl in levels}
-    f_train = first_step(a.train)
+    train = {lvl: load(a.runs, a.train, lvl, a.vla) for lvl in levels}
+    f_train = first_step(a.train) if a.vla is None else None
     print(f"# Two-model ASM: trained on {a.train}, tested on {a.test} (planned tests)"
           + (f" and on {', '.join(a.other)} (secondary)" if a.other else ""))
     for name in [a.test, *a.other]:
-        f_test = first_step(name)
+        f_test = first_step(name) if a.vla is None else None
         for lvl in levels:
             planned = name == a.test and lvl == PRIMARY_LEVEL
-            test = load(a.runs, name, lvl)
+            test = load(a.runs, name, lvl, a.vla)
             asm, rows, picks, probs = score(train[lvl], test, f_train, f_test, name)
-            print(f"\n## {name}, {LEVEL_NAMES[lvl]} depth: {len(test.keys)} episodes"
+            print(f"\n## {name}, {LEVEL_NAMES[lvl]} {a.noise}: {len(test.keys)} episodes"
                   + (" (the planned tests)" if planned else ""))
             if name == a.test:
                 print(f"Trained on the {len(train[lvl].keys)} episodes of {a.train}:")

@@ -14,6 +14,8 @@
 #   PERTURB=K: with HIDDEN=1, also save the first-step actions for K changed copies of the input (vla_perturbation.py).
 #   MPS=1 (default): the servers share the GPU through an MPS daemon of this run only (start_mps in common.sh);
 #     MPS=0: no daemon.
+#   SAM_VERSION=sam3 (default, the paper's setup) | sam3.1: the segmentation model of the visual prompts
+#     (start_vla_servers in common.sh).
 [ $# -ge 5 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 GPU=$1; PB=$2; NAME=$3; LAYOUTS=$4; K=$5
@@ -38,7 +40,7 @@ if [ "${MPS:-1}" = 1 ]; then start_mps $GPU "$OUT/mps_log" || { log "MPS daemon 
 T0=$SECONDS
 start_vla_servers $PB "$OUT" && wait_port $PB && wait_port $((PB + 1)) && wait_port $((PB + 2)) ||
   { log "servers did not start"; exit 1; }
-log "START K=$K MPS=${MPS:-1} LAYOUTS=$LAYOUTS SAM3_ARGS=[$SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \
+log "START K=$K MPS=${MPS:-1} LAYOUTS=$LAYOUTS SAM_VERSION=${SAM_VERSION:-sam3} SAM3_ARGS=[$SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \
   "SIM_ARGS=[$SIM_ARGS] on GPU $GPU, commit $(git log -1 --format=%h), servers up in $((SECONDS - T0)) s: ${CHUNKS[*]}"
 nvidia-smi dmon -i $GPU -s um -d 5 > "$OUT/dmon.txt" 2>&1 &
 DMON=$!

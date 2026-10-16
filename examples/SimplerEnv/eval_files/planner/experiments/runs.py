@@ -3,7 +3,9 @@
 Planner-only evals are named {prefix}_{layouts}_{level}: layouts = heldout (the training set, layout seed 1),
 paper (the test set, SimplerEnv's 24 layouts per task), seed2 (the held-out test set, layout seed 2), or iid11 and
 iid12 (the two-model ASM study's training and test sets: a random layout of its own for each episode), and
-level = the depth noise (none, realistic, harsh). The VLA-only evals are named below.
+level = the depth noise (none, realistic, harsh). The VLA-only evals are named below. The camera-noise study's
+evals are cam_{layouts}_{level} (planner-only) and vla_{layouts}_{level} (VLA-only), level = the camera's (RGB noise
+for both, and the depth noise for the planner); its ASMs are cam_model/asm_{level}.json.
 """
 
 import os

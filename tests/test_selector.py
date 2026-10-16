@@ -91,11 +91,15 @@ def test_planner_records_refuse_wrong_joins(tmp_path):
         "mode": [_record(0, True, mode="selector")],
         "duplicate": [_record(0, True), _record(0, False)],
         "settings": [_record(0, True), _record(1, True, depth_noise="none")],
+        "rgb": [_record(0, True, rgb_noise="none"), _record(1, True, rgb_noise="harsh")],
     }
     for name, records in bad.items():
         _write_planner(tmp_path / name, SPOON, records)
         with pytest.raises(SystemExit):
             s.planner_records(str(tmp_path / name))
+    # records written before the RGB noise existed have no rgb_noise and join those with "none"
+    _write_planner(tmp_path / "old", SPOON, [_record(0, True), _record(1, True, rgb_noise="none")])
+    assert s.planner_settings(s.planner_records(str(tmp_path / "old"))) == {"depth_noise": "harsh", "rgb_noise": "none"}
 
 
 def test_load_vla_averages_runs_and_refuses_two_outcomes(tmp_path):
@@ -289,6 +293,16 @@ def test_planned_tests_stop_at_the_first_that_is_not_significant(capsys):
     assert lines[1].startswith("1. vs planner-only") and lines[1].endswith("p = 1: not significant")
     assert lines[2].endswith("does not count (a test before it was not significant)")
     assert lines[3].endswith("does not count (a test before it was not significant)")
+
+
+def test_score_two_model_load_takes_one_vla_eval_per_level(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("RUNS_DIR", str(tmp_path))
+    _write_planner(tmp_path / "cam_iid11_harsh", SPOON, [_record(0, True), _record(1, False)])
+    _write_video(tmp_path / "vla_iid11_harsh", SPOON, 0, False)
+    _write_video(tmp_path / "vla_iid11_harsh", SPOON, 1, True)
+    ls = score_two_model.load("cam", "iid11", "harsh", "vla_{set}_{level}")
+    assert ls.keys == [(SPOON, 0), (SPOON, 1)]
+    assert ls.y_plan.tolist() == [1.0, 0.0] and ls.y_vla.tolist() == [0.0, 1.0]
 
 
 def test_first_step_reads_the_hidden_state_and_the_action_spread(tmp_path, monkeypatch):

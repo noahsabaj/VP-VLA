@@ -154,7 +154,9 @@ def get_args():
                         help="JSON-lines file for per-episode planner stats (default: <logging-dir>/planner_stats.jsonl)")
     parser.add_argument("--depth-noise", type=str, default="none", choices=["none", "realistic", "harsh"],
                         help="Simulated depth-camera errors for the planner (the simulator's depth is perfect)")
-    parser.add_argument("--noise-seed", type=int, default=0)
+    parser.add_argument("--rgb-noise", type=str, default="none", choices=["none", "realistic", "harsh"],
+                        help="Simulated color-camera errors in the picture every controller gets (camera_noise.py)")
+    parser.add_argument("--noise-seed", type=int, default=0, help="Seed of the depth and RGB noise")
     parser.add_argument("--planner-seed", type=int, default=None,
                         help="Seed the planner's random steps (MPlib's IK restarts and RRT) per episode from this seed "
                              "and the episode, so a try plans the same in every run (default: unseeded)")

@@ -51,6 +51,16 @@ layout_args() {
   esac
 }
 
+# rgb_args LEVEL: the sim options of the RGB camera noise (camera_noise.py; noise seed 0, the default): none (no
+# options, as before the noise existed), realistic or harsh.
+rgb_args() {
+  case $1 in
+    none) ;;
+    realistic | harsh) echo "--rgb-noise $1" ;;
+    *) echo "RGB_NOISE must be none, realistic or harsh, not '$1'" >&2; return 1 ;;
+  esac
+}
+
 # layout_episodes LAYOUTS: episodes per task in the layout set (iidN: IID_EPISODES, default 100).
 layout_episodes() {
   case $1 in

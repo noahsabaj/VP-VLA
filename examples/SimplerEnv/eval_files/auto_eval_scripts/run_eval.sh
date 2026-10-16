@@ -57,6 +57,9 @@ PLANNER_SEED=${PLANNER_SEED:-$([ "${CONTROLLER}" = "selector" ] && echo 0)}
 PLANNER_ARGS="--controller ${CONTROLLER} --planner ${PLANNER}${SELECTOR:+ --selector ${SELECTOR}} --robot-mask ${ROBOT_MASK}"
 PLANNER_ARGS="${PLANNER_ARGS}${DEPTH_NOISE:+ --depth-noise ${DEPTH_NOISE}}${NOISE_SEED:+ --noise-seed ${NOISE_SEED}}"
 PLANNER_ARGS="${PLANNER_ARGS}${PLANNER_SEED:+ --planner-seed ${PLANNER_SEED}}"
+# Camera of every controller: RGB_NOISE=none|realistic|harsh puts a real color camera's errors in the picture
+# (camera_noise.py), seeded by NOISE_SEED.
+PLANNER_ARGS="${PLANNER_ARGS}${RGB_NOISE:+ --rgb-noise ${RGB_NOISE}}"
 # Extra VLM server options. A selector run gives some tries to the VLA; they equal VLA-only tries only if
 # the VLM's sampled answers do not depend on the tries before them, so it needs --seed-per-query (and so
 # does the VLA-only run it is compared with).

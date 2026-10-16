@@ -64,6 +64,8 @@ bash $E/planner_evals.sh 0 10320 3 pseed_heldout_none:none:heldout pseed_heldout
 # VLA-only evals (chunks of 8 episodes, K=4 sim clients); the reruns with SEED_OFFSET=1 and 2
 HIDDEN=1 bash $E/vla_eval.sh 0 10400 seed2_vla seed2 4
 SEED_OFFSET=1 HIDDEN=1 bash $E/vla_eval.sh 0 10460 rep1_paper paper 4
+# the same eval with SAM 3.1's detector for the visual prompts (needs the sam31 env, build_env_sam31.sh)
+SAM_VERSION=sam3.1 SEED_OFFSET=1 bash $E/vla_eval.sh 0 10460 sam31_rep1_paper paper 4
 # first-step hidden states for the linear probe (1-step episodes)
 HIDDEN=1 SIM_ARGS="--sam3-batch-prompts --no-action-plots --max-episode-steps 1" \
     bash $E/vla_eval.sh 0 10420 probe_paper paper 4

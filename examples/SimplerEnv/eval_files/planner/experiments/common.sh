@@ -74,9 +74,11 @@ all_chunks() {
 # SIM_ARGS that is not set; FAST=0 leaves them empty (the paper's settings). Checked on 2026-10-10 against the 5
 # evals with the paper's settings on the test set: the same success rate (McNemar p = 0.69), 4.8x faster per GPU.
 # The VLM is seeded per query, so its answers do not depend on the queries before (the closed-loop eval needs it).
+# SAM 3.1 always runs under bf16 autocast and has no --fp16 or --compile, so its fast setting is --tf32 only.
 fast_defaults() {
   if [ "${FAST:-1}" = 1 ]; then
-    : "${SAM3_ARGS=--fp16 --tf32 --compile}" "${VLM_ARGS=--attn sdpa --seed-per-query --compile}" \
+    if [ "${SAM_VERSION:-sam3}" = sam3.1 ]; then : "${SAM3_ARGS=--tf32}"; else : "${SAM3_ARGS=--fp16 --tf32 --compile}"; fi
+    : "${VLM_ARGS=--attn sdpa --seed-per-query --compile}" \
       "${POLICY_ARGS=--attn sdpa --compile}" "${SIM_ARGS=--sam3-batch-prompts --no-action-plots}"
   fi
 }
@@ -130,13 +132,20 @@ start_server() {
 }
 
 # start_vla_servers PORT_BASE DIR: the VLA's servers, logs in DIR: policy (PORT_BASE, POLICY_ARGS), SAM3
-# (+1, SAM3_ARGS) and VLM (+2, VLM_ARGS).
+# (+1, SAM3_ARGS) and VLM (+2, VLM_ARGS). SAM_VERSION=sam3 (default, the paper's setup) | sam3.1 (SAM 3.1's
+# detector, from the sam31 env); the VLM server stays in the sam3 env.
 start_vla_servers() {
-  local pb=$1 dir=$2
+  local pb=$1 dir=$2 sam_python
+  case ${SAM_VERSION:-sam3} in
+    sam3) sam_python=$SAM3_PYTHON ;;
+    sam3.1) vpvla_require SAM31_PYTHON || return 1; sam_python=$SAM31_PYTHON ;;
+    *) log "SAM_VERSION must be sam3 or sam3.1, not '$SAM_VERSION'"; return 1 ;;
+  esac
   start_server $pb "$dir/policy.log" "$STARVLA_PYTHON" deployment/model_server/server_policy.py \
     --ckpt_path "$CKPT" --port $pb --use_bf16 $POLICY_ARGS &&
-  start_server $((pb + 1)) "$dir/sam3.log" "$SAM3_PYTHON" \
-    examples/Robocasa_tabletop/visual_prompt_utility/sam3_server.py --port $((pb + 1)) $SAM3_ARGS &&
+  start_server $((pb + 1)) "$dir/sam3.log" "$sam_python" \
+    examples/Robocasa_tabletop/visual_prompt_utility/sam3_server.py --port $((pb + 1)) \
+    --sam-version "${SAM_VERSION:-sam3}" $SAM3_ARGS &&
   start_server $((pb + 2)) "$dir/vlm.log" "$SAM3_PYTHON" examples/SimplerEnv/eval_files/vlm_server_subtask_simpler.py \
     --port $((pb + 2)) $VLM_ARGS
 }

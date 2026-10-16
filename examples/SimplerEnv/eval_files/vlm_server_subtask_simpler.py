@@ -373,7 +373,7 @@ class VLMServer:
     async def run(self):
         async with websockets.asyncio.server.serve(
             self._handler, self._host, self._port,
-            compression=None, max_size=None,
+            compression=None, max_size=None, ping_interval=None,  # no keepalive pings, as in the client
         ) as server:
             logging.info(f"VLM SimplerEnv server listening on {self._host}:{self._port}")
             if self._idle_timeout > 0:

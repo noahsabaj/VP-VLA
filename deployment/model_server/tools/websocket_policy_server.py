@@ -46,6 +46,7 @@ class WebsocketPolicyServer:
             self._port,
             compression=None,
             max_size=None,
+            ping_interval=None,  # no keepalive pings, as in the client
         ) as server:
             if self._idle_timeout > 0:
                 await self._idle_watchdog(server)

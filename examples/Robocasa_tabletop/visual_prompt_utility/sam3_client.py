@@ -94,13 +94,15 @@ class SAM3Client:
                 raise TimeoutError(f"Failed to connect to SAM3 server within {timeout} seconds")
             
             try:
+                # No keepalive pings: the server answers them only between requests, so on a busy GPU a slow
+                # request made the connection close.
                 conn = websockets.sync.client.connect(
                     self._uri,
                     compression=None,
                     max_size=None,
                     open_timeout=150,
-                    ping_interval=20,
-                    ping_timeout=20,
+                    ping_interval=None,
+                    ping_timeout=None,
                 )
                 metadata = unpackb(conn.recv())
                 logging.info(f"Connected to SAM3 server: {metadata}")

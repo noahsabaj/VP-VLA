@@ -16,8 +16,15 @@ CKPT=${CKPT:-$REPO/playground/Checkpoints/VP-VLA-OXE/checkpoints/steps_70000_pyt
 cd "$REPO" || exit 1
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 
-TASKS=(PutSpoonOnTableClothInScene-v0 PutCarrotOnPlateInScene-v0 StackGreenCubeOnYellowCubeBakedTexInScene-v0
-       PutEggplantInBasketScene-v0)
+# The tasks of an eval (TASK_SET): simpler = SimplerEnv's 4 WidowX tasks (the default); harder = the 5 harder scenes
+# (eval_files/harder_scenes.py), with their fixed layouts only (LAYOUTS=paper).
+case ${TASK_SET:-simpler} in
+  simpler) TASKS=(PutSpoonOnTableClothInScene-v0 PutCarrotOnPlateInScene-v0
+                  StackGreenCubeOnYellowCubeBakedTexInScene-v0 PutEggplantInBasketScene-v0) ;;
+  harder) TASKS=(ClutteredSpoonOnTowel-v0 ClutteredCarrotOnPlate-v0 TwoStepSpoonAndCarrot-v0 CarrotOnNearPlate-v0
+                 CarrotOnFarPlate-v0) ;;
+  *) echo "TASK_SET must be simpler or harder, not '$TASK_SET'" >&2; exit 1 ;;
+esac
 # The VLA's visual prompts and VLM, as in the paper's SimplerEnv eval.
 VP_ARGS="--use-sam3 --target-object-prompt-mode crosshair --target-location-prompt-mode box --use-vlm
          --vlm-query-on-gripper-change --vlm-decompose-subtasks"
@@ -61,10 +68,16 @@ rgb_args() {
   esac
 }
 
-# layout_episodes LAYOUTS: episodes per task in the layout set (iidN: IID_EPISODES, default 100).
+# layout_episodes LAYOUTS [TASK]: episodes per task in the layout set (iidN: IID_EPISODES, default 100). The harder
+# scenes' fixed layouts (paper): 96 per kitchen task, 32 per two-plate task (harder_scenes.episodes).
 layout_episodes() {
   case $1 in
-    paper) echo 24 ;;
+    paper)
+      case $2 in
+        Cluttered*-v0 | TwoStep*-v0) echo 96 ;;
+        CarrotOn*Plate-v0) echo 32 ;;
+        *) echo 24 ;;
+      esac ;;
     iid[0-9]*) echo "${IID_EPISODES:-100}" ;;
     *) echo 48 ;;
   esac
@@ -73,10 +86,13 @@ layout_episodes() {
 # all_chunks LAYOUTS SIZE: TASK:START:END for every episode of the layout set, in chunks of SIZE, the tasks taking
 # turns.
 all_chunks() {
-  local n s t
-  n=$(layout_episodes "$1")
-  for ((s = 0; s < n; s += $2)); do
-    for t in "${TASKS[@]}"; do echo "$t:$s:$((s + $2 < n ? s + $2 : n))"; done
+  local n s t max=0
+  for t in "${TASKS[@]}"; do n=$(layout_episodes "$1" "$t"); [ "$n" -gt $max ] && max=$n; done
+  for ((s = 0; s < max; s += $2)); do
+    for t in "${TASKS[@]}"; do
+      n=$(layout_episodes "$1" "$t")
+      [ $s -lt "$n" ] && echo "$t:$s:$((s + $2 < n ? s + $2 : n))"
+    done
   done
 }
 
@@ -99,15 +115,16 @@ fast_defaults() {
 sim() {
   local gpu=$1 task=$2 start=$3 end=$4 out=$5
   shift 5
-  local robot=widowx scene=bridge_table_1_v1 overlay=bridge_real_eval_1.png x=0.147 y=0.028
+  local robot=widowx scene=bridge_table_1_v1 overlay=bridge_real_eval_1.png x=0.147 y=0.028 steps=120
   if [ "$task" = PutEggplantInBasketScene-v0 ]; then
     robot=widowx_sink_camera_setup scene=bridge_table_1_v2 overlay=bridge_sink.png x=0.127 y=0.06
   fi
+  [ "$task" = TwoStepSpoonAndCarrot-v0 ] && steps=240  # two pick-and-places (harder_scenes.py)
   [ -n "$out" ] || return 1
   rm -rf "$out" && mkdir -p "$out" || return 1
   CUDA_VISIBLE_DEVICES=$gpu "$SIMPLER_PYTHON" examples/SimplerEnv/eval_files/start_simpler_env_visual_prompt.py \
     --ckpt-path "$CKPT" --robot $robot --policy-setup widowx_bridge --control-freq 5 --sim-freq 500 \
-    --max-episode-steps 120 --env-name "$task" --scene-name $scene \
+    --max-episode-steps $steps --env-name "$task" --scene-name $scene \
     --rgb-overlay-path "$SIMPLERENV_PATH/ManiSkill2_real2sim/data/real_inpainting/$overlay" \
     --robot-init-x $x $x 1 --robot-init-y $y $y 1 --obj-variation-mode episode --obj-episode-range "$start" "$end" \
     --robot-init-rot-quat-center 0 0 0 1 --robot-init-rot-rpy-range 0 0 1 0 0 1 0 0 1 \

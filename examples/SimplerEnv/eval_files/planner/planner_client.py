@@ -9,7 +9,8 @@ test loop passes in. Three modes:
 * planner only (`vla=None`): same approach, then a scripted grasp, lift, planned move to
   above the place target, and release.
 * selector (`vla` and `selector` given): after the planner's first look, the selector (the ASM)
-  gives the whole try either to the planner (as in planner only) or to the VLA.
+  gives the whole try either to the planner (as in planner only) or to the VLA. With the VLM plan
+  check (`plan_check_port`, plan_check.py), a "no" from the VLM gives it to the VLA first.
 
 Targets come from the camera: SAM3 masks the object named in the instruction, and the
 masked depth pixels give its 3D position. `target_source="sim"` reads them from the
@@ -30,6 +31,7 @@ from scipy.spatial.transform import Rotation, Slerp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "Robocasa_tabletop" / "visual_prompt_utility"))
 
+from . import plan_check
 from .geometry import (CameraView, DepthNoise, corridor_points, depth_roughness, ee_delta_action, mat_to_pose,
                        path_length, pose_to_mat, short_width)
 from .planners import FINGER_OPEN, WORKSPACE, RobotSpheres, make_planner
@@ -137,6 +139,8 @@ class PlannerClient:
         robot_mask: str = "sim",
         selector=None,
         planner_seed: Optional[int] = None,
+        plan_check_host: str = "127.0.0.1",
+        plan_check_port: Optional[int] = None,
     ) -> None:
         self.planner = make_planner(planner)
         self.planner_name = planner
@@ -186,6 +190,15 @@ class PlannerClient:
             from sam3_client import SAM3Client
 
             self.sam3 = SAM3Client(host=sam3_host, port=sam3_port)
+        # The VLM plan check (plan_check.py): on the first frame, does the planner's one pick-and-place finish the
+        # instruction? In the planner-only mode it only adds the feature vlm_plan_yes; the planner works as before.
+        self.plan_check = None
+        if plan_check_port is not None:
+            if target_source != "camera":
+                raise ValueError("the plan check needs --target-source camera: it shows the VLM SAM3's masks")
+            from ..vlm_client_simpler import VLMClientSimpler
+
+            self.plan_check = VLMClientSimpler(host=plan_check_host, port=plan_check_port)
         self._clear("")
 
     # ------------------------------------------------------------------ episode
@@ -212,7 +225,7 @@ class PlannerClient:
         # The run settings go into every record, so the selector can refuse to mix runs.
         self.stats = {"plans": [], "depth_noise": self.noise.level, "rgb_noise": self.rgb_noise,
                       "noise_seed": self.noise.seed, "planner_seed": self.planner_seed, "robot_mask": self.robot_mask,
-                      "features_version": FEATURES_VERSION, "features": {}}
+                      "features_version": FEATURES_VERSION, "features": {}, "plan_check": self.plan_check is not None}
         self.ee_trace: List[np.ndarray] = []
         self.transit_contact = False
         self.place_goal = None
@@ -295,7 +308,11 @@ class PlannerClient:
         planner or to the VLA. The robot has not moved yet, so the VLA starts as in a VLA-only run."""
         if self.episode_key is None:
             raise ValueError("the selector mode needs the episode key (planner_evaluator sets it): its task")
-        decision = self.selector.decide(self.stats, self.episode_key.split("/")[0])
+        p_yes = self.stats["features"].get("vlm_plan_yes") if self.plan_check is not None else None
+        if p_yes is not None and plan_check.gate(p_yes) == "vla":
+            decision = {"choice": "vla", "reason": "plan check"}
+        else:
+            decision = self.selector.decide(self.stats, self.episode_key.split("/")[0])
         self.stats.update({f"selector_{k}": v for k, v in decision.items()})
         if decision["choice"] == "vla":
             self.phase, self.queue = "vla", []
@@ -307,7 +324,9 @@ class PlannerClient:
         # One frame, one noisy depth picture: the object estimate and the obstacle map share it.
         grasp = self._locate(image, obs, env, which="grasp", record=first, view=self.view)
         if first:  # the place target too, for the selector only: placing finds it again after the lift
-            self._locate(image, obs, env, which="place", record=True, view=self.view)
+            place = self._locate(image, obs, env, which="place", record=True, view=self.view)
+            if self.plan_check is not None:
+                self._check_plan(image, grasp, place)
         if grasp is None:
             self.stats["failure"] = "grasp object not found"
             self._give_up()
@@ -330,6 +349,21 @@ class PlannerClient:
             self._give_up()
             return
         self.phase = "transit_pregrasp"
+
+    def _check_plan(self, image, grasp, place) -> None:
+        """The VLM plan check (plan_check.py) on the first look: its P(yes) that the one pick-and-place finishes the
+        instruction is the feature vlm_plan_yes. With no object or no target found there is no plan to show: 0."""
+        f = self.stats["features"]
+        if grasp is None or place is None:
+            f["vlm_plan_yes"], self.stats["plan_check_answer_mass"] = 0.0, None
+            return
+        marked = plan_check.mark_plan(image, grasp["mask"], place["mask"])
+        answer = self.plan_check.yes_probability([image, marked], plan_check.question(self.task_description))
+        f["vlm_plan_yes"], self.stats["plan_check_answer_mass"] = float(answer["p_yes"]), float(answer["answer_mass"])
+        if self.log_path is not None and self.episode_key is not None:  # the marked picture, to check by eye
+            path = Path(self.log_path).parent / "plan_check" / f"{self.episode_key.replace('/', '_')}.jpg"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(path), np.ascontiguousarray(marked[..., ::-1]))
 
     def _next_phase(self, env, obs, qpos, target) -> None:
         """Called when the current move or hold is finished."""
@@ -467,7 +501,7 @@ class PlannerClient:
         if len(pts) < 5:
             return None
         found = {"center": np.median(pts[:, :2], axis=0), "top": float(np.percentile(pts[:, 2], 95)),
-                 "bottom": float(np.percentile(pts[:, 2], 5)), "prompt": name, "points_xy": pts[:, :2]}
+                 "bottom": float(np.percentile(pts[:, 2], 5)), "prompt": name, "points_xy": pts[:, :2], "mask": mask}
         if truth is not None:  # check: how far the camera estimate is from the real object
             center3 = np.r_[found["center"], 0.5 * (found["top"] + found["bottom"])]
             self.stats[f"{which}_error_xy"] = float(np.linalg.norm(found["center"] - truth["center"]))

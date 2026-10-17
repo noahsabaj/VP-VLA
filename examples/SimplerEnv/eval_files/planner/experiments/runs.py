@@ -7,7 +7,8 @@ level = the depth noise (none, realistic, harsh). The VLA-only evals are named b
 evals are cam_{layouts}_{level} (planner-only) and vla_{layouts}_{level} (VLA-only), level = the camera's (RGB noise
 for both, and the depth noise for the planner); its ASMs are cam_model/asm_{level}.json. The reworded-instruction
 study's evals are words_{set}_paper (planner-only) and vla_words_{set}_paper (VLA-only); the harder-scene study's
-are harder_paper and vla_harder_paper.
+are harder_paper and vla_harder_paper. The VLM plan-check study adds check_paper_none (planner-only, with the plan
+check).
 """
 
 import os

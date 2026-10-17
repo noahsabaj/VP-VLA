@@ -80,6 +80,8 @@ if __name__ == "__main__":
             rgb_noise=args.rgb_noise,
             robot_mask=args.robot_mask,
             planner_seed=args.planner_seed,
+            plan_check_host=args.vlm_host,
+            plan_check_port=args.plan_check_port,
         )
 
     success_arr = maniskill2_evaluator(model, args)

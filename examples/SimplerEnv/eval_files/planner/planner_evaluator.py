@@ -6,7 +6,7 @@ The changes, marked "CHANGED":
 2. After each episode, `model.finish_episode(success, info)` is called if the model has it.
 3. `layout_seed` (optional): swap the task's 24 fixed layouts for new random ones, so results
    can be checked on layouts nothing was tuned on. Off by default. With `layout_per_episode`, each
-   episode gets a layout of its own instead of one of 12 placements x 4 turns.
+   episode gets a layout of its own instead of one of 12 placements x 4 turns. For the two-object tasks only.
 4. Before each episode, `model.set_episode(key)` is called if the model has it, so the planner can
    seed its depth noise per episode.
 5. `action_plots=False` (`--no-action-plots`) skips the per-episode action plot. On by default.
@@ -16,6 +16,7 @@ The changes, marked "CHANGED":
 7. `instruction_set` (`--instruction-set`): a reworded instruction for the task (instruction_sets.py). A given
    instruction now stays for the whole episode; SimplerEnv's loop replaced it with the task's own after the first
    step. Off by default.
+8. The harder scenes (harder_scene_envs.py) are registered on import, so `env_name` can be one of them.
 Everything else is unchanged, so the AI-only setup behaves exactly as with SimplerEnv's loop.
 """
 
@@ -28,6 +29,7 @@ from simpler_env.utils.env.env_builder import build_maniskill2_env, get_robot_co
 from simpler_env.utils.env.observation_utils import get_image_from_maniskill2_obs_dict
 from simpler_env.utils.visualization import write_video
 
+from .. import harder_scene_envs  # noqa: F401 (registers the harder scenes)
 from ..camera_noise import RGBNoise
 from ..instruction_sets import instruction_for
 
@@ -91,6 +93,8 @@ def run_maniskill2_eval_single_episode(
     if layout_per_episode and layout_seed is None:
         raise ValueError("a layout per episode needs a layout seed")
     if layout_seed is not None:
+        if len(env.unwrapped._xy_configs[0]) != 2:
+            raise ValueError(f"{env_name}: random layouts are only for the tasks with two objects")
         if layout_per_episode:
             episode_layout(env.unwrapped, layout_seed, obj_episode_id)
         else:
@@ -296,14 +300,17 @@ def layout_label(layout_seed, layout_per_episode: bool) -> str:
 
 def episode_layout_truth(env, episode: int):
     """Where the episode's two objects start (x, y in m, simulator frame) and the yaw of the object to
-    move (rad, about the vertical: its random turn plus its first original yaw). Logged for analysis
-    only; no controller reads it."""
+    move (rad, about the vertical: its random turn plus its first original yaw); in a scene with more objects,
+    also where each starts. Logged for analysis only; no controller reads it."""
     if not hasattr(env, "_xy_configs"):
         return None
     k, q = len(env._xy_configs), len(env._quat_configs)
     xy = np.asarray(env._xy_configs[(episode % (k * q)) // q])
     quat = np.asarray(env._quat_configs[episode % q])
-    return {"source_xy": xy[0].tolist(), "target_xy": xy[1].tolist(), "source_yaw": float(quat2euler(quat[0])[2])}
+    out = {"source_xy": xy[0].tolist(), "target_xy": xy[1].tolist(), "source_yaw": float(quat2euler(quat[0])[2])}
+    if len(xy) > 2:
+        out["objects_xy"] = xy.tolist()
+    return out
 
 
 def maniskill2_evaluator(model, args):

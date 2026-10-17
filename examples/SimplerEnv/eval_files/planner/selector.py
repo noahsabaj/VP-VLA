@@ -92,12 +92,12 @@ def heuristic_uses_planner(x: np.ndarray, names: List[str]) -> np.ndarray:
     return (x[:, names.index("plan_ok")] > 0) & (x[:, names.index("grasp_sam3_score")] >= 0.3)
 
 
-def planner_records(root: str) -> List[dict]:
+def planner_records(root: str, tasks: Optional[List[str]] = None) -> List[dict]:
     """Every record under root (`<task>/planner_stats.jsonl`, or run_eval.sh's `*<task>*/planner_stats.jsonl`),
     checked so that a wrong join stops the load: planner-only mode, written since the first-frame
-    fix, one record per layout, and one value of each run setting in the folder."""
+    fix, one record per layout, and one value of each run setting in the folder. tasks: default TASKS."""
     records, seen = [], set()
-    for task in TASKS:
+    for task in tasks or TASKS:
         paths = {os.path.normpath(p) for p in [os.path.join(root, task, "planner_stats.jsonl"),
                                                *glob.glob(os.path.join(root, f"**/*{task}*/planner_stats.jsonl"),
                                                           recursive=True)]}
@@ -132,21 +132,22 @@ def planner_settings(records: List[dict], root: str = "") -> dict:
     return out
 
 
-def load_planner(root: str) -> Dict[tuple, dict]:
-    return {(r["task_folder"], r["obj_episode_id"]): r for r in planner_records(root)}
+def load_planner(root: str, tasks: Optional[List[str]] = None) -> Dict[tuple, dict]:
+    return {(r["task_folder"], r["obj_episode_id"]): r for r in planner_records(root, tasks)}
 
 
 VIDEO = re.compile(r"/(success|failure)_obj_episode_(\d+)(?:_[^/]*)?\.mp4$")
 
 
-def load_vla(roots: List[str]) -> Dict[tuple, float]:
+def load_vla(roots: List[str], tasks: Optional[List[str]] = None) -> Dict[tuple, float]:
     """VLA success rate per (task, episode), averaged over the run folders given. Inside one folder a
     layout must have one outcome: a success and a failure video for it (a rerun, or a planner run
-    written to the same folder) stop the load instead of one of them being picked at random."""
+    written to the same folder) stop the load instead of one of them being picked at random. tasks: default
+    TASKS."""
     per_layout = defaultdict(list)
     for root in roots:
         outcomes = defaultdict(set)
-        for task in TASKS:
+        for task in tasks or TASKS:
             files = set(glob.glob(os.path.join(root, f"**/*{task}*/**/*.mp4"), recursive=True)) | \
                     set(glob.glob(os.path.join(root, task, "**/*.mp4"), recursive=True))
             for f in files:
@@ -382,10 +383,11 @@ class Layouts(NamedTuple):
         return Layouts(*[np.concatenate(z) for z in zip(*parts, strict=True)])
 
 
-def matched_layouts(planner_root: str, vla_roots: List[str]) -> Tuple[Dict[tuple, dict], Dict[tuple, float], list]:
+def matched_layouts(planner_root: str, vla_roots: List[str],
+                    tasks: Optional[List[str]] = None) -> Tuple[Dict[tuple, dict], Dict[tuple, float], list]:
     """(planner records, VLA success rates, the keys of the layouts both controllers ran); the other layouts are
-    left out, with a warning."""
-    planner, vla = load_planner(planner_root), load_vla(vla_roots)
+    left out, with a warning. tasks: default TASKS."""
+    planner, vla = load_planner(planner_root, tasks), load_vla(vla_roots, tasks)
     keys = [k for k in planner if k in vla]
     if not keys:
         raise SystemExit(f"no layouts with both planner and VLA results in {planner_root}")
@@ -393,7 +395,7 @@ def matched_layouts(planner_root: str, vla_roots: List[str]) -> Tuple[Dict[tuple
     for side, ks in unmatched.items():
         if ks:  # left out of every score, so say so
             count = Counter(k[0] for k in ks)
-            per_task = ", ".join(f"{t.split('-')[0]} {count[t]}" for t in TASKS if count[t])
+            per_task = ", ".join(f"{t.split('-')[0]} {count[t]}" for t in tasks or TASKS if count[t])
             print(f"warning: {len(ks)} layouts {side} ({per_task}), left out: {planner_root} / {', '.join(vla_roots)}")
     return planner, vla, keys
 

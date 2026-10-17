@@ -40,7 +40,7 @@ and `vla_iid12`, all with the fast settings, and the reruns `rep1_*`, `rep2_*` (
 (`run_eval.sh`). `runs.py` has these names. The camera-noise study's evals are `cam_{layouts}_{level}`
 (planner-only) and `vla_{layouts}_{level}` (VLA-only), where the level is the camera's (see "Camera-noise study").
 The reworded-instruction study's are `words_{set}_paper` and `vla_words_{set}_paper` (see "Reworded-instruction
-study").
+study"). The harder-scene study's are `harder_paper` and `vla_harder_paper` (see "Harder-scene study").
 
 ## Evals (GPU)
 
@@ -58,7 +58,8 @@ run's `status.log` has a START line with its exact settings and commit, one line
 line. `RGB_NOISE=realistic|harsh` puts a real color camera's errors (`camera_noise.py`) in the picture of every
 controller (default `none`; in `planner_eval.sh` and `selector_eval.sh`, `same` = the depth noise's level).
 `INSTRUCTIONS=NAME` gives the 4 tasks the reworded instructions of `instruction_sets.py` instead of their own.
-Examples:
+`TASK_SET=harder` runs the 5 harder scenes of `harder_scenes.py` instead of SimplerEnv's 4 tasks (their fixed
+layouts only: `LAYOUTS=paper`). Examples:
 
 ```bash
 E=examples/SimplerEnv/eval_files/planner/experiments
@@ -140,6 +141,19 @@ for set in synonyms attributes order reasoning; do
 done
 ```
 
+The harder-scene study's smoke tests and evals (see "Harder-scene study" below):
+
+```bash
+# smoke tests: 2 episodes of each task, the planner given the simulator's object positions (no servers needed)
+for t in ClutteredSpoonOnTowel-v0 ClutteredCarrotOnPlate-v0 TwoStepSpoonAndCarrot-v0 CarrotOnNearPlate-v0 \
+         CarrotOnFarPlate-v0; do
+  bash $E/sim_task.sh 0 $t 0 2 smoke_harder/$t --controller planner --planner mplib --target-source sim
+done
+# the evals
+TASK_SET=harder bash $E/planner_eval.sh 0 10320 harder_paper none paper
+TASK_SET=harder bash $E/vla_eval.sh 0 10400 vla_harder_paper paper 4
+```
+
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
 `TASK:0:8 TASK:8:16 TASK:16:24` for each task and `heldout_vla_g1` the episodes 24 to 47.
 
@@ -162,7 +176,7 @@ The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g
 --models 'two_model/asm_{}.json' --vla vla_iid12` (its closed-loop eval). The camera-noise study's: `score_two_model
 --runs cam --vla 'vla_{set}_{level}' --noise camera --other` and `check_closed_loop cam_closed_loop_iid12 --planner
 'cam_iid12_{}' --models 'cam_model/asm_{}.json' --vla vla_iid12_harsh`. The reworded-instruction study's:
-`score_instructions --asm two_model/asm_none.json`.
+`score_instructions --asm two_model/asm_none.json`. The harder-scene study's: `score_harder_scenes`.
 
 The `dfix_*` and `seeded_*` runs and `heldout_planner_none` (the evals before the planner seed and before the
 depth fix) were archived on 2026-10-15; restore them into `$RUNS_DIR` for the result files that read them.
@@ -330,3 +344,70 @@ replacement (10,000 draws).
 against its own result with the tasks' own instructions); the two-model study's ASM for clean depth
 (`two_model/asm_none.json`, trained on the tasks' own instructions), offline, from the first look of each
 planner-only eval.
+
+## Harder-scene study
+
+The plan below was fixed on 2026-10-17, before any of the study's evals ran, and `score_harder_scenes` follows it.
+The results do not change it. A result that is not in the plan is reported as exploratory.
+
+**Question.** The planner reads every instruction with one fixed rule (see "Reworded-instruction study") and then
+runs one pick-and-place script. Some tasks cannot be done that way: two pick-and-places asked for in one
+instruction, or a target that is named only by where it is. In new scenes with more objects on the table, does the
+VLA beat the planner on such tasks, while the planner keeps its lead on the one-step tasks of the same scene?
+
+**Scenes and tasks** (`harder_scenes.py`; `harder_scene_envs.py` builds them in SimplerEnv's simulator). Both scenes
+use the table, camera, light and robot of SimplerEnv's spoon and carrot tasks. The kitchen scene has the spoon, the
+towel, the carrot and the plate. The two-plate scene has the carrot and two identical plates, one in the row nearer
+the robot and one in the far row. What the rule reads from each instruction:
+
+| Task | Scene | Instruction | Object the rule reads | Target the rule reads | Layouts | Steps |
+|---|---|---|---|---|---|---|
+| Cluttered spoon | kitchen | put the spoon on the towel | spoon | towel | 96 | 120 |
+| Cluttered carrot | kitchen | put carrot on plate | carrot | plate | 96 | 120 |
+| Two-step | kitchen | put the spoon on the towel and the carrot on the plate | spoon | towel and the carrot on the plate | 96 | 240 |
+| Near plate | two plates | put the carrot on the plate that is closer to the robot | carrot | plate that is closer to the robot | 32 | 120 |
+| Far plate | two plates | put the carrot on the plate that is farther from the robot | carrot | plate that is farther from the robot | 32 | 120 |
+
+The two cluttered tasks keep the instructions of SimplerEnv's own spoon and carrot tasks, so the rule reads them as
+before; only the two extra objects are new. On the other three it fails in a different way. On the two-step task
+it reads one pick-and-place, so the planner cannot finish the task: it stops after the first one. On the plate
+tasks it gives SAM3 the whole description, and SAM3 finds objects by name, not by where they are, so either plate
+can be chosen.
+
+**Layouts.** Each object starts on one corner of a square grid centred where SimplerEnv's layouts are, with
+half-edges of 7.5 cm (as in the spoon and carrot tasks) and 10 cm (as in the cube task); objects start at least
+2 cm apart. Kitchen scene: each of the 24 ways to put the 4 objects on the 4 corners, on each grid, with each of
+the 2 turns of the spoon and the carrot from SimplerEnv's tasks: 96 layouts, the same in its three tasks
+(episode N of each has the same objects in the same places). Two-plate scene: one plate on each row, the carrot on
+one of the 2 corners left, on each grid, with the carrot task's 2 turns: 32 layouts, the same in both tasks with
+the target swapped.
+
+**Success**, checked at the end of the episode as SimplerEnv's tasks check it: the spoon on the towel (partly is
+enough, as in the spoon task); the carrot on the plate, touching nothing but the plate and the robot (as in the
+carrot task); for the two-step task, both. Each episode also logs each goal, the carrot on the other plate (plate
+tasks), and whether an object outside the goals moved more than 3 cm.
+
+**Smoke tests first** (commands above; not part of the results): 2 episodes of each task with the planner given
+the simulator's object positions, on GPU 0. Their videos are checked by eye for objects that fall or overlap and
+for goals that are logged wrongly, and then deleted. They can change the scenes, but not this plan's tests.
+
+**Evals.** Planner-only `harder_paper` (planner seed 0, clean depth, as `pseed_paper_none`) and VLA-only
+`vla_harder_paper` (fast settings, VLM seed offset 0, as `fast3_train_g0/g1`), clean camera, 352 episodes each,
+on GPU 0. About 4 GPU hours.
+
+**Planned tests.** In this fixed order, each the exact two-sided paired sign-flip test at 0.05, and each counting
+only when every test before it was significant. Each layout gives one value.
+
+1. On the tasks the rule cannot read (two-step, near plate and far plate; 160 layouts): VLA-only minus
+   planner-only.
+2. In the kitchen scene (96 layouts): the planner's lead over the VLA (planner-only minus VLA-only) on the two
+   one-step tasks (their mean) minus its lead on the two-step task.
+
+Intervals: 95% percentile bootstrap of the per-layout mean; each draw takes each task's layouts again, with
+replacement (10,000 draws; test 2 has one stratum, the kitchen layouts).
+
+**Secondary (reported, no claims).** Each task on its own (exact McNemar, VLA against planner); the logged episode
+stats of each method (each goal of the two-step task, the carrot on the wrong plate, other objects moved); the
+two cluttered tasks against SimplerEnv's own spoon and carrot tasks without the extra objects (`pseed_paper_none`
+and `fast3_train_g0/g1`; other layouts, so not paired). No ASM is scored here: the saved ASMs have one column per
+SimplerEnv task and were not trained on these tasks.

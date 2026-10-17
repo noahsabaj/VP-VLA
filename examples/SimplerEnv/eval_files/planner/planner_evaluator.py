@@ -13,6 +13,9 @@ The changes, marked "CHANGED":
 6. `rgb_noise` (`--rgb-noise`): a real color camera's errors (camera_noise.py) in the picture, seeded per episode
    like the depth noise. The noisy picture is what the model gets and also replaces the camera's picture in `obs`,
    so the VLA and the planner see the same pixels. Off by default.
+7. `instruction_set` (`--instruction-set`): a reworded instruction for the task (instruction_sets.py). A given
+   instruction now stays for the whole episode; SimplerEnv's loop replaced it with the task's own after the first
+   step. Off by default.
 Everything else is unchanged, so the AI-only setup behaves exactly as with SimplerEnv's loop.
 """
 
@@ -26,6 +29,7 @@ from simpler_env.utils.env.observation_utils import get_image_from_maniskill2_ob
 from simpler_env.utils.visualization import write_video
 
 from ..camera_noise import RGBNoise
+from ..instruction_sets import instruction_for
 
 
 def run_maniskill2_eval_single_episode(
@@ -166,7 +170,8 @@ def run_maniskill2_eval_single_episode(
         )
 
         success = "success" if done else "failure"
-        new_task_description = env.get_language_instruction()
+        # CHANGED: only without a given instruction does the task's own (next subtask's) instruction replace it.
+        new_task_description = env.get_language_instruction() if instruction is None else task_description
         if new_task_description != task_description:
             task_description = new_task_description
             print(task_description)
@@ -334,6 +339,7 @@ def maniskill2_evaluator(model, args):
                     action_plots=not getattr(args, "no_action_plots", False),
                     layout_per_episode=getattr(args, "layout_per_episode", False),
                     rgb_noise=rgb_noise,
+                    instruction=instruction_for(getattr(args, "instruction_set", "default"), args.env_name),
                 )
                 if args.obj_variation_mode == "xy":
                     for obj_init_x in args.obj_init_xs:

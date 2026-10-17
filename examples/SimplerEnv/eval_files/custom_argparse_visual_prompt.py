@@ -10,6 +10,8 @@ from transforms3d.euler import euler2quat
 
 from simpler_env.utils.io import DictAction
 
+from examples.SimplerEnv.eval_files.instruction_sets import NAMES as INSTRUCTION_SET_NAMES
+
 
 def parse_range_tuple(t):
     return np.linspace(t[0], t[1], int(t[2]))
@@ -157,6 +159,9 @@ def get_args():
     parser.add_argument("--rgb-noise", type=str, default="none", choices=["none", "realistic", "harsh"],
                         help="Simulated color-camera errors in the picture every controller gets (camera_noise.py)")
     parser.add_argument("--noise-seed", type=int, default=0, help="Seed of the depth and RGB noise")
+    parser.add_argument("--instruction-set", type=str, default="default", choices=INSTRUCTION_SET_NAMES,
+                        help="Reworded instructions for the 4 WidowX tasks (instruction_sets.py); default = the "
+                             "task's own")
     parser.add_argument("--planner-seed", type=int, default=None,
                         help="Seed the planner's random steps (MPlib's IK restarts and RRT) per episode from this seed "
                              "and the episode, so a try plans the same in every run (default: unseeded)")

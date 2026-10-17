@@ -39,6 +39,8 @@ and `vla_iid12`, all with the fast settings, and the reruns `rep1_*`, `rep2_*` (
 `exact_vla_1` to `exact_vla_5` link to the 5 VLA-only evals of the test set with the paper's settings
 (`run_eval.sh`). `runs.py` has these names. The camera-noise study's evals are `cam_{layouts}_{level}`
 (planner-only) and `vla_{layouts}_{level}` (VLA-only), where the level is the camera's (see "Camera-noise study").
+The reworded-instruction study's are `words_{set}_paper` and `vla_words_{set}_paper` (see "Reworded-instruction
+study").
 
 ## Evals (GPU)
 
@@ -55,6 +57,7 @@ Each script's header lists its options. The VLA runners use the fast settings by
 run's `status.log` has a START line with its exact settings and commit, one line per chunk or task, and a DONE
 line. `RGB_NOISE=realistic|harsh` puts a real color camera's errors (`camera_noise.py`) in the picture of every
 controller (default `none`; in `planner_eval.sh` and `selector_eval.sh`, `same` = the depth noise's level).
+`INSTRUCTIONS=NAME` gives the 4 tasks the reworded instructions of `instruction_sets.py` instead of their own.
 Examples:
 
 ```bash
@@ -128,6 +131,15 @@ RGB_NOISE=same DEPTHS=harsh CHUNK_SIZE=25 bash $E/selector_eval.sh 0 10510 cam_c
     'cam_model/asm_{}.json' 6
 ```
 
+The reworded-instruction study's evals (see "Reworded-instruction study" below):
+
+```bash
+for set in synonyms attributes order reasoning; do
+  INSTRUCTIONS=$set bash $E/planner_eval.sh 0 10320 words_${set}_paper none paper
+  INSTRUCTIONS=$set bash $E/vla_eval.sh 0 10400 vla_words_${set}_paper paper 4
+done
+```
+
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
 `TASK:0:8 TASK:8:16 TASK:16:24` for each task and `heldout_vla_g1` the episodes 24 to 47.
 
@@ -149,7 +161,8 @@ The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g
 `score_two_model` (all its tables and tests) and `check_closed_loop closed_loop_iid12 --planner 'pseed_iid12_{}'
 --models 'two_model/asm_{}.json' --vla vla_iid12` (its closed-loop eval). The camera-noise study's: `score_two_model
 --runs cam --vla 'vla_{set}_{level}' --noise camera --other` and `check_closed_loop cam_closed_loop_iid12 --planner
-'cam_iid12_{}' --models 'cam_model/asm_{}.json' --vla vla_iid12_harsh`.
+'cam_iid12_{}' --models 'cam_model/asm_{}.json' --vla vla_iid12_harsh`. The reworded-instruction study's:
+`score_instructions --asm two_model/asm_none.json`.
 
 The `dfix_*` and `seeded_*` runs and `heldout_planner_none` (the evals before the planner seed and before the
 depth fix) were archived on 2026-10-15; restore them into `$RUNS_DIR` for the result files that read them.
@@ -257,3 +270,63 @@ only when every test before it was significant; the intervals are as in the two-
 level (how much the camera noise lowers the VLA and the planner); the success models' AUC, within-task AUC,
 log-loss, Brier score and calibration; the closed-loop eval against the offline result (`check_closed_loop`). The
 action spread and the linear probe are not part of this study.
+
+## Reworded-instruction study
+
+The plan below was fixed on 2026-10-17, before any of the study's evals ran, and `score_instructions` follows it.
+The results do not change it. A result that is not in the plan is reported as exploratory.
+
+**Question.** The planner reads an instruction with one fixed rule: it drops a leading verb and "the"; the words
+before "on", "onto", "in" or "into" name the object to move, and the words after it name the target (the SAM3
+prompts). Then it runs one pick-and-place script. The rule is the same for every task, but it works only when the
+instruction has the form "verb object on target", as SimplerEnv's instructions do. Does the planner lose more than
+the VLA when the same tasks are given in other words?
+
+**Instruction sets** (`instruction_sets.py`; the scene and the goal stay the same). What the rule reads from each:
+
+| Set | Task | Instruction | Object the rule reads | Target the rule reads |
+|---|---|---|---|---|
+| own | Spoon | put the spoon on the towel | spoon | towel |
+| own | Carrot | put carrot on plate | carrot | plate |
+| own | Stack | stack the green block on the yellow block | green block | yellow block |
+| own | Eggplant | put eggplant into yellow basket | eggplant | yellow basket |
+| synonyms | Spoon | place the spoon on the cloth | spoon | cloth |
+| synonyms | Carrot | set the carrot on the dish | set the carrot | dish |
+| synonyms | Stack | put the green cube on top of the yellow cube | green cube | top of the yellow cube |
+| synonyms | Eggplant | drop the eggplant into the basket | drop the eggplant | basket |
+| attributes | Spoon | put the utensil on the towel | utensil | towel |
+| attributes | Carrot | put the orange vegetable on the plate | orange vegetable | plate |
+| attributes | Stack | stack the green object on the yellow object | green object | yellow object |
+| attributes | Eggplant | put the purple vegetable into the basket | purple vegetable | basket |
+| order | Spoon | the towel is where the spoon should go | (the whole sentence) | none |
+| order | Carrot | the plate should get the carrot | (the whole sentence) | none |
+| order | Stack | the yellow block should end up under the green block | (the whole sentence) | none |
+| order | Eggplant | the basket is where the eggplant goes | (the whole sentence) | none |
+| reasoning | Spoon | put what you would eat soup with on the towel | what you would eat soup with | towel |
+| reasoning | Carrot | put the food that rabbits love on the plate | food that rabbits love | plate |
+| reasoning | Stack | put the block that is the color of grass on the other block | block that is the color of grass | other block |
+| reasoning | Eggplant | put the vegetable that baba ganoush is made from into the basket | vegetable that baba ganoush is made from | basket |
+
+SAM3 takes free text, so the planner can still find an object from a description it was not written for; the
+study measures how often. The VLA's VLM reads the instruction before the SAM3 visual prompts are made.
+
+**Evals.** The test set (`paper`, 96 layouts), clean camera. Planner-only `words_{set}_paper` (planner seed 0, as
+`pseed_paper_none`) and VLA-only `vla_words_{set}_paper` (fast settings, VLM seed offset 0, as `fast3_train_g0/g1`).
+With the tasks' own instructions, `pseed_paper_none` and `fast3_train_g0/g1` are used. The commands are above.
+About 3.5 GPU hours on one GPU.
+
+**Planned tests.** In this fixed order, each the exact two-sided paired sign-flip test at 0.05, and each counting
+only when every test before it was significant. A layout gives one value, its sum over the 4 reworded sets, so
+the 4 sets of one layout are not counted as independent episodes.
+
+1. The planner loses more than the VLA: (VLA, reworded minus own instructions) minus (planner, reworded minus own
+   instructions).
+2. The VLA beats the planner on the reworded instructions: VLA-only minus planner-only.
+
+Intervals: 95% percentile bootstrap of the per-layout mean; each draw takes each task's layouts again, with
+replacement (10,000 draws).
+
+**Secondary (reported, no claims).** Each set on its own (exact McNemar: VLA against planner, and each method
+against its own result with the tasks' own instructions); the two-model study's ASM for clean depth
+(`two_model/asm_none.json`, trained on the tasks' own instructions), offline, from the first look of each
+planner-only eval.

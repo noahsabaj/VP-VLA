@@ -12,6 +12,7 @@
 #                  an episode gives the same result either way.
 #   RGB_NOISE      none (default) | realistic | harsh | same: a real color camera's errors in the picture
 #                  (camera_noise.py); same = the depth noise's level (one camera at LEVEL).
+#   INSTRUCTIONS   reworded instructions (instruction_sets.py; default: the task's own).
 # Several evals at once: planner_evals.sh.
 [ $# -eq 5 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -31,7 +32,7 @@ trap stop_servers EXIT
 start_server $PORT "$OUT/sam3.log" "$SAM3_PYTHON" examples/Robocasa_tabletop/visual_prompt_utility/sam3_server.py \
   --port $PORT $SAM3_ARGS || exit 1
 wait_port $PORT 600 || { log "$NAME: SAM3 server never opened port $PORT"; exit 1; }
-log "START $NAME ($LEVEL depth, $RGB_LEVEL RGB, $LAYOUTS layouts, SAM3_ARGS=[$SAM3_ARGS], PLANNER_SEED=[$PS]," \
+log "START $NAME ($LEVEL depth, $RGB_LEVEL RGB, $LAYOUTS layouts, ${INSTRUCTIONS:-default} instructions, SAM3_ARGS=[$SAM3_ARGS], PLANNER_SEED=[$PS]," \
   "TASKS_AT_ONCE=${TASKS_AT_ONCE:-4}) on GPU $GPU (commit $(git rev-parse --short HEAD))"
 
 task() {

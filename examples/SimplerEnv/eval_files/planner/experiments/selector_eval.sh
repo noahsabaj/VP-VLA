@@ -12,7 +12,7 @@
 # Environment: FAST and MPS as in vla_eval.sh. PLANNER_SAM3_ARGS: the planner's SAM3 server options (default:
 #   none, as in planner_eval.sh). PLANNER_SEED as in planner_eval.sh: give it the same value as the planner-only
 #   evals that the closed-loop eval is compared with. RGB_NOISE as in planner_eval.sh (same = each job's depth
-#   level).
+#   level). INSTRUCTIONS as in vla_eval.sh.
 [ $# -ge 6 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 GPU=$1; PB=$2; NAME=$3; LAYOUTS=$4; MODELS=$(run_dir "$5"); K=$6
@@ -46,7 +46,8 @@ start_vla_servers $PB "$OUT" &&
     examples/Robocasa_tabletop/visual_prompt_utility/sam3_server.py --port $((PB + 3)) $PLANNER_SAM3_ARGS &&
   wait_port $PB && wait_port $((PB + 1)) && wait_port $((PB + 2)) && wait_port $((PB + 3)) ||
   { log "servers did not start"; exit 1; }
-log "START K=$K MPS=${MPS:-1} LAYOUTS=$LAYOUTS MODELS=$MODELS RGB_NOISE=${RGB_NOISE:-none} PLANNER_SEED=[$PS]" \
+log "START K=$K MPS=${MPS:-1} LAYOUTS=$LAYOUTS MODELS=$MODELS RGB_NOISE=${RGB_NOISE:-none}" \
+  "INSTRUCTIONS=${INSTRUCTIONS:-default} PLANNER_SEED=[$PS]" \
   "SAM3_ARGS=[$SAM3_ARGS] PLANNER_SAM3_ARGS=[$PLANNER_SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \
   "SIM_ARGS=[$SIM_ARGS]" \
   "on GPU $GPU, commit $(git log -1 --format=%h), servers up in $((SECONDS - T0)) s: ${JOBS[*]}"

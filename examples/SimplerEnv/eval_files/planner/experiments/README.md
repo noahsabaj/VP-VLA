@@ -419,8 +419,8 @@ the robot and one in the far row. What the rule reads from each instruction:
 | Cluttered spoon | kitchen | put the spoon on the towel | spoon | towel | 96 | 120 |
 | Cluttered carrot | kitchen | put carrot on plate | carrot | plate | 96 | 120 |
 | Two-step | kitchen | put the spoon on the towel and the carrot on the plate | spoon | towel and the carrot on the plate | 96 | 240 |
-| Near plate | two plates | put the carrot on the plate that is closer to the robot | carrot | plate that is closer to the robot | 32 | 120 |
-| Far plate | two plates | put the carrot on the plate that is farther from the robot | carrot | plate that is farther from the robot | 32 | 120 |
+| Near plate | two plates | put the carrot on the plate that is closer to the camera | carrot | plate that is closer to the camera | 32 | 120 |
+| Far plate | two plates | put the carrot on the plate that is farther from the camera | carrot | plate that is farther from the camera | 32 | 120 |
 
 The two cluttered tasks keep the instructions of SimplerEnv's own spoon and carrot tasks, so the rule reads them as
 before; only the two extra objects are new. On the other three it fails in a different way. On the two-step task
@@ -454,6 +454,14 @@ the same.
 **Change of 2026-10-23, before any of the study's evals ran.** Both evals use SAM 3.1 (`SAM_VERSION=sam3.1`, now
 the default). In the secondary comparison with SimplerEnv's own spoon and carrot tasks, `check_paper_none` and
 `sam31_paper` (both SAM 3.1) replace `pseed_paper_none` and `fast3_train_g0/g1`.
+
+**Change of 2026-10-23, after the smoke tests and before any of the study's evals ran.** The smoke tests (on
+GPU 1, as the planner-only eval) found no objects that fall or overlap and no goals logged wrongly. (The planner
+missed every turned spoon and carrot in them: the simulator's positions carry no turn, so the hand kept its starting
+turn. The evals use the camera.) But their videos showed that "the robot" in the plate instructions can mislead: the
+robot's base is below the camera picture, while its arm comes in from the top, above the far row. The plate
+instructions therefore name the camera instead of the robot (table above). The goals, scenes and tests are the same:
+the near row is nearer both the robot's base and the camera (`test_near_plate_is_nearer_the_camera`).
 
 **Planned tests.** In this fixed order, each the exact two-sided paired sign-flip test at 0.05, and each counting
 only when every test before it was significant. Each layout gives one value.
@@ -546,7 +554,7 @@ SAM 3 to short noun phrases with one or two attributes: it is not made for long 
 queries that need reasoning. For those, the paper lets a multimodal LLM write the noun phrases and check SAM 3's
 masks (its "SAM 3 Agent"). The fixed rule gives SAM parts of the instruction as they are, so reworded and harder
 instructions also reach SAM in a form it was not made for. The VLM plan gives SAM short names, and the VLM's
-points do the spatial part ("the plate closer to the robot") that SAM does not do.
+points do the spatial part ("the plate closer to the camera") that SAM does not do.
 
 **SAM score check** (`VLM_PLAN_MIN_SCORE`, `--vlm-plan-min-score`; default 0: no check). The score of a SAM mask
 is its match score times its presence score (is the name in the picture at all). A name whose chosen mask scores

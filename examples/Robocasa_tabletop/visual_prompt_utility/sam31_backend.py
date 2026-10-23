@@ -11,6 +11,8 @@
 # clash with the transformers-5 `sam3` env, so it runs from its own env
 # (see build_env_sam31.sh).
 
+import collections
+import hashlib
 import logging
 from typing import Optional
 
@@ -116,7 +118,23 @@ class SAM31Model:
 
         self.model = detector
         self.processor = Sam3Processor(detector, device=device)
+        # Image states (the image encoder's output) of the last few frames: the eval segments each frame with
+        # two prompts, and the planner may ask again at lower thresholds. Same computation, same output.
+        self._states = collections.OrderedDict()
         logging.info("SAM3.1 model loaded successfully")
+
+    def _image_state(self, image: np.ndarray) -> dict:
+        """Sam3Processor state with the image features of a frame; the image encoder runs once per frame."""
+        from PIL import Image
+
+        key = (image.shape, hashlib.blake2b(np.ascontiguousarray(image).tobytes(), digest_size=16).digest())
+        if key in self._states:
+            self._states.move_to_end(key)
+        else:
+            self._states[key] = self.processor.set_image(Image.fromarray(image).convert("RGB"))
+            while len(self._states) > 4:
+                self._states.popitem(last=False)
+        return self._states[key]
 
     def segment(
         self,
@@ -126,13 +144,19 @@ class SAM31Model:
         mask_threshold: float = 0.5,
     ) -> dict:
         """Same contract as SAM3Model.segment: (N, H, W) uint8 masks, (N, 4) xyxy boxes, (N,) scores."""
-        from PIL import Image
+        return self.segment_many(image, [text_prompt], threshold, mask_threshold)[0]
 
-        pil_image = Image.fromarray(image).convert("RGB")
+    def segment_many(self, image: np.ndarray, text_prompts: list, threshold: float = 0.5,
+                     mask_threshold: float = 0.5) -> list:
+        """segment() for each prompt on one image, with one image-encoder pass (as SAM3Model.segment_many)."""
         self.processor.confidence_threshold = threshold
+        results = []
         # Meta's SAM 3.1 code only runs under bf16 autocast (its own predictors wrap every call in it);
         # in plain fp32 some layers get bf16 inputs and fail with a dtype mismatch.
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            state = self.processor.set_image(pil_image)
-            state = self.processor.set_text_prompt(prompt=text_prompt, state=state)
-        return state_to_result(state, mask_threshold)
+            state = self._image_state(image)
+            for prompt in text_prompts:
+                self.processor.reset_all_prompts(state)  # drops the last prompt's results, keeps the image features
+                results.append(state_to_result(self.processor.set_text_prompt(prompt=prompt, state=state),
+                                               mask_threshold))
+        return results

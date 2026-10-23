@@ -311,10 +311,7 @@ class SAM3Server:
             try:
                 image, prompts = msg["image"], list(msg["text_prompts"])
                 kwargs = {"threshold": msg.get("threshold", 0.5), "mask_threshold": msg.get("mask_threshold", 0.5)}
-                if hasattr(self._model, "segment_many"):
-                    data = self._model.segment_many(image, prompts, **kwargs)
-                else:  # SAM 3.1 has no batched forward: one prompt at a time
-                    data = [self._model.segment(image, p, **kwargs) for p in prompts]
+                data = self._model.segment_many(image, prompts, **kwargs)  # one image-encoder pass
                 return {"status": "ok", "ok": True, "type": "segment_batch_result", "request_id": req_id, "data": data}
             except Exception as e:
                 logging.exception("SAM3 batch segmentation error (request_id=%s)", req_id)

@@ -85,6 +85,7 @@ if __name__ == "__main__":
             task_source=args.task_source,
             vlm_plan_host=args.vlm_host,
             vlm_plan_port=args.vlm_plan_port,
+            vlm_plan_min_score=args.vlm_plan_min_score,
         )
 
     success_arr = maniskill2_evaluator(model, args)

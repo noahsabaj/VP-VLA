@@ -12,6 +12,15 @@ source "$REPO/examples/eval_env.sh"
 vpvla_require STARVLA_PYTHON SAM3_PYTHON SIMPLER_PYTHON
 vpvla_require_dir SIMPLERENV_PATH
 : "${RUNS_DIR:?set RUNS_DIR to the folder for the run folders}"
+# The segmentation model of every SAM server (the VLA's visual prompts and the planner's masks): sam3.1 (the
+# default since 2026-10-23: SAM 3.1's detector, from the sam31 env) | sam3 (transformers Sam3Model, the paper's
+# setup and every eval before 2026-10-23).
+SAM_VERSION=${SAM_VERSION:-sam3.1}
+case $SAM_VERSION in
+  sam3) SAM_PYTHON=$SAM3_PYTHON ;;
+  sam3.1) vpvla_require SAM31_PYTHON; SAM_PYTHON=$SAM31_PYTHON ;;
+  *) echo "SAM_VERSION must be sam3 or sam3.1, not '$SAM_VERSION'" >&2; exit 1 ;;
+esac
 CKPT=${CKPT:-$REPO/playground/Checkpoints/VP-VLA-OXE/checkpoints/steps_70000_pytorch_model.pt}
 cd "$REPO" || exit 1
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
@@ -103,7 +112,7 @@ all_chunks() {
 # SAM 3.1 always runs under bf16 autocast and has no --fp16 or --compile, so its fast setting is --tf32 only.
 fast_defaults() {
   if [ "${FAST:-1}" = 1 ]; then
-    if [ "${SAM_VERSION:-sam3}" = sam3.1 ]; then : "${SAM3_ARGS=--tf32}"; else : "${SAM3_ARGS=--fp16 --tf32 --compile}"; fi
+    if [ "$SAM_VERSION" = sam3.1 ]; then : "${SAM3_ARGS=--tf32}"; else : "${SAM3_ARGS=--fp16 --tf32 --compile}"; fi
     : "${VLM_ARGS=--attn sdpa --seed-per-query --compile}" \
       "${POLICY_ARGS=--attn sdpa --compile}" "${SIM_ARGS=--sam3-batch-prompts --no-action-plots}"
   fi
@@ -159,21 +168,21 @@ start_server() {
   SERVER_PIDS+=($!)
 }
 
-# start_vla_servers PORT_BASE DIR: the VLA's servers, logs in DIR: policy (PORT_BASE, POLICY_ARGS), SAM3
-# (+1, SAM3_ARGS) and VLM (+2, VLM_ARGS). SAM_VERSION=sam3 (default, the paper's setup) | sam3.1 (SAM 3.1's
-# detector, from the sam31 env); the VLM server stays in the sam3 env.
+# start_sam_server PORT LOGFILE ARGS...: a SAM server of SAM_VERSION in the background.
+start_sam_server() {
+  local port=$1 logfile=$2
+  shift 2
+  start_server $port "$logfile" "$SAM_PYTHON" examples/Robocasa_tabletop/visual_prompt_utility/sam3_server.py \
+    --port $port --sam-version $SAM_VERSION "$@"
+}
+
+# start_vla_servers PORT_BASE DIR: the VLA's servers, logs in DIR: policy (PORT_BASE, POLICY_ARGS), SAM (+1,
+# SAM_VERSION, SAM3_ARGS) and VLM (+2, VLM_ARGS). The VLM server is in the sam3 env.
 start_vla_servers() {
-  local pb=$1 dir=$2 sam_python
-  case ${SAM_VERSION:-sam3} in
-    sam3) sam_python=$SAM3_PYTHON ;;
-    sam3.1) vpvla_require SAM31_PYTHON || return 1; sam_python=$SAM31_PYTHON ;;
-    *) log "SAM_VERSION must be sam3 or sam3.1, not '$SAM_VERSION'"; return 1 ;;
-  esac
+  local pb=$1 dir=$2
   start_server $pb "$dir/policy.log" "$STARVLA_PYTHON" deployment/model_server/server_policy.py \
     --ckpt_path "$CKPT" --port $pb --use_bf16 $POLICY_ARGS &&
-  start_server $((pb + 1)) "$dir/sam3.log" "$sam_python" \
-    examples/Robocasa_tabletop/visual_prompt_utility/sam3_server.py --port $((pb + 1)) \
-    --sam-version "${SAM_VERSION:-sam3}" $SAM3_ARGS &&
+  start_sam_server $((pb + 1)) "$dir/sam3.log" $SAM3_ARGS &&
   start_server $((pb + 2)) "$dir/vlm.log" "$SAM3_PYTHON" examples/SimplerEnv/eval_files/vlm_server_subtask_simpler.py \
     --port $((pb + 2)) $VLM_ARGS
 }

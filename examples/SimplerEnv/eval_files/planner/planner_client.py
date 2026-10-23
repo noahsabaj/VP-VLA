@@ -149,6 +149,7 @@ class PlannerClient:
         task_source: str = "rule",
         vlm_plan_host: str = "127.0.0.1",
         vlm_plan_port: Optional[int] = None,
+        vlm_plan_min_score: float = 0.0,
     ) -> None:
         self.planner = make_planner(planner)
         self.planner_name = planner
@@ -163,7 +164,8 @@ class PlannerClient:
             trained = selector.trained_on
             # A selector saved before the RGB noise existed was trained without it.
             for name, value, old in (("depth_noise", depth_noise, None), ("rgb_noise", rgb_noise, "none"),
-                                     ("robot_mask", robot_mask, None), ("task_source", task_source, "rule")):
+                                     ("robot_mask", robot_mask, None), ("task_source", task_source, "rule"),
+                                     ("vlm_plan_min_score", vlm_plan_min_score, 0.0)):
                 if trained.get(name, old) not in (None, value):
                     raise ValueError(f"the selector was trained with {name}={trained.get(name, old)}, but this run "
                                      f"uses {value}")
@@ -198,6 +200,13 @@ class PlannerClient:
             from sam3_client import SAM3Client
 
             self.sam3 = SAM3Client(host=sam3_host, port=sam3_port)
+        # The SAM server's model (SAM3Model or SAM31Model), from its greeting: a run setting of every record.
+        self.sam_model = (getattr(self.sam3, "_server_metadata", None) or {}).get("model") if self.sam3 else None
+        # Every selector saved before the records had sam_model was trained on SAM3 (SAM3Model) runs.
+        if selector is not None and self.sam_model is not None \
+                and selector.trained_on.get("sam_model", "SAM3Model") != self.sam_model:
+            raise ValueError(f"the selector was trained with {selector.trained_on.get('sam_model', 'SAM3Model')}, "
+                             f"but this run's SAM server is {self.sam_model}")
         # The VLM plan check (plan_check.py): on the first frame, does the planner's one pick-and-place finish the
         # instruction? In the planner-only mode it only adds the feature vlm_plan_yes; the planner works as before.
         self.plan_check = None
@@ -220,6 +229,10 @@ class PlannerClient:
             from ..vlm_client_simpler import VLMClientSimpler
 
             self.vlm_planner = VLMClientSimpler(host=vlm_plan_host, port=vlm_plan_port)
+        # The VLM plan's SAM score check: a name whose chosen mask scores below this is not found (0 = no check).
+        if vlm_plan_min_score and task_source != "vlm":
+            raise ValueError("vlm_plan_min_score is for the VLM plan (task_source vlm)")
+        self.vlm_plan_min_score = vlm_plan_min_score
         self._clear("")
 
     # ------------------------------------------------------------------ episode
@@ -247,7 +260,8 @@ class PlannerClient:
         self.stats = {"plans": [], "depth_noise": self.noise.level, "rgb_noise": self.rgb_noise,
                       "noise_seed": self.noise.seed, "planner_seed": self.planner_seed, "robot_mask": self.robot_mask,
                       "features_version": FEATURES_VERSION, "features": {}, "plan_check": self.plan_check is not None,
-                      "task_source": self.task_source}
+                      "task_source": self.task_source, "vlm_plan_min_score": self.vlm_plan_min_score,
+                      "sam_model": self.sam_model}
         # The VLM plan's pick-and-place moves (vlm_plan.parse) and the one being done; None with the fixed rule.
         self.steps = None
         self.step_index = 0
@@ -358,6 +372,10 @@ class PlannerClient:
             place = self._locate(image, obs, env, which="place", record=True, view=self.view)
             if self.plan_check is not None:
                 self._check_plan(image, grasp, place)
+            if any(s["rejected"] for s in self.stats.get("vlm_plan_sam", [])):
+                self.stats["failure"] = "VLM plan: SAM score below the minimum"
+                self._give_up()
+                return
         if grasp is None:
             self.stats["failure"] = "grasp object not found"
             self._give_up()
@@ -386,7 +404,7 @@ class PlannerClient:
         answer = self.vlm_planner.generate([image], vlm_plan.prompt(self.task_description))
         plan = vlm_plan.parse(answer["text"], image.shape[1], image.shape[0])
         self.stats.update({"vlm_plan": plan, "vlm_plan_text": answer["text"], "vlm_plan_feasible": plan["feasible"],
-                           "steps_done": 0})
+                           "steps_done": 0, "vlm_plan_sam": []})
         if not plan["feasible"]:
             self.stats["failure"] = "VLM plan: not pick-and-place" + (f" ({plan['error']})" if plan["error"] else "")
             return False
@@ -562,12 +580,20 @@ class PlannerClient:
                 return None
             masks, scores = found_any
         chosen = vlm_plan.pick_mask(masks, scores, point)
-        self.stats[f"{which}_sam3_score"] = float(scores[chosen])
+        score = float(scores[chosen])
+        self.stats[f"{which}_sam3_score"] = score
         mask = np.asarray(masks[chosen])
         view = view if view is not None else CameraView(obs, noise=self.noise)
         pts = view.object_points(mask)
         if record:
             self._record_features(which, scores, mask, pts, view)
+        if self.steps is not None:  # the VLM plan: each name's SAM score, and the score check
+            rejected = score < self.vlm_plan_min_score
+            covers = point is not None and vlm_plan.contains(mask, point)
+            self.stats["vlm_plan_sam"].append({"step": self.step_index, "which": which, "name": name, "score": score,
+                                               "covers_point": covers, "rejected": rejected})
+            if rejected:
+                return None
         if len(pts) < 5:
             return None
         found = {"center": np.median(pts[:, :2], axis=0), "top": float(np.percentile(pts[:, 2], 95)),

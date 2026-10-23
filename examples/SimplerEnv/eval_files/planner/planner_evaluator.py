@@ -18,10 +18,14 @@ The changes, marked "CHANGED":
    instruction now stays for the whole episode; SimplerEnv's loop replaced it with the task's own after the first
    step. Off by default.
 8. The harder scenes (harder_scene_envs.py) are registered on import, so `env_name` can be one of them.
+9. Each episode's cost (model_time.py): its wall-clock time from the model's reset to the last step, and its model
+   requests' round trips, one JSON line per episode in `logging_dir/episode_costs.jsonl`.
 Everything else is unchanged, so the AI-only setup behaves exactly as with SimplerEnv's loop.
 """
 
+import json
 import os
+import time
 
 import numpy as np
 from transforms3d.euler import quat2euler
@@ -34,6 +38,7 @@ from .. import harder_scene_envs  # noqa: F401 (registers the harder scenes)
 from .. import harder_scenes
 from ..camera_noise import RGBNoise
 from ..instruction_sets import instruction_for
+from ..model_time import METER, cost_record
 
 
 def run_maniskill2_eval_single_episode(
@@ -154,6 +159,10 @@ def run_maniskill2_eval_single_episode(
     predicted_actions = []
     predicted_terminated, done, truncated = False, False, False
 
+    # CHANGED: time the episode and its model requests from here (model_time.py); reset can already ask a server.
+    METER.reset()
+    t0 = time.perf_counter()
+
     # Initialize model
     if hasattr(model, "set_episode"):
         model.set_episode(episode_key)
@@ -194,6 +203,7 @@ def run_maniskill2_eval_single_episode(
         images.append(image)
         timestep += 1
 
+    seconds = time.perf_counter() - t0
     episode_stats = info.get("episode_stats", {})
 
     # CHANGED: let the model log its own per-episode record.
@@ -204,6 +214,13 @@ def run_maniskill2_eval_single_episode(
             "episode_stats": {k: bool(v) if isinstance(v, (bool, np.bool_)) else v for k, v in episode_stats.items()},
             "layout": episode_layout_truth(env.unwrapped, obj_episode_id) if obj_variation_mode == "episode" else None,
         })
+
+    # CHANGED: the episode's cost record (model_time.py), for every controller.
+    os.makedirs(logging_dir, exist_ok=True)
+    with open(os.path.join(logging_dir, "episode_costs.jsonl"), "a") as f:
+        f.write(json.dumps(cost_record(episode_key, success == "success", timestep, seconds, env_name=env_name,
+                                       obj_episode_id=obj_episode_id, layout_seed=layout_seed,
+                                       layout_per_episode=bool(layout_per_episode))) + "\n")
 
     # save video
     env_save_name = env_name

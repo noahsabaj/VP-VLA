@@ -55,7 +55,7 @@ log "START K=$K MPS=${MPS:-1} LAYOUTS=$LAYOUTS MODELS=$MODELS RGB_NOISE=${RGB_NO
   "SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS] PLANNER_SAM3_ARGS=[$PLANNER_SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \
   "SIM_ARGS=[$SIM_ARGS]" \
   "on GPU $GPU, commit $(git log -1 --format=%h), servers up in $((SECONDS - T0)) s: ${JOBS[*]}"
-nvidia-smi dmon -i $GPU -s um -d 5 > "$OUT/dmon.txt" 2>&1 &
+nvidia-smi dmon -i $GPU -s pum -o DT -d 5 > "$OUT/dmon.txt" 2>&1 &
 DMON=$!
 
 CHECK=()

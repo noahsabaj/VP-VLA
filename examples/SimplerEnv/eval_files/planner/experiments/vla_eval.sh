@@ -46,7 +46,7 @@ start_vla_servers $PB "$OUT" && wait_port $PB && wait_port $((PB + 1)) && wait_p
   { log "servers did not start"; exit 1; }
 log "START K=$K MPS=${MPS:-1} TASK_SET=${TASK_SET:-simpler} LAYOUTS=$LAYOUTS RGB_NOISE=${RGB_NOISE:-none} INSTRUCTIONS=${INSTRUCTIONS:-default} SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \
   "SIM_ARGS=[$SIM_ARGS] on GPU $GPU, commit $(git log -1 --format=%h), servers up in $((SECONDS - T0)) s: ${CHUNKS[*]}"
-nvidia-smi dmon -i $GPU -s um -d 5 > "$OUT/dmon.txt" 2>&1 &
+nvidia-smi dmon -i $GPU -s pum -o DT -d 5 > "$OUT/dmon.txt" 2>&1 &
 DMON=$!
 
 chunk() {

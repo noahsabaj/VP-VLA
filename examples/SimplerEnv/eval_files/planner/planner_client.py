@@ -28,7 +28,7 @@ import re
 import sys
 import zlib
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -150,6 +150,8 @@ class PlannerClient:
         vlm_plan_host: str = "127.0.0.1",
         vlm_plan_port: Optional[int] = None,
         vlm_plan_min_score: float = 0.0,
+        plan_check_marks: Sequence[str] = ("tint",),
+        plan_check_threshold: float = plan_check.THRESHOLD,
     ) -> None:
         self.planner = make_planner(planner)
         self.planner_name = planner
@@ -216,6 +218,14 @@ class PlannerClient:
             from ..vlm_client_simpler import VLMClientSimpler
 
             self.plan_check = VLMClientSimpler(host=plan_check_host, port=plan_check_port)
+        # How the object is marked (plan_check.MARKS), each mark its own question and feature; the selector mode's
+        # gate uses the first one, with this threshold.
+        self.plan_check_marks = list(plan_check_marks)
+        for mark in self.plan_check_marks:
+            plan_check.feature(mark)
+        if not self.plan_check_marks or len(set(self.plan_check_marks)) < len(self.plan_check_marks):
+            raise ValueError(f"plan_check_marks must name each mark once: {self.plan_check_marks}")
+        self.plan_check_threshold = plan_check_threshold
         # Where the object and target come from: the fixed rule, or the VLM plan (vlm_plan.py).
         if task_source not in ("rule", "vlm"):
             raise ValueError(f"task_source must be rule or vlm, not {task_source}")
@@ -262,6 +272,8 @@ class PlannerClient:
                       "features_version": FEATURES_VERSION, "features": {}, "plan_check": self.plan_check is not None,
                       "task_source": self.task_source, "vlm_plan_min_score": self.vlm_plan_min_score,
                       "sam_model": self.sam_model}
+        if self.plan_check is not None:
+            self.stats.update(plan_check_marks=self.plan_check_marks, plan_check_threshold=self.plan_check_threshold)
         # The VLM plan's pick-and-place moves (vlm_plan.parse) and the one being done; None with the fixed rule.
         self.steps = None
         self.step_index = 0
@@ -348,10 +360,11 @@ class PlannerClient:
         planner or to the VLA. The robot has not moved yet, so the VLA starts as in a VLA-only run."""
         if self.episode_key is None:
             raise ValueError("the selector mode needs the episode key (planner_evaluator sets it): its task")
-        p_yes = self.stats["features"].get("vlm_plan_yes") if self.plan_check is not None else None
+        p_yes = self.stats["features"].get(plan_check.feature(self.plan_check_marks[0])) \
+            if self.plan_check is not None else None
         if self.task_source == "vlm" and not self.stats.get("vlm_plan_feasible"):
             decision = {"choice": "vla", "reason": "VLM plan: not pick-and-place"}
-        elif p_yes is not None and plan_check.gate(p_yes) == "vla":
+        elif p_yes is not None and plan_check.gate(p_yes, self.plan_check_threshold) == "vla":
             decision = {"choice": "vla", "reason": "plan check"}
         else:
             decision = self.selector.decide(self.stats, self.episode_key.split("/")[0])
@@ -412,19 +425,23 @@ class PlannerClient:
         return True
 
     def _check_plan(self, image, grasp, place) -> None:
-        """The VLM plan check (plan_check.py) on the first look: its P(yes) that the one pick-and-place finishes the
-        instruction is the feature vlm_plan_yes. With no object or no target found there is no plan to show: 0."""
+        """The VLM plan check (plan_check.py) on the first look, once per mark: its P(yes) that the one pick-and-place
+        finishes the instruction is the mark's feature (plan_check.feature: vlm_plan_yes for the tint). With no object
+        or no target found there is no plan to show: 0."""
         f = self.stats["features"]
-        if grasp is None or place is None:
-            f["vlm_plan_yes"], self.stats["plan_check_answer_mass"] = 0.0, None
-            return
-        marked = plan_check.mark_plan(image, grasp["mask"], place["mask"])
-        answer = self.plan_check.yes_probability([image, marked], plan_check.question(self.task_description))
-        f["vlm_plan_yes"], self.stats["plan_check_answer_mass"] = float(answer["p_yes"]), float(answer["answer_mass"])
-        if self.log_path is not None and self.episode_key is not None:  # the marked picture, to check by eye
-            path = Path(self.log_path).parent / "plan_check" / f"{self.episode_key.replace('/', '_')}.jpg"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(path), np.ascontiguousarray(marked[..., ::-1]))
+        for mark in self.plan_check_marks:
+            name, mass = plan_check.feature(mark), "plan_check_answer_mass" + ("" if mark == "tint" else f"_{mark}")
+            if grasp is None or place is None:
+                f[name], self.stats[mass] = 0.0, None
+                continue
+            marked = plan_check.mark_plan(image, grasp["mask"], place["mask"], mark=mark)
+            answer = self.plan_check.yes_probability([image, marked], plan_check.question(self.task_description, mark))
+            f[name], self.stats[mass] = float(answer["p_yes"]), float(answer["answer_mass"])
+            if self.log_path is not None and self.episode_key is not None:  # the marked picture, to check by eye
+                stem = self.episode_key.replace("/", "_") + ("" if mark == "tint" else f"_{mark}")
+                path = Path(self.log_path).parent / "plan_check" / f"{stem}.jpg"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(path), np.ascontiguousarray(marked[..., ::-1]))
 
     def _next_phase(self, env, obs, qpos, target) -> None:
         """Called when the current move or hold is finished."""

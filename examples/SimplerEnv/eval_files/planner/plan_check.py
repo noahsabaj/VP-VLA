@@ -3,11 +3,15 @@
 The planner reads every instruction with one fixed rule and then runs one pick-and-place script, so it fails when the
 rule misreads the instruction (a reworded instruction), when SAM3 finds the wrong object (two plates), or when one
 pick-and-place cannot finish the task (two steps). On the first frame, the planner marks on the camera picture the
-object it will pick up (tinted green) and the target it will put it on (a blue box) and asks the VLM whether doing
-exactly that finishes the instruction. The VLM's probability of "yes" (from its first answer token, no sampling) is
-the feature `vlm_plan_yes`; below THRESHOLD the episode goes to the VLA (planner_client.py in the selector mode;
-`gate` here for the offline scores). Needs only numpy; the VLM server answers (vlm_server_subtask_simpler.py,
-message "yes_no").
+object it will pick up and the target it will put it on (a blue box) and asks the VLM whether doing exactly that
+finishes the instruction. The VLM's probability of "yes" (from its first answer token, no sampling) is the feature
+`vlm_plan_yes`; below the threshold the episode goes to the VLA (planner_client.py in the selector mode; `gate` here
+for the offline scores). Needs only numpy; the VLM server answers (vlm_server_subtask_simpler.py, message "yes_no").
+
+Two ways to mark the object (MARKS): "tint" (the first check, v1: the object tinted green) and "outline" (v2: a green
+line around the object, whose own pixels keep their colour). The tint makes an orange carrot or a purple eggplant
+look green, and the VLM then often said no to correct plans (README, "VLM plan-check v2 study"). Each mark has its
+own feature (`feature`), so one episode can be checked both ways.
 """
 
 from typing import Optional
@@ -17,14 +21,39 @@ import numpy as np
 THRESHOLD = 0.5
 OBJECT_COLOR = np.array([0, 255, 0])
 TARGET_COLOR = np.array([0, 120, 255])
+MARKS = ("tint", "outline")
+_HOW = {"tint": "tinted green", "outline": "outlined in green"}
+
+
+def feature(mark: str) -> str:
+    """The record feature with this mark's P(yes): vlm_plan_yes for the tint (as before the outline existed)."""
+    if mark not in MARKS:
+        raise ValueError(f"mark must be one of {MARKS}, not {mark!r}")
+    return "vlm_plan_yes" if mark == "tint" else f"vlm_plan_yes_{mark}"
+
+
+def _grow(mask: np.ndarray, r: int) -> np.ndarray:
+    """The mask grown by r pixels (a (2r+1) x (2r+1) square around each pixel)."""
+    h, w = mask.shape
+    pad = np.pad(mask, r)
+    out = np.zeros_like(mask)
+    for dy in range(2 * r + 1):
+        for dx in range(2 * r + 1):
+            out |= pad[dy:dy + h, dx:dx + w]
+    return out
 
 
 def mark_plan(image: np.ndarray, grasp_mask: np.ndarray, place_mask: np.ndarray, alpha: float = 0.45,
-              border: int = 3) -> np.ndarray:
-    """The camera picture (H, W, 3 uint8) with the object to pick up tinted green and a blue box around the target."""
+              border: int = 3, mark: str = "tint") -> np.ndarray:
+    """The camera picture (H, W, 3 uint8) with the object to pick up marked green (tinted, or a line `border` pixels
+    wide just outside it) and a blue box around the target."""
+    feature(mark)
     out = image.astype(np.float32).copy()
     g = np.asarray(grasp_mask).astype(bool)
-    out[g] = (1 - alpha) * out[g] + alpha * OBJECT_COLOR
+    if mark == "tint":
+        out[g] = (1 - alpha) * out[g] + alpha * OBJECT_COLOR
+    else:
+        out[_grow(g, border) & ~g] = OBJECT_COLOR
     ys, xs = np.nonzero(np.asarray(place_mask))
     if len(ys):
         h, w = out.shape[:2]
@@ -37,17 +66,17 @@ def mark_plan(image: np.ndarray, grasp_mask: np.ndarray, place_mask: np.ndarray,
     return out.round().clip(0, 255).astype(np.uint8)
 
 
-def question(instruction: str) -> str:
+def question(instruction: str, mark: str = "tint") -> str:
     """The question the VLM gets, with the camera picture and the marked picture."""
     return (f'The robot is told: "{instruction}"\n'
             "The first image is the robot's camera view. The second image is the same view with a motion planner's "
-            "plan marked on it: the planner will pick up the object tinted green, put it down on the place inside "
+            f"plan marked on it: the planner will pick up the object {_HOW[mark]}, put it down on the place inside "
             "the blue box, and then stop. It will do nothing else.\n"
             "Will doing exactly this complete the whole instruction? Answer yes or no.")
 
 
-def gate(p_yes: Optional[float]) -> str:
+def gate(p_yes: Optional[float], threshold: float = THRESHOLD) -> str:
     """The controller for an episode: the VLA when the VLM doubts the planner's plan, else the planner."""
     if p_yes is None:
         raise ValueError("no plan check in this record (run the planner with --plan-check-port)")
-    return "vla" if p_yes < THRESHOLD else "planner"
+    return "vla" if p_yes < threshold else "planner"

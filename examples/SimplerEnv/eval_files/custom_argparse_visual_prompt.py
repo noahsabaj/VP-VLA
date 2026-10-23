@@ -174,6 +174,12 @@ def get_args():
                         help="VLM server for the planner's plan check (planner/plan_check.py): on the first frame the "
                              "VLM says whether the planner's one pick-and-place finishes the instruction (default: "
                              "no check)")
+    parser.add_argument("--plan-check-marks", type=lambda s: s.split(","), default=["tint"],
+                        help="How the plan check marks the object, comma-separated (planner/plan_check.py MARKS: tint, "
+                             "outline); each mark is one more VLM question and feature. The selector mode's gate uses "
+                             "the first (default: tint)")
+    parser.add_argument("--plan-check-threshold", type=float, default=0.5,
+                        help="The selector mode's gate: the VLA when the first mark's P(yes) is below this (default 0.5)")
     parser.add_argument("--task-source", type=str, default="rule", choices=["rule", "vlm"],
                         help="What the planner picks up and where it puts it: the fixed rule (one pick-and-place) or "
                              "the VLM plan (planner/vlm_plan.py: the VLM lists the pick-and-place moves; needs "

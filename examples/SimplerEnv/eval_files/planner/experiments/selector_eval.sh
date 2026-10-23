@@ -14,7 +14,8 @@
 #   same value as the planner-only evals that the closed-loop eval is compared with. RGB_NOISE as in
 #   planner_eval.sh (same = each job's depth
 #   level). INSTRUCTIONS as in vla_eval.sh. PLAN_CHECK=1: the VLM plan check (planner/plan_check.py) on the first
-#   frame, from the VLA's VLM server; a "no" gives the episode to the VLA before the ASM decides. TASK_SOURCE as in
+#   frame, from the VLA's VLM server; a "no" gives the episode to the VLA before the ASM decides (PLAN_CHECK_MARKS
+#   as in planner_eval.sh, the first mark gates; PLAN_CHECK_THRESHOLD: "no" below it, default 0.5). TASK_SOURCE as in
 #   planner_eval.sh, from the VLA's VLM server (an ASM trained on records with the same TASK_SOURCE), and
 #   VLM_PLAN_MIN_SCORE as in planner_eval.sh.
 [ $# -ge 6 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
@@ -50,7 +51,7 @@ start_vla_servers $PB "$OUT" &&
   wait_port $PB && wait_port $((PB + 1)) && wait_port $((PB + 2)) && wait_port $((PB + 3)) ||
   { log "servers did not start"; exit 1; }
 log "START K=$K MPS=${MPS:-1} LAYOUTS=$LAYOUTS MODELS=$MODELS RGB_NOISE=${RGB_NOISE:-none}" \
-  "INSTRUCTIONS=${INSTRUCTIONS:-default} PLANNER_SEED=[$PS] PLAN_CHECK=${PLAN_CHECK:-0} TASK_SOURCE=${TASK_SOURCE:-rule} VLM_PLAN_MIN_SCORE=${VLM_PLAN_MIN_SCORE:-0}" \
+  "INSTRUCTIONS=${INSTRUCTIONS:-default} PLANNER_SEED=[$PS] PLAN_CHECK=${PLAN_CHECK:-0} PLAN_CHECK_MARKS=${PLAN_CHECK_MARKS:-tint} PLAN_CHECK_THRESHOLD=${PLAN_CHECK_THRESHOLD:-0.5} TASK_SOURCE=${TASK_SOURCE:-rule} VLM_PLAN_MIN_SCORE=${VLM_PLAN_MIN_SCORE:-0}" \
   "SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS] PLANNER_SAM3_ARGS=[$PLANNER_SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \
   "SIM_ARGS=[$SIM_ARGS]" \
   "on GPU $GPU, commit $(git log -1 --format=%h), servers up in $((SECONDS - T0)) s: ${JOBS[*]}"
@@ -58,7 +59,8 @@ nvidia-smi dmon -i $GPU -s um -d 5 > "$OUT/dmon.txt" 2>&1 &
 DMON=$!
 
 CHECK=()
-[ "${PLAN_CHECK:-0}" = 1 ] && CHECK=(--plan-check-port $((PB + 2)))
+[ "${PLAN_CHECK:-0}" = 1 ] && CHECK=(--plan-check-port $((PB + 2)) --plan-check-marks "${PLAN_CHECK_MARKS:-tint}"
+                                    --plan-check-threshold "${PLAN_CHECK_THRESHOLD:-0.5}")
 [ "${TASK_SOURCE:-rule}" = vlm ] && CHECK+=(--task-source vlm --vlm-plan-port $((PB + 2)) --vlm-plan-min-score ${VLM_PLAN_MIN_SCORE:-0})
 
 job() {

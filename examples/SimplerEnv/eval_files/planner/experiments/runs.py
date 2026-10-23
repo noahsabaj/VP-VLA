@@ -8,7 +8,7 @@ evals are cam_{layouts}_{level} (planner-only) and vla_{layouts}_{level} (VLA-on
 for both, and the depth noise for the planner); its ASMs are cam_model/asm_{level}.json. The reworded-instruction
 study's evals are words_{set}_paper (planner-only) and vla_words_{set}_paper (VLA-only); the harder-scene study's
 are harder_paper and vla_harder_paper. The VLM plan-check study adds check_paper_none (planner-only, with the plan
-check).
+check). The VLM plan-check v2 study's are named in score_plan_check_v2 (check2_*, and vla_*_iid13).
 """
 
 import os

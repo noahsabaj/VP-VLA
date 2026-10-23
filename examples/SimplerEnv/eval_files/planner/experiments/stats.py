@@ -41,6 +41,38 @@ def auc(p: np.ndarray, y: np.ndarray) -> float:
     return float(above.sum() + 0.5 * tied.sum()) / higher.sum()
 
 
+def auc_ranks(p: np.ndarray, y: np.ndarray) -> float:
+    """The AUC of `auc` for 0/1 labels, from midranks (fast enough for bootstrap draws)."""
+    y = np.asarray(y).astype(bool)
+    m, n = int(y.sum()), int((~y).sum())
+    if m == 0 or n == 0:
+        return float("nan")
+    _, inv, counts = np.unique(p, return_inverse=True, return_counts=True)
+    midrank = (np.cumsum(counts) - (counts - 1) / 2.0)[inv]
+    return float((midrank[y].sum() - m * (m + 1) / 2.0) / (m * n))
+
+
+def delong(p_a: np.ndarray, p_b: np.ndarray, y: np.ndarray) -> Tuple[float, float, float]:
+    """DeLong's test of two AUCs on the same episodes (DeLong, DeLong and Clarke-Pearson, 1988): (AUC of p_a, AUC of
+    p_b, two-sided p of equal AUCs). y: 0/1 labels. Each AUC's structural components are, for each positive, the
+    share of negatives it beats (ties count half), and for each negative, the share of positives that beat it."""
+    y = np.asarray(y).astype(bool)
+    m, n = int(y.sum()), int((~y).sum())
+    if m < 2 or n < 2:
+        raise ValueError("DeLong's test needs at least 2 episodes of each label")
+    v10, v01 = [], []
+    for p in (np.asarray(p_a, float), np.asarray(p_b, float)):
+        psi = (p[y][:, None] > p[~y][None, :]) + 0.5 * (p[y][:, None] == p[~y][None, :])
+        v10.append(psi.mean(1))
+        v01.append(psi.mean(0))
+    a, b = float(v10[0].mean()), float(v10[1].mean())
+    s10, s01 = np.cov(np.vstack(v10)), np.cov(np.vstack(v01))
+    var = (s10[0, 0] + s10[1, 1] - 2 * s10[0, 1]) / m + (s01[0, 0] + s01[1, 1] - 2 * s01[0, 1]) / n
+    if var <= 1e-15:
+        return a, b, 1.0 if abs(a - b) < 1e-12 else 0.0
+    return a, b, float(math.erfc(abs(a - b) / math.sqrt(var) / math.sqrt(2)))
+
+
 def logloss(p: np.ndarray, y: np.ndarray) -> float:
     p = np.clip(p, 1e-6, 1 - 1e-6)
     return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))

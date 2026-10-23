@@ -29,10 +29,12 @@ python -m examples.SimplerEnv.eval_files.planner.experiments.SCORER ...
 | held-out test set | `--layout-seed 2` | `seed2` | 192 (48 per task) |
 | two-model study: training set | `--layout-seed 11 --layout-per-episode` | `iid11` | 400 (100 per task) |
 | two-model study: test set | `--layout-seed 12 --layout-per-episode` | `iid12` | 400 (100 per task) |
+| plan-check v2 study: test set | `--layout-seed 13 --layout-per-episode` | `iid13` | 96 (24 per task); harder scenes 240 (48 per task) |
 
 In the first three sets, a task's episodes share a few turns of the object: SimplerEnv's layouts have 1 to 3
 turns per task, and a `--layout-seed` set has 12 placements per task, each with the same 4 turns. In the `iidN`
-sets, each episode has a random placement and turn of its own (`IID_EPISODES` sets the episodes per task).
+sets, each episode has a random placement and turn of its own (`IID_EPISODES` sets the episodes per task). The
+harder scenes take `paper` (their fixed layouts) or `iidN` (`harder_scenes.random_layout`).
 
 Planner-only evals are named `{prefix}_{layouts}_{level}`, with the depth-noise level `none` (clean),
 `realistic` or `harsh`. The current ones are `pseed_*` (planner seeded per episode). The VLA-only evals:
@@ -43,7 +45,9 @@ and `vla_iid12`, all with the fast settings, and the reruns `rep1_*`, `rep2_*` (
 (planner-only) and `vla_{layouts}_{level}` (VLA-only), where the level is the camera's (see "Camera-noise study").
 The reworded-instruction study's are `words_{set}_paper` and `vla_words_{set}_paper` (see "Reworded-instruction
 study"). The harder-scene study's are `harder_paper` and `vla_harder_paper` (see "Harder-scene study"). The VLM
-plan-check study adds `check_paper_none` (see "VLM plan-check study").
+plan-check study adds `check_paper_none` (see "VLM plan-check study"). The VLM plan-check v2 study's are
+`check2_{own,words_SET,harder}_{paper,iid13}` (planner-only, both checks) and `vla_{own,words_SET,harder}_iid13`
+(VLA-only; see "VLM plan-check v2 study").
 
 ## Evals (GPU)
 
@@ -174,6 +178,35 @@ The VLM plan-check study's eval (see "VLM plan-check study" below); it also read
 PLAN_CHECK=1 bash $E/planner_eval.sh 0 10320 check_paper_none none paper
 ```
 
+The VLM plan-check v2 study's evals (see "VLM plan-check v2 study" below). The test runs only if the dev step
+says go:
+
+```bash
+S=examples.SimplerEnv.eval_files.planner.experiments.score_plan_check_v2
+export PLAN_CHECK=1 PLAN_CHECK_MARKS=outline,tint
+# the dev step: the first study's planner-only evals again, with both checks
+bash $E/planner_eval.sh 0 10320 check2_own_paper none paper
+for set in synonyms attributes order reasoning; do
+  INSTRUCTIONS=$set bash $E/planner_eval.sh 0 10320 check2_words_${set}_paper none paper
+done
+TASK_SET=harder bash $E/planner_eval.sh 0 10320 check2_harder_paper none paper
+python -m $S --dev --save plan_check_v2.json > $RUNS_DIR/plan_check_v2_dev.txt
+# the test: planner-only (test 1), then VLA-only (tests 2 to 4)
+IID_EPISODES=24 bash $E/planner_eval.sh 0 10320 check2_own_iid13 none iid13
+for set in synonyms attributes order reasoning; do
+  IID_EPISODES=24 INSTRUCTIONS=$set bash $E/planner_eval.sh 0 10320 check2_words_${set}_iid13 none iid13
+done
+IID_EPISODES=48 TASK_SET=harder bash $E/planner_eval.sh 0 10320 check2_harder_iid13 none iid13
+python -m $S > $RUNS_DIR/plan_check_v2_test1.txt
+unset PLAN_CHECK PLAN_CHECK_MARKS
+for set in synonyms attributes order reasoning; do
+  IID_EPISODES=24 INSTRUCTIONS=$set bash $E/vla_eval.sh 0 10400 vla_words_${set}_iid13 iid13 4
+done
+IID_EPISODES=48 TASK_SET=harder bash $E/vla_eval.sh 0 10400 vla_harder_iid13 iid13 4
+IID_EPISODES=24 bash $E/vla_eval.sh 0 10400 vla_own_iid13 iid13 4  # secondary
+python -m $S > $RUNS_DIR/plan_check_v2_test.txt
+```
+
 The planner first ran with SAM 3.1 after 2026-10-23, so a smoke test comes before the evals above: 2 episodes
 of each task, checked in the records against `pseed_paper_none` (SAM 3, the same episodes): the outcomes, and how
 far the camera estimate is from the simulator's object (`grasp_error_xy`, `place_error_xy`). It is not part of
@@ -214,7 +247,8 @@ The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g
 --runs cam --vla 'vla_{set}_{level}' --noise camera --other` and `check_closed_loop cam_closed_loop_iid12 --planner
 'cam_iid12_{}' --models 'cam_model/asm_{}.json' --vla vla_iid12_harsh`. The reworded-instruction study's:
 `score_instructions --asm two_model/asm_none.json`. The harder-scene study's: `score_harder_scenes`. The VLM
-plan-check study's: `score_plan_check --asm two_model/asm_none.json`.
+plan-check study's: `score_plan_check --asm two_model/asm_none.json`. The VLM plan-check v2 study's:
+`score_plan_check_v2 --dev --save plan_check_v2.json` (the dev step) and `score_plan_check_v2` (the test).
 
 The `dfix_*` and `seeded_*` runs and `heldout_planner_none` (the evals before the planner seed and before the
 depth fix) were archived on 2026-10-15; restore them into `$RUNS_DIR` for the result files that read them.
@@ -533,6 +567,71 @@ success. Per task: the success rates and how many episodes the gate gives the VL
 token goes to yes or no (near 1 means it answers the question). With `--asm two_model/asm_none.json`: the gate
 followed by the two-model study's ASM for clean depth (the ASM decides when the VLM says yes), on SimplerEnv's
 own and reworded instructions.
+
+## VLM plan-check v2 study
+
+The plan below was fixed on 2026-10-23, before any of the study's evals ran, and `score_plan_check_v2` follows it.
+The results do not change it. A result that is not in the plan is reported as exploratory. The first study ("VLM
+plan-check study") is not changed by it and is reported as planned.
+
+**Why.** The first study's planner-only evals (run on 2026-10-23) showed the check saying no to most correct
+plans. With SimplerEnv's own instructions the planner finished 90 of 96 episodes, but the VLM said yes on 33 (AUC
+of P(yes) for the planner's success 0.45); in the cluttered carrot task the planner finished 96 of 96 and the VLM
+said yes on 7; with "orange vegetable" and "purple vegetable" it said yes on none. The marked pictures were right.
+A likely cause is the tint: it makes the orange carrot and the purple eggplant look green. As these episodes were
+seen before this plan, they are only its dev set.
+
+**The v2 check** (`plan_check.py`, mark `outline`). As the first check, but the object to pick up gets a green
+line 3 pixels wide just outside its mask, and its own pixels keep their colour; the question says "outlined in
+green" instead of "tinted green". The same VLM (Qwen3-VL-4B-Instruct, the VLA's fast settings) and the same P(yes)
+from its first answer token, as the feature `vlm_plan_yes_outline`. Each eval of this study runs both checks on
+each first frame (`PLAN_CHECK_MARKS=outline,tint`), so v1 (`vlm_plan_yes`) and v2 are compared on the same
+episodes.
+
+**Dev step** (episodes the first study already ran; no test). The first study's planner-only evals again, with
+both checks: `check2_own_paper`, `check2_words_{set}_paper` and `check2_harder_paper` (832 episodes; the planner's
+episodes are the same as in the first study). On these, once:
+
+- v2's threshold: the P(yes) value t with the largest Youden's J for the planner's success (the planner when
+  P(yes) >= t; J = the share of planner successes with a yes + the share of planner failures with a no - 1);
+  ties: the t nearest 0.5. Saved in `plan_check_v2.json`.
+- Go or no go: the test runs only if v2's AUC of P(yes) for the planner's success, over all 832 episodes, is
+  higher than v1's. A no go ends the study without a test, and that is reported.
+
+**Test set** (`iid13`: layout seed 13, a random layout of its own for each episode; no episode of it ran before
+this plan). SimplerEnv's 4 tasks, 24 episodes each, with the tasks' own instructions and with each of the 4
+reworded sets (5 x 96 episodes; episode N has the same layout in each set). The 5 harder tasks, 48 episodes each
+(`harder_scenes.random_layout`: the grid of the fixed layouts with a random half-edge of 7.5 to 9 cm, each object
+up to 1 cm off its corner in x and y, the spoon and the carrot turned at random, at least 2 cm between objects;
+the 3 kitchen tasks share their layouts, and so do the 2 plate tasks with the target swapped): 240 episodes. 720
+planner-only episodes in all.
+
+**Evals.** Planner-only (planner seed 0, clean depth, SAM 3.1, both checks): `check2_own_iid13`,
+`check2_words_{set}_iid13` and `check2_harder_iid13`. VLA-only (fast settings, VLM seed offset 0):
+`vla_words_{set}_iid13` and `vla_harder_iid13`, and `vla_own_iid13` for the secondary results. About 1 GPU hour
+for the dev step and the planner-only test evals, and 5 to 7 GPU hours for the VLA-only evals. The commands are
+above.
+
+**Planned tests.** In this fixed order, each two-sided at 0.05, and each counting only when every test before it
+was significant.
+
+1. v2 predicts the planner's success better than v1: on the 720 planner-only test episodes, the AUC of v2's P(yes)
+   minus v1's, by DeLong's test for two AUCs on the same episodes; significant only with v2's AUC the higher.
+   Interval: 95% percentile bootstrap of the AUC difference; each draw takes each task's episodes of each
+   instruction set again, with replacement (10,000 draws). It needs no VLA-only eval.
+2. Harder scenes (240 layouts): the v2 gate (the VLA when v2's P(yes) is below the dev step's threshold, else the
+   planner) minus planner-only.
+3. Harder scenes: the v2 gate minus VLA-only.
+4. Reworded instructions (96 layouts; a layout's value is its sum over the 4 sets): the v2 gate minus planner-only.
+
+Tests 2 to 4 are scored offline as in the first study (the gate's choice from the planner-only eval's first frame,
+and the outcome of the chosen method's eval of that layout), each by the exact paired sign-flip test with one value
+per layout, with intervals as in the first study.
+
+**Secondary (reported, no claims).** For each instruction set: v1's and v2's AUC and mean within-task AUC, how
+often each says yes, and v2's probability on yes/no as its first word; with the VLA-only evals: planner-only,
+VLA-only, the v2 gate (exact McNemar against each), the v1 gate at 0.5, the oracle, and how many episodes v2 gives
+the VLA, also with the tasks' own instructions (`vla_own_iid13`). The dev step's tables (exploratory).
 
 ## VLM plan
 

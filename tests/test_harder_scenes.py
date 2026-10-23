@@ -10,8 +10,6 @@ from examples.SimplerEnv.eval_files.planner.experiments import score_harder_scen
 
 KITCHEN = ["ClutteredSpoonOnTowel-v0", "ClutteredCarrotOnPlate-v0", "TwoStepSpoonAndCarrot-v0"]
 NEAR, FAR = "CarrotOnNearPlate-v0", "CarrotOnFarPlate-v0"
-# Length and width on the table (m), from ManiSkill2_real2sim's data/custom/info_bridge_custom_v0.json.
-FOOTPRINT = {hs.SPOON: (0.14, 0.035), hs.TOWEL: (0.1, 0.1), hs.CARROT: (0.115, 0.032), hs.PLATE: (0.11, 0.11)}
 COMMON_SH = Path(__file__).parents[1] / "examples/SimplerEnv/eval_files/planner/experiments/common.sh"
 
 
@@ -41,7 +39,7 @@ def test_objects_start_apart_and_in_reach():
             objs = episode(task, e)
             for m, xy, _ in objs:  # the cube task's area, SimplerEnv's widest
                 assert -0.2601 <= xy[0] <= -0.0599 and abs(xy[1]) <= 0.1001, (task, e, m)
-            ext = [np.abs([[np.cos(y), np.sin(y)], [np.sin(y), np.cos(y)]]) @ FOOTPRINT[m] for m, _, y in objs]
+            ext = [np.abs([[np.cos(y), np.sin(y)], [np.sin(y), np.cos(y)]]) @ hs.FOOTPRINT[m] for m, _, y in objs]
             for i in range(len(objs)):
                 for j in range(i):
                     gap = np.abs(objs[i][1] - objs[j][1]) - (ext[i] + ext[j]) / 2
@@ -57,6 +55,37 @@ def test_tasks_of_a_scene_share_their_layouts():
         assert np.allclose(near[0][1], far[0][1]) and near[0][2] == far[0][2]  # the carrot
         assert np.allclose(near[1][1], far[2][1]) and np.allclose(near[2][1], far[1][1])  # the plates, swapped
         assert near[1][1][0] > near[2][1][0]  # the target is the plate nearer the robot (at x = 0.147)
+
+
+def random_episode(task, seed, e):
+    xy, q = hs.random_layout(task, seed, e)
+    return [(m, xy[i], 2 * np.arctan2(q[i, 3], q[i, 0])) for i, m in enumerate(hs.TASKS[task].objects)]
+
+
+def test_random_layouts():
+    for e in range(200):
+        for task in sh.TASKS:
+            objs = random_episode(task, 13, e)
+            for m, xy, _ in objs:
+                assert -0.2601 <= xy[0] <= -0.0599 and abs(xy[1]) <= 0.1001, (task, e, m)
+            ext = [np.abs([[np.cos(y), np.sin(y)], [np.sin(y), np.cos(y)]]) @ hs.FOOTPRINT[m] for m, _, y in objs]
+            for i in range(len(objs)):
+                for j in range(i):
+                    gap = np.abs(objs[i][1] - objs[j][1]) - (ext[i] + ext[j]) / 2
+                    assert gap.max() >= 0.02, (task, e, objs[i][0], objs[j][0])
+        kitchen = [{m: (tuple(np.round(xy, 9)), round(y, 9)) for m, xy, y in random_episode(t, 13, e)} for t in KITCHEN]
+        assert kitchen[0] == kitchen[1] == kitchen[2], e
+        near, far = random_episode(NEAR, 13, e), random_episode(FAR, 13, e)
+        assert np.allclose(near[0][1], far[0][1]) and np.isclose(near[0][2], far[0][2])
+        assert np.allclose(near[1][1], far[2][1]) and np.allclose(near[2][1], far[1][1])
+        gap = np.linalg.norm(near[2][1] - hs.CAMERA_XY) - np.linalg.norm(near[1][1] - hs.CAMERA_XY)
+        assert gap >= 0.01 and near[1][1][0] > near[2][1][0], e  # the target: nearer the camera and the robot
+    a, b = hs.random_layout(KITCHEN[0], 13, 5), hs.random_layout(KITCHEN[0], 13, 5)
+    assert all(np.array_equal(x, y) for x, y in zip(a, b, strict=True))  # same seed and episode, same layout
+    assert not np.allclose(a[0], hs.random_layout(KITCHEN[0], 13, 6)[0])
+    assert not np.allclose(a[0], hs.random_layout(KITCHEN[0], 14, 5)[0])
+    fixed = {tuple(np.round(xy, 6).ravel()) for xy in hs.layouts(KITCHEN[0])[0]}
+    assert tuple(np.round(a[0], 6).ravel()) not in fixed  # not one of the fixed (paper) layouts
 
 
 def test_near_plate_is_nearer_the_camera():  # the instructions name the camera

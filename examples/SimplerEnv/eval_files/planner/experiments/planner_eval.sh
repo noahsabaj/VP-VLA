@@ -14,11 +14,13 @@
 #   RGB_NOISE      none (default) | realistic | harsh | same: a real color camera's errors in the picture
 #                  (camera_noise.py); same = the depth noise's level (one camera at LEVEL).
 #   INSTRUCTIONS   reworded instructions (instruction_sets.py; default: the task's own).
-#   TASK_SET       simpler (default: SimplerEnv's 4 tasks) | harder (the harder scenes; LAYOUTS=paper only).
+#   TASK_SET       simpler (default: SimplerEnv's 4 tasks) | harder (the harder scenes; LAYOUTS=paper or iidN).
 #   PLAN_CHECK     1: the VLM plan check (planner/plan_check.py) on each episode's first frame, from a VLM server
 #                  on PORT + 50 (PLAN_CHECK_VLM_ARGS; default: the VLA's fast VLM settings). It adds the feature
 #                  vlm_plan_yes and the marked pictures (TASK/plan_check/); the planner's episodes stay the same.
 #                  Default 0.
+#   PLAN_CHECK_MARKS  with PLAN_CHECK=1: how the object is marked, comma-separated (plan_check.MARKS: tint,
+#                  outline; default tint). Each mark is one more question and feature (outline: vlm_plan_yes_outline).
 #   TASK_SOURCE    rule (default: the fixed rule, one pick-and-place) | vlm: the VLM plan (planner/vlm_plan.py),
 #                  from a VLM server on PORT + 50 as for PLAN_CHECK (not with it): the VLM lists the pick-and-place
 #                  moves and the planner does them in order.
@@ -50,11 +52,11 @@ if [ "${PLAN_CHECK:-0}" = 1 ] || [ "$TS" = vlm ]; then
   start_server $((PORT + 50)) "$OUT/vlm.log" "$SAM3_PYTHON" examples/SimplerEnv/eval_files/vlm_server_subtask_simpler.py \
     --port $((PORT + 50)) $VARGS || exit 1
   wait_port $((PORT + 50)) || { log "$NAME: VLM server never opened port $((PORT + 50))"; exit 1; }
-  CHECK=(--plan-check-port $((PORT + 50)))
+  CHECK=(--plan-check-port $((PORT + 50)) --plan-check-marks "${PLAN_CHECK_MARKS:-tint}")
   [ "$TS" = vlm ] && CHECK=(--task-source vlm --vlm-plan-port $((PORT + 50)) --vlm-plan-min-score ${VLM_PLAN_MIN_SCORE:-0})
 fi
 log "START $NAME ($LEVEL depth, $RGB_LEVEL RGB, ${TASK_SET:-simpler} tasks, $LAYOUTS layouts, ${INSTRUCTIONS:-default} instructions, SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS], PLANNER_SEED=[$PS]," \
-  "TASKS_AT_ONCE=${TASKS_AT_ONCE:-4}, PLAN_CHECK=${PLAN_CHECK:-0} TASK_SOURCE=$TS VLM_PLAN_MIN_SCORE=${VLM_PLAN_MIN_SCORE:-0} [$VARGS]) on GPU $GPU (commit $(git rev-parse --short HEAD))"
+  "TASKS_AT_ONCE=${TASKS_AT_ONCE:-4}, PLAN_CHECK=${PLAN_CHECK:-0} PLAN_CHECK_MARKS=${PLAN_CHECK_MARKS:-tint} TASK_SOURCE=$TS VLM_PLAN_MIN_SCORE=${VLM_PLAN_MIN_SCORE:-0} [$VARGS]) on GPU $GPU (commit $(git rev-parse --short HEAD))"
 
 task() {
   local out=$OUT/$1 t0=$SECONDS rc

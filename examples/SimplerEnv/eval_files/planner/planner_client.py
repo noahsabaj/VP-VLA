@@ -26,6 +26,7 @@ import json
 import math
 import re
 import sys
+import time
 import zlib
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -36,6 +37,7 @@ from scipy.spatial.transform import Rotation, Slerp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "Robocasa_tabletop" / "visual_prompt_utility"))
 
+from ..model_time import METER, time_requests
 from . import plan_check, vlm_plan
 from .geometry import (CameraView, DepthNoise, corridor_points, depth_roughness, ee_delta_action, mat_to_pose,
                        path_length, pose_to_mat, short_width)
@@ -201,7 +203,8 @@ class PlannerClient:
         if target_source == "camera":
             from sam3_client import SAM3Client
 
-            self.sam3 = SAM3Client(host=sam3_host, port=sam3_port)
+            # Every server request is timed for the episode's cost record (model_time.py).
+            self.sam3 = time_requests(SAM3Client(host=sam3_host, port=sam3_port), "sam")
         # The SAM server's model (SAM3Model or SAM31Model), from its greeting: a run setting of every record.
         self.sam_model = (getattr(self.sam3, "_server_metadata", None) or {}).get("model") if self.sam3 else None
         # Every selector saved before the records had sam_model was trained on SAM3 (SAM3Model) runs.
@@ -217,7 +220,7 @@ class PlannerClient:
                 raise ValueError("the plan check needs --target-source camera: it shows the VLM SAM3's masks")
             from ..vlm_client_simpler import VLMClientSimpler
 
-            self.plan_check = VLMClientSimpler(host=plan_check_host, port=plan_check_port)
+            self.plan_check = time_requests(VLMClientSimpler(host=plan_check_host, port=plan_check_port), "vlm")
         # How the object is marked (plan_check.MARKS), each mark its own question and feature; the selector mode's
         # gate uses the first one, with this threshold.
         self.plan_check_marks = list(plan_check_marks)
@@ -238,7 +241,7 @@ class PlannerClient:
                 raise ValueError("the plan check asks about the fixed rule's one pick-and-place: not with the VLM plan")
             from ..vlm_client_simpler import VLMClientSimpler
 
-            self.vlm_planner = VLMClientSimpler(host=vlm_plan_host, port=vlm_plan_port)
+            self.vlm_planner = time_requests(VLMClientSimpler(host=vlm_plan_host, port=vlm_plan_port), "vlm")
         # The VLM plan's SAM score check: a name whose chosen mask scores below this is not found (0 = no check).
         if vlm_plan_min_score and task_source != "vlm":
             raise ValueError("vlm_plan_min_score is for the VLM plan (task_source vlm)")
@@ -314,9 +317,14 @@ class PlannerClient:
         ee_pose = ee_pose_from_obs(obs)
 
         if self.phase == "start":
+            t0 = time.perf_counter()
             self._start(image, obs, env, qpos, target)
             if self.selector is not None:
                 self._choose()
+            # What the episode cost up to here (model_time.py): the first look, which the ASM needs in every episode,
+            # and in the selector mode the VLA's reset before it.
+            self.stats["first_look_seconds"] = time.perf_counter() - t0
+            self.stats["first_look_model"] = METER.snapshot()
         if (out := self._end_action(image, task_description, target, ee_pose)) is not None:
             return out
 

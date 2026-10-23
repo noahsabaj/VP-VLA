@@ -72,6 +72,16 @@ layouts only: `LAYOUTS=paper`). `PLAN_CHECK=1` adds the VLM plan check (`plan_ch
 only logs the feature `vlm_plan_yes`; in `selector_eval.sh` a "no" gives the episode to the VLA.
 `TASK_SOURCE=vlm` replaces the planner's fixed rule with the VLM plan (`vlm_plan.py`; see "VLM plan" below).
 
+**Costs** (since 2026-10-23). Each sim writes `episode_costs.jsonl` (`model_time.py`): for each episode, its
+wall-clock seconds from the model's reset to the last step, and its model requests, the count and the round-trip
+seconds for each model (`vla`, `vlm`, `sam`). The planner records add what the first look cost (`first_look_seconds`,
+`first_look_model`): the part of an episode that the ASM needs in every episode. Every runner logs the GPU every 5 s
+in `dmon.txt` (power, use and memory, with timestamps). `score_costs RUN...` gives each eval's cost per episode: the
+seconds, the requests and the GPU energy. The GPU energy is the eval's own only when the eval had the GPU to itself:
+one eval at a time (`planner_evals.sh` with AT_ONCE=1) and no other user on the GPU. The round trips are GPU time
+only with one sim at a time; when sims share the servers (K sim clients, or the planner's 4 tasks at once), they
+include the wait for the other sims' requests.
+
 `SAM_VERSION` picks the model of every SAM server, both the VLA's visual prompts and the planner's masks:
 `sam3.1` (the default since 2026-10-23: SAM 3.1's detector, from the sam31 env) or `sam3` (transformers'
 `Sam3Model`: the paper's setup, and every eval before 2026-10-23). Both run the image encoder once per frame
@@ -258,7 +268,8 @@ The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g
 'cam_iid12_{}' --models 'cam_model/asm_{}.json' --vla vla_iid12_harsh`. The reworded-instruction study's:
 `score_instructions --asm two_model/asm_none.json`. The harder-scene study's: `score_harder_scenes`. The VLM
 plan-check study's: `score_plan_check --asm two_model/asm_none.json`. The VLM plan-check v2 study's:
-`score_plan_check_v2 --dev --save plan_check_v2.json` (the dev step) and `score_plan_check_v2` (the test).
+`score_plan_check_v2 --dev --save plan_check_v2.json` (the dev step) and `score_plan_check_v2` (the test). Any
+eval's costs (see "Costs" above): `score_costs RUN...`.
 
 The `dfix_*` and `seeded_*` runs and `heldout_planner_none` (the evals before the planner seed and before the
 depth fix) were archived on 2026-10-15; restore them into `$RUNS_DIR` for the result files that read them.

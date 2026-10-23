@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "Robocasa
 
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
 from examples.SimplerEnv.eval_files.adaptive_ensemble import AdaptiveEnsembler
+from examples.SimplerEnv.eval_files.model_time import time_requests
 from examples.SimplerEnv.eval_files.vla_perturbation import perturb_images, perturbation_rng
 from starVLA.model.tools import read_mode_config
 
@@ -82,7 +83,8 @@ class ModelClientVP:
     ) -> None:
         if perturb_k and not hidden_dir:
             raise ValueError("perturb_k needs hidden_dir: the actions are saved with the hidden states")
-        self.client = WebsocketClientPolicy(host, port)
+        # Every server request is timed for the episode's cost record (model_time.py).
+        self.client = time_requests(WebsocketClientPolicy(host, port), "vla")
 
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         if policy_setup == "widowx_bridge":
@@ -141,6 +143,7 @@ class ModelClientVP:
                 mask_threshold_open=sam3_mask_threshold,
                 batch_prompts=sam3_batch_prompts,
             )
+            time_requests(self.sam3_client, "sam")
             self._extract_target_from_task = extract_target_from_task
             print(f"*** SAM3 enabled: target_object={target_object_prompt_mode}, target_location={target_location_prompt_mode} ***")
 
@@ -172,7 +175,7 @@ class ModelClientVP:
 
         if use_vlm:
             from vlm_client_simpler import VLMClientSimpler
-            self.vlm_client = VLMClientSimpler(host=vlm_host, port=vlm_port)
+            self.vlm_client = time_requests(VLMClientSimpler(host=vlm_host, port=vlm_port), "vlm")
             mode_str = "gripper-change mode" if vlm_query_on_gripper_change else "query-once mode"
             rate_limit_str = f" (rate limit: {vlm_query_rate_limit_steps} steps)" if vlm_query_rate_limit_steps > 0 else " (no rate limit)"
             cooldown_str = f", proceed cooldown: {vlm_proceed_cooldown_steps} steps" if vlm_proceed_cooldown_steps > 0 else ""

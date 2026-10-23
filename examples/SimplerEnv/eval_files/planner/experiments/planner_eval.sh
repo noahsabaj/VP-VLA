@@ -57,6 +57,8 @@ if [ "${PLAN_CHECK:-0}" = 1 ] || [ "$TS" = vlm ]; then
 fi
 log "START $NAME ($LEVEL depth, $RGB_LEVEL RGB, ${TASK_SET:-simpler} tasks, $LAYOUTS layouts, ${INSTRUCTIONS:-default} instructions, SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS], PLANNER_SEED=[$PS]," \
   "TASKS_AT_ONCE=${TASKS_AT_ONCE:-4}, PLAN_CHECK=${PLAN_CHECK:-0} PLAN_CHECK_MARKS=${PLAN_CHECK_MARKS:-tint} TASK_SOURCE=$TS VLM_PLAN_MIN_SCORE=${VLM_PLAN_MIN_SCORE:-0} [$VARGS]) on GPU $GPU (commit $(git rev-parse --short HEAD))"
+nvidia-smi dmon -i $GPU -s pum -o DT -d 5 > "$OUT/dmon.txt" 2>&1 &
+DMON=$!
 
 task() {
   local out=$OUT/$1 t0=$SECONDS rc
@@ -68,5 +70,6 @@ task() {
     "$(grep "Average success" "$out/sim.log" | tail -1 | xargs) ($(( (SECONDS - t0) / 60 )) min)"
 }
 run_pool ${TASKS_AT_ONCE:-4} 2 task "${TASKS[@]}"
+kill $DMON 2>/dev/null
 stop_servers
 log "DONE $NAME"

@@ -2,7 +2,9 @@
 
 The offline result of an episode: the ASM's pick from the planner-only eval's first-look features (same layout,
 same depth-noise draw), and the outcome of the picked controller there (planner: the planner-only eval; VLA: the
-VLA-only eval, whose server settings the closed-loop eval uses). Videos are compared byte for byte.
+VLA-only eval, whose server settings the closed-loop eval uses). With the VLM plan, an episode whose plan is not
+pick-and-place goes to the VLA before the ASM (selector.vlm_plan_gate), live and offline. Videos are compared byte
+for byte.
 
     python -m examples.SimplerEnv.eval_files.planner.experiments.check_closed_loop live_pseed \\
         --planner 'pseed_paper_{}' --models final_pseed [--vla fast3_train_g0 fast3_train_g1]
@@ -60,7 +62,10 @@ def live_records(root):
 
 
 def probs(decision, prefix=""):
-    """An ASM decision's probabilities: "P 0.1234" (P(planner)), and P(VLA) for the two-model ASM."""
+    """An ASM decision's probabilities: "P 0.1234" (P(planner)), and P(VLA) for the two-model ASM; for a choice made
+    before the ASM (selector.vlm_plan_gate), its reason."""
+    if prefix + "p_planner" not in decision:
+        return decision.get(prefix + "reason", "no P")
     text = f"P {decision[prefix + 'p_planner']:.4f}"
     return text + (f", P(VLA) {decision[prefix + 'p_vla']:.4f}" if prefix + "p_vla" in decision else "")
 
@@ -91,14 +96,15 @@ def main():
         keys = sorted(k for k in live if k in plan and k in vla_vid)
         if len(keys) < len(live):
             notes.append(f"{LEVEL_NAMES[lvl]}: {len(live) - len(keys)} live tries have no offline result")
-        off = {k: asm.decide(plan[k], k[0]) for k in keys}
+        off = {k: s.vlm_plan_gate(plan[k]) or asm.decide(plan[k], k[0]) for k in keys}
         pick_off = {k: off[k]["choice"] for k in keys}
         out_off = {k: bool(plan[k]["success"]) if pick_off[k] == "planner" else vla_vid[k][0] for k in keys}
         out_live = {k: bool(live[k]["success"]) for k in keys}
         same_feat = sum(np.array_equal(s.row_features(live[k], runs.CHECK), s.row_features(plan[k], runs.CHECK))
                         for k in keys)
         same_pick = sum(live[k]["selector_choice"] == pick_off[k] for k in keys)
-        max_dp = max(abs(live[k][f"selector_{n}"] - off[k][n]) for k in keys for n in off[k] if n != "choice")
+        max_dp = max((abs(live[k][f"selector_{n}"] - off[k][n]) for k in keys for n in off[k]
+                      if n not in ("choice", "reason") and f"selector_{n}" in live[k]), default=0.0)
         vla_keys = [k for k in keys if live[k]["selector_choice"] == "vla"]
         plan_keys = [k for k in keys if live[k]["selector_choice"] == "planner"]
         same_vla = sum(live_vid.get(k, (None, None))[1] == vla_vid[k][1] for k in vla_keys)

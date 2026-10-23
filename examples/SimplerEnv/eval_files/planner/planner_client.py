@@ -42,7 +42,7 @@ from . import plan_check, vlm_plan
 from .geometry import (CameraView, DepthNoise, corridor_points, depth_roughness, ee_delta_action, mat_to_pose,
                        path_length, pose_to_mat, short_width)
 from .planners import FINGER_OPEN, WORKSPACE, RobotSpheres, make_planner
-from .selector import FEATURES_VERSION
+from .selector import FEATURES_VERSION, vlm_plan_gate
 
 GRIPPER_OPEN, GRIPPER_CLOSED = 1.0, -1.0
 PLACE_PREPOSITIONS = (" onto ", " on ", " into ", " in ")
@@ -370,8 +370,8 @@ class PlannerClient:
             raise ValueError("the selector mode needs the episode key (planner_evaluator sets it): its task")
         p_yes = self.stats["features"].get(plan_check.feature(self.plan_check_marks[0])) \
             if self.plan_check is not None else None
-        if self.task_source == "vlm" and not self.stats.get("vlm_plan_feasible"):
-            decision = {"choice": "vla", "reason": "VLM plan: not pick-and-place"}
+        if (gate := vlm_plan_gate(self.stats)) is not None:  # the VLM plan found no pick-and-place moves
+            decision = gate
         elif p_yes is not None and plan_check.gate(p_yes, self.plan_check_threshold) == "vla":
             decision = {"choice": "vla", "reason": "plan check"}
         else:

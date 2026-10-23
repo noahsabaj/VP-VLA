@@ -26,6 +26,9 @@ only the planner model; the eval runs it with `--controller selector --selector 
 trains and saves the two-model ASM (TwoModelASM): one success model per method, each a logistic
 regression on the task and its method's first-frame features (PLANNER_FEATURES, VLA_FEATURES), and
 the planner when P(planner succeeds) >= P(VLA succeeds). experiments/score_two_model.py scores it.
+With --planner-candidates (feature lists, each comma-separated), P(planner) uses the list with the
+lowest log-loss in 10-fold cross-validation on the training set (choose_features). Episodes that the
+VLM plan gives to the VLA before the ASM decides (vlm_plan_gate) are not training data.
 """
 
 import argparse
@@ -502,21 +505,69 @@ def evaluate(planner_root: str, vla_roots: List[str], save: Optional[str] = None
         print("saved", save)
 
 
+def vlm_plan_gate(record: dict) -> Optional[dict]:
+    """The selector mode's choice before the ASM (planner_client.py): the VLA when the VLM plan found the instruction
+    not to be pick-and-place. None when the ASM decides (always with the fixed rule)."""
+    if record.get("task_source") == "vlm" and not record.get("vlm_plan_feasible"):
+        return {"choice": "vla", "reason": "VLM plan: not pick-and-place"}
+    return None
+
+
+def grouped_folds(episodes: np.ndarray, k: int, seed: int) -> np.ndarray:
+    """A fold (0 to k - 1) for each row, with all the rows of an episode index in one fold. In the iidN sets the tasks
+    of an episode index share their layout (spoon and carrot have the same position), so they are held out together."""
+    order = np.random.default_rng(seed).permutation(sorted(set(np.asarray(episodes).tolist())))
+    fold = {e: i % k for i, e in enumerate(order.tolist())}
+    return np.array([fold[e] for e in np.asarray(episodes).tolist()])
+
+
+def cv_logloss(records: List[dict], tasks: np.ndarray, y: np.ndarray, features: List[str], episodes: np.ndarray,
+               k: int = 10, seed: int = 0) -> float:
+    """Log-loss of the out-of-fold P of a SuccessModel on `features`, with folds by episode index (grouped_folds)."""
+    x, folds, p = SuccessModel(features).x(records), grouped_folds(episodes, k, seed), np.zeros(len(y))
+    for i in range(k):
+        test = folds == i
+        if test.any():
+            p[test] = SuccessModel(features).fit(x[~test], tasks[~test], y[~test]).prob(x[test], tasks[test])
+    p = np.clip(p, 1e-6, 1 - 1e-6)
+    return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
+
+
+def choose_features(records: List[dict], tasks: np.ndarray, y: np.ndarray, candidates: List[List[str]],
+                    episodes: np.ndarray, k: int = 10, seed: int = 0) -> Tuple[List[str], List[float]]:
+    """The candidate feature list with the lowest cv_logloss (the first one on a tie), and each candidate's
+    log-loss."""
+    losses = [cv_logloss(records, tasks, y, list(c), episodes, k, seed) for c in candidates]
+    return list(candidates[int(np.argmin(losses))]), losses
+
+
 def fit_two_model(records: List[dict], tasks: np.ndarray, y_plan: np.ndarray, y_vla: np.ndarray,
-                  trained_on: Optional[dict] = None) -> TwoModelASM:
-    """The two-model ASM fit to these episodes: their planner records, tasks and the two controllers' outcomes."""
-    asm = TwoModelASM(SuccessModel(PLANNER_FEATURES), SuccessModel(VLA_FEATURES), trained_on)
+                  trained_on: Optional[dict] = None, planner_features: Optional[List[str]] = None) -> TwoModelASM:
+    """The two-model ASM fit to these episodes: their planner records, tasks and the two controllers' outcomes.
+    planner_features: P(planner)'s features (default PLANNER_FEATURES)."""
+    asm = TwoModelASM(SuccessModel(planner_features or PLANNER_FEATURES), SuccessModel(VLA_FEATURES), trained_on)
     asm.planner.fit(asm.planner.x(records), tasks, y_plan)
     asm.vla.fit(asm.vla.x(records), tasks, y_vla)
     return asm
 
 
-def train_two_model(planner_root: str, vla_roots: List[str]) -> TwoModelASM:
-    """The two-model ASM, with both success models trained on every layout both controllers ran."""
+def train_two_model(planner_root: str, vla_roots: List[str],
+                    planner_candidates: Optional[List[List[str]]] = None) -> TwoModelASM:
+    """The two-model ASM, with both success models trained on every layout both controllers ran, except the
+    episodes the VLM plan gives to the VLA first (vlm_plan_gate). With planner_candidates, P(planner) uses the
+    candidate that choose_features picks on these episodes."""
     planner, vla, keys = matched_layouts(planner_root, vla_roots)
+    keys = [k for k in keys if vlm_plan_gate(planner[k]) is None]
     records = [planner[k] for k in keys]
-    return fit_two_model(records, np.array([k[0] for k in keys]), np.array([float(r["success"]) for r in records]),
-                         np.array([vla[k] for k in keys]), planner_settings(list(planner.values()), planner_root))
+    tasks, y_plan = np.array([k[0] for k in keys]), np.array([float(r["success"]) for r in records])
+    features = None
+    if planner_candidates:
+        features, losses = choose_features(records, tasks, y_plan, planner_candidates, np.array([k[1] for k in keys]))
+        print("P(planner) features, cross-validated log-loss: "
+              + "; ".join(f"{', '.join(c)}: {v:.4f}" for c, v in zip(planner_candidates, losses, strict=True))
+              + f" -> {', '.join(features)}")
+    return fit_two_model(records, tasks, y_plan, np.array([vla[k] for k in keys]),
+                         planner_settings(list(planner.values()), planner_root), features)
 
 
 def describe(asm: TwoModelASM) -> List[str]:
@@ -529,15 +580,16 @@ def describe(asm: TwoModelASM) -> List[str]:
     return lines
 
 
-def save_two_model(planner_root: str, vla_roots: List[str], save: str) -> None:
-    asm = train_two_model(planner_root, vla_roots)
+def save_two_model(planner_root: str, vla_roots: List[str], save: str,
+                   planner_candidates: Optional[List[List[str]]] = None) -> None:
+    asm = train_two_model(planner_root, vla_roots, planner_candidates)
     print("\n".join(describe(asm)))
     with open(save, "w") as fh:
         json.dump(asm.to_json(), fh, indent=1)
     print("saved", save)
 
 
-if __name__ == "__main__":
+def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--planner-runs", required=True)
     ap.add_argument("--vla-runs", nargs="+", required=True)
@@ -552,12 +604,22 @@ if __name__ == "__main__":
     ap.add_argument("--rule", choices=["threshold", "two-model"], default="threshold",
                     help="two-model: train the two-model ASM on --planner-runs and --vla-runs and save it (--save); "
                          "experiments/score_two_model.py scores it")
+    ap.add_argument("--planner-candidates", nargs="+", default=None,
+                    help="with --rule two-model: P(planner)'s candidate feature lists, each comma-separated; the one "
+                         "with the lowest cross-validated log-loss is used (default: PLANNER_FEATURES)")
     a = ap.parse_args()
     if bool(a.test_planner_runs) != bool(a.test_vla_runs):
         ap.error("--test-planner-runs and --test-vla-runs go together")
+    if a.planner_candidates and a.rule != "two-model":
+        ap.error("--planner-candidates is for --rule two-model")
     if a.rule == "two-model":
         if not a.save or a.test_planner_runs:
             ap.error("--rule two-model trains and saves the ASM: give --save, and no --test-* runs")
-        save_two_model(a.planner_runs, a.vla_runs, a.save)
+        save_two_model(a.planner_runs, a.vla_runs, a.save,
+                       [c.split(",") for c in a.planner_candidates] if a.planner_candidates else None)
     else:
         evaluate(a.planner_runs, a.vla_runs, a.save, a.model, a.test_planner_runs, a.test_vla_runs, a.features)
+
+
+if __name__ == "__main__":
+    main()

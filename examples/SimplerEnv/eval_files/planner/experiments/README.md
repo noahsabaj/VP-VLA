@@ -31,6 +31,7 @@ python -m examples.SimplerEnv.eval_files.planner.experiments.SCORER ...
 | two-model study: test set | `--layout-seed 12 --layout-per-episode` | `iid12` | 400 (100 per task) |
 | plan-check v2 study: test set | `--layout-seed 13 --layout-per-episode` | `iid13` | 96 (24 per task); harder scenes 240 (48 per task) |
 | learned-features data: second training set | `--layout-seed 14 --layout-per-episode` | `iid14` | 400 (100 per task) |
+| VLM-plan study: test set | `--layout-seed 15 --layout-per-episode` | `iid15` | 400 (100 per task) |
 
 In the first three sets, a task's episodes share a few turns of the object: SimplerEnv's layouts have 1 to 3
 turns per task, and a `--layout-seed` set has 12 placements per task, each with the same 4 turns. In the `iidN`
@@ -49,7 +50,9 @@ study"). The harder-scene study's are `harder_paper` and `vla_harder_paper` (see
 plan-check study adds `check_paper_none` (see "VLM plan-check study"). The VLM plan-check v2 study's are
 `check2_{own,words_SET,harder}_{paper,iid13}` (planner-only, both checks) and `vla_{own,words_SET,harder}_iid13`
 (VLA-only; see "VLM plan-check v2 study"). The learned-features data are `pseed31_{iid11,iid14}_harsh` and
-`vla31_{iid11,iid14}` (SAM 3.1; see "Learned first-frame features").
+`vla31_{iid11,iid14}` (SAM 3.1; see "Learned first-frame features"). The VLM-plan study's are
+`vlmplan_{iid11,iid15}_{none,harsh}` (planner-only with the VLM plan), `vla31_iid15`, `pseed31_iid15_harsh` and the
+closed-loop eval `closed_loop_vlmplan_iid15`, with the ASMs `vlmplan_model/asm_{level}.json` (see "VLM-plan study").
 
 ## Evals (GPU)
 
@@ -244,6 +247,29 @@ HIDDEN=1 bash $E/vla_eval.sh 0 10400 vla31_iid11 iid11 4
 HIDDEN=1 bash $E/vla_eval.sh 0 10400 vla31_iid14 iid14 4
 ```
 
+The VLM-plan study's evals and ASMs (see "VLM-plan study" below), one eval at a time, so that each eval's GPU energy
+is its own. Its training set's VLA-only eval (`vla31_iid11`) and fixed-rule eval (`pseed31_iid11_harsh`) are the
+learned-features data above:
+
+```bash
+export TASK_SOURCE=vlm VLM_PLAN_MIN_SCORE=0
+bash $E/planner_evals.sh 0 10320 1 vlmplan_iid11_none:none:iid11 vlmplan_iid11_harsh:harsh:iid11
+mkdir -p $RUNS_DIR/vlmplan_model
+for level in none harsh; do
+  python -m examples.SimplerEnv.eval_files.planner.selector --rule two-model \
+      --planner-runs $RUNS_DIR/vlmplan_iid11_$level --vla-runs $RUNS_DIR/vla31_iid11 \
+      --planner-candidates plan_ok,plan_path_ratio plan_ok,plan_path_ratio,grasp_sam3_score,place_sam3_score \
+      --save $RUNS_DIR/vlmplan_model/asm_$level.json > $RUNS_DIR/vlmplan_model/train_$level.txt
+done
+# the test set, once the ASMs are saved
+bash $E/planner_evals.sh 0 10320 1 vlmplan_iid15_none:none:iid15 vlmplan_iid15_harsh:harsh:iid15
+DEPTHS=harsh CHUNK_SIZE=25 bash $E/selector_eval.sh 0 10510 closed_loop_vlmplan_iid15 iid15 \
+    'vlmplan_model/asm_{}.json' 6
+unset TASK_SOURCE VLM_PLAN_MIN_SCORE
+bash $E/vla_eval.sh 0 10400 vla31_iid15 iid15 4
+bash $E/planner_evals.sh 0 10320 1 pseed31_iid15_harsh:harsh:iid15
+```
+
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
 `TASK:0:8 TASK:8:16 TASK:16:24` for each task and `heldout_vla_g1` the episodes 24 to 47.
 
@@ -268,8 +294,11 @@ The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g
 'cam_iid12_{}' --models 'cam_model/asm_{}.json' --vla vla_iid12_harsh`. The reworded-instruction study's:
 `score_instructions --asm two_model/asm_none.json`. The harder-scene study's: `score_harder_scenes`. The VLM
 plan-check study's: `score_plan_check --asm two_model/asm_none.json`. The VLM plan-check v2 study's:
-`score_plan_check_v2 --dev --save plan_check_v2.json` (the dev step) and `score_plan_check_v2` (the test). Any
-eval's costs (see "Costs" above): `score_costs RUN...`.
+`score_plan_check_v2 --dev --save plan_check_v2.json` (the dev step) and `score_plan_check_v2` (the test). The
+VLM-plan study's: `score_vlm_plan` (all its tables and tests), `check_closed_loop closed_loop_vlmplan_iid15 --planner
+'vlmplan_iid15_{}' --models 'vlmplan_model/asm_{}.json' --vla vla31_iid15` (its closed-loop eval) and `score_costs
+vlmplan_iid15_harsh vla31_iid15 closed_loop_vlmplan_iid15` (its costs). Any eval's costs (see "Costs" above):
+`score_costs RUN...`.
 
 The `dfix_*` and `seeded_*` runs and `heldout_planner_none` (the evals before the planner seed and before the
 depth fix) were archived on 2026-10-15; restore them into `$RUNS_DIR` for the result files that read them.
@@ -686,7 +715,7 @@ the VLA, also with the tasks' own instructions (`vla_own_iid13`). The dev step's
 
 ## VLM plan
 
-A method, not yet a study: its study plan is written here before any eval with it runs.
+A method. Its study, "VLM-plan study" below, was planned before any eval with it ran.
 
 The planner's fixed rule reads one object and one target from an instruction of the form "put X on Y", and the
 planner then does one pick-and-place. With `TASK_SOURCE=vlm` (`--task-source vlm`) the VLM writes the planner's
@@ -711,8 +740,8 @@ is its match score times its presence score (is the name in the picture at all).
 below the minimum counts as not found; on the first frame this ends the planner's try (in the selector mode the
 VLA gets the episode). The SAM 3 paper counts a detection above 0.5, but correct objects in the simulator often
 score far lower (SAM 3: the spoon about 0.35, one eggplant 0.04; SAM 3.1 in the smoke test: the spoon 0.07), so
-0.5 would reject them. The minimum is therefore not fixed here: the VLM-plan study's plan fixes it from
-its training set, before any test eval runs.
+0.5 would reject them. The minimum is therefore not fixed here; the VLM-plan study (below) runs with the check
+off and gives the ASM the SAM scores instead.
 
 **Fixed for the VLM-plan study on 2026-10-23, before any eval with the VLM plan ran** (the rest of its plan is
 written before its evals run too): its evals use SAM 3.1, and the ASM's candidate planner features are
@@ -725,3 +754,81 @@ The records add `task_source`, `vlm_plan` (the parsed plan), `vlm_plan_text` (th
 `vlm_plan_feasible`, `steps_done`, `vlm_plan_min_score` and `vlm_plan_sam` (for each name looked up: the move, object
 or target, the name, its SAM score, whether the chosen mask covers the VLM's point, and whether the score check
 rejected it). The robot-contact check (`transit_contact`) covers the first move only.
+
+## VLM-plan study
+
+The plan below was fixed on 2026-10-23, before any eval with the VLM plan ran, and `score_vlm_plan` follows it. The
+results do not change it. A result that is not in the plan is reported as exploratory.
+
+**Question.** A common alternative to our architecture puts a language model or a VLM in front of a motion planner
+(VLM -> planner). With the VLM plan (see "VLM plan" above), VLM -> planner is our planner branch alone, and our
+system is the VLM plan, then the ASM, then the planner or the VLA. Does adding the ASM and the VLA to VLM -> planner
+raise the success rate? A VLM changes how the instruction is read, not what the depth camera measures: in the
+two-model study, with instructions that the fixed rule reads correctly, the planner fell from 90.0% with clean depth
+to 49.0% with harsh depth.
+
+**The system.** On the first frame, the VLM plan. A plan that is not pick-and-place gives the episode to the VLA
+(`selector.vlm_plan_gate`). The two-model ASM decides the other episodes from the planner's first look, which uses the
+names of the VLM's first move: the planner when P(planner succeeds) >= P(VLA succeeds), else the VLA. This is the
+selector mode with `TASK_SOURCE=vlm`.
+
+**Tasks and layouts.** SimplerEnv's 4 tasks with their own instructions. Training set: `iid11` (the two-model
+study's). Test set: `iid15` (layout seed 15, a random layout of its own for each episode, 100 per task), new for this
+study: no episode of it ran before this plan. (`iid12`, the two-model study's test set, was seen.)
+
+**Evals.** All with SAM 3.1 (the default), noise seed 0 and planner seed 0; the VLA with the fast settings and VLM
+seed offset 0.
+
+- Planner-only with the VLM plan (`TASK_SOURCE=vlm`): `vlmplan_iid11_{none,harsh}` and `vlmplan_iid15_{none,harsh}`.
+- VLA-only: `vla31_iid11` (also the learned-features data) and `vla31_iid15`.
+- Planner-only with the fixed rule, for the secondary results: `pseed31_iid11_harsh` (also the learned-features data)
+  and `pseed31_iid15_harsh`.
+- The closed-loop eval `closed_loop_vlmplan_iid15` (harsh depth, `TASK_SOURCE=vlm`) with the saved ASMs
+  `vlmplan_model/asm_{level}.json`.
+
+The ASMs are trained and saved before any eval of the test set runs. Each eval runs alone on GPU 0, so that its GPU
+energy is its own (see "Costs"). About 6 GPU hours, besides the learned-features data. The commands are above.
+
+**SAM score check: off** (`VLM_PLAN_MIN_SCORE=0`) in every eval. "VLM plan" above first said that this plan would fit
+a minimum score on the training set. Instead, the first move's SAM scores are candidate features of P(planner)
+(below), so the training set decides through the ASM whether a low score lowers the planner's chance; a fixed minimum
+would take that choice away.
+
+**Models.** One ASM per depth level (clean and harsh), trained on `iid11` only, with `selector.py --rule two-model`
+as in the two-model study: each success model is a logistic regression (L2 penalty 1, standardized inputs) on its
+features and one column per task. P(VLA succeeds) uses `grasp_turn_rad` and `grasp_reach_m`. P(planner succeeds) uses
+one of these feature lists, the candidates fixed in "VLM plan" above:
+
+1. `plan_ok`, `plan_path_ratio` (the two-model study's);
+2. `plan_ok`, `plan_path_ratio`, `grasp_sam3_score`, `place_sam3_score` (the best SAM score of the first move's
+   object and target names on the first frame).
+
+The list with the lower log-loss in 10-fold cross-validation on the training set is used (`--planner-candidates`,
+`selector.choose_features`; the first list on a tie). The folds hold out whole episode indices (random generator
+seed 0), because the 4 tasks of an episode index share their layout. The episodes that the gate gives to the VLA are
+not training data.
+
+**Decision rule.** The gate, then the planner when P(planner) >= P(VLA), else the VLA.
+
+**Planned tests.** On the 400 episodes of `iid15` with harsh depth (with harsh depth the planner fails most, so the
+choice matters most), the system above against, in this order:
+
+1. VLM -> planner alone (`vlmplan_iid15_harsh`);
+2. the VLA alone (`vla31_iid15`).
+
+The system is scored offline, as in the earlier studies: each episode's choice from the planner-only eval's first
+look, and the outcome of the chosen method's eval of that episode. Each test is the exact two-sided paired sign-flip
+test at 0.05, with one value per episode index: its sum over the 4 tasks of the difference in success (the 4 tasks
+of an episode index share their layout, so they are not independent). A test is a win when it is significant with
+the system higher, and a test counts only when every test before it was a win. Only the episode indices with all 4
+tasks in every eval count. Intervals: 95% percentile bootstrap of the mean difference; each draw takes the episode
+indices again, with replacement (10,000 draws).
+
+**Secondary (reported, no claims).** The clean depth level; each method per task and the oracle; the gate alone
+(VLM -> planner, and the VLA when the plan is not pick-and-place); what the VLM planned (how often it found
+pick-and-place moves, its names and their SAM scores); each candidate's cross-validated log-loss, and the success
+models' AUC, within-task AUC, log-loss, Brier score and calibration on the test set; the VLM plan against the fixed
+rule on the same episodes, planner-only and with the ASM (the fixed rule's ASM has the two-model study's features and
+is trained on `pseed31_iid11_harsh` and `vla31_iid11`); the closed-loop eval against the offline result
+(`check_closed_loop`); each eval's cost per episode (`score_costs`: seconds, model requests and GPU energy), where the
+closed-loop eval's cost is the whole system's.

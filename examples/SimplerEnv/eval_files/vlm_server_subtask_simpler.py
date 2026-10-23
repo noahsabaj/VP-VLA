@@ -374,6 +374,23 @@ class VLMModel:
         yes, no = float(probs[ids["yes"]] + probs[ids["Yes"]]), float(probs[ids["no"]] + probs[ids["No"]])
         return {"p_yes": yes / (yes + no) if yes + no > 0 else 0.5, "answer_mass": yes + no}
 
+    def generate(self, images: List[np.ndarray], prompt: str, max_new_tokens: int = 384) -> dict:
+        """The VLM's answer to a prompt about the images, with greedy decoding (no sampling, so no seed): the
+        planner's VLM plan (planner/vlm_plan.py), which the client parses."""
+        content = [{"type": "image", "image": self.Image.fromarray(im).convert("RGB")} for im in images]
+        messages = [
+            {"role": "system", "content": [{"type": "text", "text": VLM_SYSTEM_MESSAGE}]},
+            {"role": "user", "content": [*content, {"type": "text", "text": prompt}]},
+        ]
+        inputs = self.processor.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True, return_dict=True, return_tensors="pt",
+        ).to(self.model.device)
+        with torch.no_grad():
+            out = self.model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+        text = self.processor.batch_decode(out[:, inputs.input_ids.shape[1]:], skip_special_tokens=True,
+                                           clean_up_tokenization_spaces=False)[0]
+        return {"text": text}
+
 
 class VLMServer:
     """Websocket server for single-gripper VLM subtask detection."""
@@ -532,6 +549,29 @@ class VLMServer:
                 return {
                     "status": "error", "ok": False,
                     "type": "yes_no_result",
+                    "request_id": req_id,
+                    "error": {"message": str(e)},
+                }
+
+        elif mtype == "generate":
+            try:
+                images, prompt = msg.get("images"), msg.get("prompt", "")
+                if not images or not prompt:
+                    return {
+                        "status": "error", "ok": False, "request_id": req_id,
+                        "error": {"message": "A generate request needs 'images' and 'prompt'"},
+                    }
+                return {
+                    "status": "ok", "ok": True,
+                    "type": "generate_result",
+                    "request_id": req_id,
+                    "data": self._model.generate(images, prompt),
+                }
+            except Exception as e:
+                logging.exception("VLM generate error (request_id=%s)", req_id)
+                return {
+                    "status": "error", "ok": False,
+                    "type": "generate_result",
                     "request_id": req_id,
                     "error": {"message": str(e)},
                 }

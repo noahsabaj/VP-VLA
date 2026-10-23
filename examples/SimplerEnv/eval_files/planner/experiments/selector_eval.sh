@@ -13,7 +13,8 @@
 #   none, as in planner_eval.sh). PLANNER_SEED as in planner_eval.sh: give it the same value as the planner-only
 #   evals that the closed-loop eval is compared with. RGB_NOISE as in planner_eval.sh (same = each job's depth
 #   level). INSTRUCTIONS as in vla_eval.sh. PLAN_CHECK=1: the VLM plan check (planner/plan_check.py) on the first
-#   frame, from the VLA's VLM server; a "no" gives the episode to the VLA before the ASM decides.
+#   frame, from the VLA's VLM server; a "no" gives the episode to the VLA before the ASM decides. TASK_SOURCE as in
+#   planner_eval.sh, from the VLA's VLM server (an ASM trained on records with the same TASK_SOURCE).
 [ $# -ge 6 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 GPU=$1; PB=$2; NAME=$3; LAYOUTS=$4; MODELS=$(run_dir "$5"); K=$6
@@ -48,7 +49,7 @@ start_vla_servers $PB "$OUT" &&
   wait_port $PB && wait_port $((PB + 1)) && wait_port $((PB + 2)) && wait_port $((PB + 3)) ||
   { log "servers did not start"; exit 1; }
 log "START K=$K MPS=${MPS:-1} LAYOUTS=$LAYOUTS MODELS=$MODELS RGB_NOISE=${RGB_NOISE:-none}" \
-  "INSTRUCTIONS=${INSTRUCTIONS:-default} PLANNER_SEED=[$PS] PLAN_CHECK=${PLAN_CHECK:-0}" \
+  "INSTRUCTIONS=${INSTRUCTIONS:-default} PLANNER_SEED=[$PS] PLAN_CHECK=${PLAN_CHECK:-0} TASK_SOURCE=${TASK_SOURCE:-rule}" \
   "SAM3_ARGS=[$SAM3_ARGS] PLANNER_SAM3_ARGS=[$PLANNER_SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \
   "SIM_ARGS=[$SIM_ARGS]" \
   "on GPU $GPU, commit $(git log -1 --format=%h), servers up in $((SECONDS - T0)) s: ${JOBS[*]}"
@@ -57,6 +58,7 @@ DMON=$!
 
 CHECK=()
 [ "${PLAN_CHECK:-0}" = 1 ] && CHECK=(--plan-check-port $((PB + 2)))
+[ "${TASK_SOURCE:-rule}" = vlm ] && CHECK+=(--task-source vlm --vlm-plan-port $((PB + 2)))
 
 job() {
   local level task start end out t0=$SECONDS rc stats rgb

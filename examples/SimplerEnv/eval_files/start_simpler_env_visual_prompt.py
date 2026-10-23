@@ -82,6 +82,9 @@ if __name__ == "__main__":
             planner_seed=args.planner_seed,
             plan_check_host=args.vlm_host,
             plan_check_port=args.plan_check_port,
+            task_source=args.task_source,
+            vlm_plan_host=args.vlm_host,
+            vlm_plan_port=args.vlm_plan_port,
         )
 
     success_arr = maniskill2_evaluator(model, args)

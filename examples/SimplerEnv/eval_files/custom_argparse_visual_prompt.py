@@ -174,6 +174,12 @@ def get_args():
                         help="VLM server for the planner's plan check (planner/plan_check.py): on the first frame the "
                              "VLM says whether the planner's one pick-and-place finishes the instruction (default: "
                              "no check)")
+    parser.add_argument("--task-source", type=str, default="rule", choices=["rule", "vlm"],
+                        help="What the planner picks up and where it puts it: the fixed rule (one pick-and-place) or "
+                             "the VLM plan (planner/vlm_plan.py: the VLM lists the pick-and-place moves; needs "
+                             "--vlm-plan-port)")
+    parser.add_argument("--vlm-plan-port", type=int, default=None,
+                        help="VLM server for --task-source vlm (on --vlm-host)")
     parser.add_argument("--robot-mask", type=str, default="sim", choices=["sim", "joints"],
                         help="Cut the robot out of the depth picture using the simulator (sim) or its joint angles (joints)")
 

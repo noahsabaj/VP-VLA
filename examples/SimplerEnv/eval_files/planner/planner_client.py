@@ -12,6 +12,11 @@ test loop passes in. Three modes:
   gives the whole try either to the planner (as in planner only) or to the VLA. With the VLM plan
   check (`plan_check_port`, plan_check.py), a "no" from the VLM gives it to the VLA first.
 
+What to pick up and where to put it comes from the instruction: by default from one fixed rule (one
+pick-and-place); with `task_source="vlm"` from the VLM plan (vlm_plan.py: the VLM lists the pick-and-place moves,
+and the planner does them one after another; an instruction that is not pick-and-place goes to the VLA in the
+selector mode).
+
 Targets come from the camera: SAM3 masks the object named in the instruction, and the
 masked depth pixels give its 3D position. `target_source="sim"` reads them from the
 simulator instead (debugging only). One JSON line per episode is written to `log_path`.
@@ -31,7 +36,7 @@ from scipy.spatial.transform import Rotation, Slerp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "Robocasa_tabletop" / "visual_prompt_utility"))
 
-from . import plan_check
+from . import plan_check, vlm_plan
 from .geometry import (CameraView, DepthNoise, corridor_points, depth_roughness, ee_delta_action, mat_to_pose,
                        path_length, pose_to_mat, short_width)
 from .planners import FINGER_OPEN, WORKSPACE, RobotSpheres, make_planner
@@ -141,6 +146,9 @@ class PlannerClient:
         planner_seed: Optional[int] = None,
         plan_check_host: str = "127.0.0.1",
         plan_check_port: Optional[int] = None,
+        task_source: str = "rule",
+        vlm_plan_host: str = "127.0.0.1",
+        vlm_plan_port: Optional[int] = None,
     ) -> None:
         self.planner = make_planner(planner)
         self.planner_name = planner
@@ -155,7 +163,7 @@ class PlannerClient:
             trained = selector.trained_on
             # A selector saved before the RGB noise existed was trained without it.
             for name, value, old in (("depth_noise", depth_noise, None), ("rgb_noise", rgb_noise, "none"),
-                                     ("robot_mask", robot_mask, None)):
+                                     ("robot_mask", robot_mask, None), ("task_source", task_source, "rule")):
                 if trained.get(name, old) not in (None, value):
                     raise ValueError(f"the selector was trained with {name}={trained.get(name, old)}, but this run "
                                      f"uses {value}")
@@ -199,6 +207,19 @@ class PlannerClient:
             from ..vlm_client_simpler import VLMClientSimpler
 
             self.plan_check = VLMClientSimpler(host=plan_check_host, port=plan_check_port)
+        # Where the object and target come from: the fixed rule, or the VLM plan (vlm_plan.py).
+        if task_source not in ("rule", "vlm"):
+            raise ValueError(f"task_source must be rule or vlm, not {task_source}")
+        self.task_source = task_source
+        self.vlm_planner = None
+        if task_source == "vlm":
+            if target_source != "camera" or vlm_plan_port is None:
+                raise ValueError("the VLM plan needs --target-source camera and --vlm-plan-port")
+            if plan_check_port is not None:
+                raise ValueError("the plan check asks about the fixed rule's one pick-and-place: not with the VLM plan")
+            from ..vlm_client_simpler import VLMClientSimpler
+
+            self.vlm_planner = VLMClientSimpler(host=vlm_plan_host, port=vlm_plan_port)
         self._clear("")
 
     # ------------------------------------------------------------------ episode
@@ -225,7 +246,11 @@ class PlannerClient:
         # The run settings go into every record, so the selector can refuse to mix runs.
         self.stats = {"plans": [], "depth_noise": self.noise.level, "rgb_noise": self.rgb_noise,
                       "noise_seed": self.noise.seed, "planner_seed": self.planner_seed, "robot_mask": self.robot_mask,
-                      "features_version": FEATURES_VERSION, "features": {}, "plan_check": self.plan_check is not None}
+                      "features_version": FEATURES_VERSION, "features": {}, "plan_check": self.plan_check is not None,
+                      "task_source": self.task_source}
+        # The VLM plan's pick-and-place moves (vlm_plan.parse) and the one being done; None with the fixed rule.
+        self.steps = None
+        self.step_index = 0
         self.ee_trace: List[np.ndarray] = []
         self.transit_contact = False
         self.place_goal = None
@@ -271,7 +296,8 @@ class PlannerClient:
 
         if self.phase.startswith("transit"):
             self.ee_trace.append(ee_pose[:3])
-            if self._robot_touching(env):
+            # The held object is known only for the first move (the task's first goal), so the check stops there.
+            if self.step_index == 0 and self._robot_touching(env):
                 self.transit_contact = True
 
         if self.hold_steps > 0:  # gripper open/close in place
@@ -309,7 +335,9 @@ class PlannerClient:
         if self.episode_key is None:
             raise ValueError("the selector mode needs the episode key (planner_evaluator sets it): its task")
         p_yes = self.stats["features"].get("vlm_plan_yes") if self.plan_check is not None else None
-        if p_yes is not None and plan_check.gate(p_yes) == "vla":
+        if self.task_source == "vlm" and not self.stats.get("vlm_plan_feasible"):
+            decision = {"choice": "vla", "reason": "VLM plan: not pick-and-place"}
+        elif p_yes is not None and plan_check.gate(p_yes) == "vla":
             decision = {"choice": "vla", "reason": "plan check"}
         else:
             decision = self.selector.decide(self.stats, self.episode_key.split("/")[0])
@@ -320,6 +348,9 @@ class PlannerClient:
     def _approach(self, image, obs, env, qpos, target) -> None:
         """Find the object and plan to just above it."""
         first, self.first_look = self.first_look, False  # a grasp retry comes back here: no new features
+        if first and self.vlm_planner is not None and not self._vlm_plan(image):
+            self._give_up()
+            return
         self.view = self._obstacle_view(obs, qpos)
         # One frame, one noisy depth picture: the object estimate and the obstacle map share it.
         grasp = self._locate(image, obs, env, which="grasp", record=first, view=self.view)
@@ -349,6 +380,18 @@ class PlannerClient:
             self._give_up()
             return
         self.phase = "transit_pregrasp"
+
+    def _vlm_plan(self, image) -> bool:
+        """The VLM plan (vlm_plan.py) from the first frame: False when the VLM finds no pick-and-place moves."""
+        answer = self.vlm_planner.generate([image], vlm_plan.prompt(self.task_description))
+        plan = vlm_plan.parse(answer["text"], image.shape[1], image.shape[0])
+        self.stats.update({"vlm_plan": plan, "vlm_plan_text": answer["text"], "vlm_plan_feasible": plan["feasible"],
+                           "steps_done": 0})
+        if not plan["feasible"]:
+            self.stats["failure"] = "VLM plan: not pick-and-place" + (f" ({plan['error']})" if plan["error"] else "")
+            return False
+        self.steps = plan["steps"]
+        return True
 
     def _check_plan(self, image, grasp, place) -> None:
         """The VLM plan check (plan_check.py) on the first look: its P(yes) that the one pick-and-place finishes the
@@ -422,7 +465,19 @@ class PlannerClient:
         elif phase == "lower":
             self.phase, self.gripper, self.hold_steps = "open", GRIPPER_OPEN, 5
         elif phase == "open":
-            self.phase = "done"
+            if self.steps is None:
+                self.phase = "done"
+                return
+            self.stats["steps_done"] += 1
+            if self.step_index + 1 == len(self.steps):
+                self.phase = "done"
+                return
+            # The VLM plan's next move: rise clear of the object just placed, then look and plan again.
+            self.step_index += 1
+            self.retries_left = self.grasp_retries
+            self._straight_to(target, np.r_[target[:2], target[2] + 0.06, target[3:]], "retreat")
+        elif phase == "retreat":
+            self._approach(None, obs, env, qpos, target)
 
     def _obstacle_view(self, obs, qpos) -> CameraView:
         view = CameraView(obs, noise=self.noise)
@@ -472,28 +527,43 @@ class PlannerClient:
         `record` writes the selector's features for this object. `view` reuses a depth picture
         already taken (and noised) for this frame instead of taking a new one.
         """
-        truth = self._sim_object(obs, env, which)
+        # The simulator's object and target are those of the task's first goal: a check for the first move only.
+        truth = self._sim_object(obs, env, which) if self.step_index == 0 else None
         if self.target_source == "sim":
             return truth
         from sam3_client import extract_target_from_task
 
-        name = extract_target_from_task(self.task_description) if which == "grasp" \
-            else place_target_from_task(self.task_description)
+        point = None
+        if self.steps is not None:  # the VLM plan's current move: a name for SAM3 and a point to pick the mask
+            step = self.steps[self.step_index]
+            name, point = (step["object"], step["object_point"]) if which == "grasp" \
+                else (step["target"], step["target_point"])
+        else:
+            name = extract_target_from_task(self.task_description) if which == "grasp" \
+                else place_target_from_task(self.task_description)
         if not name:
             return None
         if image is None:
             image = obs["image"]["3rd_view_camera"]["rgb"]
         # SAM3 is often unsure of simulated objects (the spoon scores ~0.35, one eggplant 0.04),
-        # so lower the bar until something turns up and keep the best-scoring mask.
+        # so lower the bar until something turns up and keep the best-scoring mask. With a point (the VLM plan),
+        # lower it further until a mask covers the point, if one ever does.
+        found_any = None
         for threshold in SAM3_THRESHOLDS:
             seg = self.sam3.segment(image, name, threshold=threshold)
             masks, scores = seg.get("masks", []), np.asarray(seg.get("scores", []))
-            if len(masks) > 0:
+            if len(masks) == 0:
+                continue
+            found_any = found_any or (masks, scores)
+            if point is None or any(vlm_plan.contains(m, point) for m in masks):
                 break
         else:
-            return None
-        self.stats[f"{which}_sam3_score"] = float(scores.max())
-        mask = np.asarray(masks[int(np.argmax(scores))])
+            if found_any is None:
+                return None
+            masks, scores = found_any
+        chosen = vlm_plan.pick_mask(masks, scores, point)
+        self.stats[f"{which}_sam3_score"] = float(scores[chosen])
+        mask = np.asarray(masks[chosen])
         view = view if view is not None else CameraView(obs, noise=self.noise)
         pts = view.object_points(mask)
         if record:

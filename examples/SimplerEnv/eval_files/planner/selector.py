@@ -72,7 +72,7 @@ HEURISTIC_FEATURES = ["plan_ok", "grasp_sam3_score"]
 FEATURES_VERSION = 2
 # Settings a folder's runs must share; --save stores them and the eval checks them.
 RUN_SETTINGS = ("depth_noise", "rgb_noise", "noise_seed", "robot_mask", "layout_seed", "planner_seed",
-                "layout_per_episode")
+                "layout_per_episode", "task_source")
 
 
 def row_features(record: dict, names: List[str]) -> np.ndarray:

@@ -61,7 +61,8 @@ controller (default `none`; in `planner_eval.sh` and `selector_eval.sh`, `same` 
 `INSTRUCTIONS=NAME` gives the 4 tasks the reworded instructions of `instruction_sets.py` instead of their own.
 `TASK_SET=harder` runs the 5 harder scenes of `harder_scenes.py` instead of SimplerEnv's 4 tasks (their fixed
 layouts only: `LAYOUTS=paper`). `PLAN_CHECK=1` adds the VLM plan check (`plan_check.py`): in `planner_eval.sh` it
-only logs the feature `vlm_plan_yes`; in `selector_eval.sh` a "no" gives the episode to the VLA. Examples:
+only logs the feature `vlm_plan_yes`; in `selector_eval.sh` a "no" gives the episode to the VLA.
+`TASK_SOURCE=vlm` replaces the planner's fixed rule with the VLM plan (`vlm_plan.py`; see "VLM plan" below). Examples:
 
 ```bash
 E=examples/SimplerEnv/eval_files/planner/experiments
@@ -472,3 +473,21 @@ success. Per task: the success rates and how many episodes the gate gives the VL
 token goes to yes or no (near 1 means it answers the question). With `--asm two_model/asm_none.json`: the gate
 followed by the two-model study's ASM for clean depth (the ASM decides when the VLM says yes), on SimplerEnv's
 own and reworded instructions.
+
+## VLM plan
+
+A method, not yet a study: its study plan is written here before any eval with it runs.
+
+The planner's fixed rule reads one object and one target from an instruction of the form "put X on Y", and the
+planner then does one pick-and-place. With `TASK_SOURCE=vlm` (`--task-source vlm`) the VLM writes the planner's
+job instead (`vlm_plan.py`). On the first frame it gets the picture and the instruction and answers whether the
+instruction can be done with pick-and-place moves only; if so it lists the moves in order (at most 4), each an object
+and a target with a short name for SAM3 and a point in the picture (greedy decoding, so the same frame gives the same
+plan). The planner does the moves one after another: after each release it rises 6 cm, looks again and plans the
+next move. SAM3 finds each name as before; when it finds several masks, the one that covers the VLM's point is used
+(else the nearest), which tells two plates apart. A plan the VLM finds not to be pick-and-place ends a planner-only
+episode; in the selector mode it gives the episode to the VLA before the ASM decides. An ASM is used only with
+records of the same task source (`task_source` is a run setting).
+
+The records add `task_source`, `vlm_plan` (the parsed plan), `vlm_plan_text` (the VLM's answer),
+`vlm_plan_feasible` and `steps_done`. The robot-contact check (`transit_contact`) covers the first move only.

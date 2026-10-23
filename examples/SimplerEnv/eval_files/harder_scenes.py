@@ -9,6 +9,8 @@ Two scenes, on SimplerEnv's spoon and carrot table with its camera and robot:
   extra objects change; the two-step task needs both pick-and-places in one episode.
 - two plates: the carrot and two identical plates, one in the row nearer the robot and one in the far row. The
   instruction names the target only by where it is. The two tasks have the same layouts with the target swapped.
+  The instructions say "camera", not "robot": the robot's base is below the camera picture, but its arm comes in
+  from the top, so "closer to the robot" could be read as the far row. The near row is nearer both.
 
 Each object starts on one corner of a square grid at the centre of SimplerEnv's own layouts (its half-edges 0.075 m,
 as in the spoon and carrot tasks, and 0.1 m, as in the cube task), so no two objects start on top of each other.
@@ -25,6 +27,9 @@ CARROT = "bridge_carrot_generated_modified"
 PLATE = "bridge_plate_objaverse_larger"
 
 CENTER = np.array([-0.16, 0.0])  # the centre of SimplerEnv's layouts (simulator frame; the robot is at x = 0.147)
+# Where the camera is (simulator frame, xy): ManiSkill2_real2sim's WidowX 3rd_view_camera, 0.16 m to the side of
+# the robot's base, which is at (0.147, 0.028) and turned 180 deg.
+CAMERA_XY = np.array([0.147, 0.188])
 HALF_EDGES = (0.075, 0.1)
 # Corner order: the far row (smaller x, away from the robot), then the near row; in each row y = -h, then +h.
 SIGNS = np.array([[-1, -1], [-1, 1], [1, -1], [1, 1]])
@@ -57,10 +62,10 @@ TASKS: Dict[str, Task] = {
         ((0, 1, False), (2, 3, True)), (), "put the spoon on the towel and the carrot on the plate", 2 * STEPS),
     "CarrotOnNearPlate-v0": Task(
         "two_plates", (CARROT, PLATE, PLATE), ("carrot", "plate", "other_plate"),
-        ((0, 1, True),), ((0, 2, True),), "put the carrot on the plate that is closer to the robot", STEPS),
+        ((0, 1, True),), ((0, 2, True),), "put the carrot on the plate that is closer to the camera", STEPS),
     "CarrotOnFarPlate-v0": Task(
         "two_plates", (CARROT, PLATE, PLATE), ("carrot", "plate", "other_plate"),
-        ((0, 1, True),), ((0, 2, True),), "put the carrot on the plate that is farther from the robot", STEPS),
+        ((0, 1, True),), ((0, 2, True),), "put the carrot on the plate that is farther from the camera", STEPS),
 }
 SHORT = dict(zip(TASKS, ["Cluttered spoon", "Cluttered carrot", "Two-step", "Near plate", "Far plate"], strict=True))
 # The spoon goal leaves part of the spoon off the towel, as SimplerEnv's spoon task; the carrot must lie on the plate

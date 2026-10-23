@@ -59,6 +59,14 @@ def test_tasks_of_a_scene_share_their_layouts():
         assert near[1][1][0] > near[2][1][0]  # the target is the plate nearer the robot (at x = 0.147)
 
 
+def test_near_plate_is_nearer_the_camera():  # the instructions name the camera
+    for e in range(32):
+        for task, sign in ((NEAR, 1), (FAR, -1)):
+            (_, target, _), (_, other, _) = episode(task, e)[1:]
+            gap = np.linalg.norm(other - hs.CAMERA_XY) - np.linalg.norm(target - hs.CAMERA_XY)
+            assert sign * gap > 0.01, (task, e)
+
+
 def test_runners_match_the_scenes():
     text = COMMON_SH.read_text()
     harder = re.search(r"harder\) TASKS=\(([^)]*)\)", text).group(1).split()

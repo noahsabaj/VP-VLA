@@ -92,6 +92,21 @@ class VLMClientSimpler:
             raise RuntimeError(f"VLM yes/no question failed: {response.get('error', {}).get('message', response)}")
         return response["data"]
 
+    def generate(self, images: List[np.ndarray], prompt: str) -> Dict:
+        """The VLM's greedy answer to a prompt about the images (uint8 RGB): {"text"}
+        (vlm_server_subtask_simpler.py, VLMModel.generate). Raises if the server fails."""
+        request = {
+            "type": "generate",
+            "request_id": f"generate_{time.time()}",
+            "images": [np.ascontiguousarray(im, dtype=np.uint8) for im in images],
+            "prompt": prompt,
+        }
+        self._ws.send(packb(request))
+        response = unpackb(self._ws.recv())
+        if not response.get("ok", False):
+            raise RuntimeError(f"VLM generate failed: {response.get('error', {}).get('message', response)}")
+        return response["data"]
+
     def decompose_task_to_subtasks(
         self,
         task_description: str,

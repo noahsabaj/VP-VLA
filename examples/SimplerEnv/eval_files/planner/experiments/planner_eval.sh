@@ -18,12 +18,18 @@
 #                  on PORT + 50 (PLAN_CHECK_VLM_ARGS; default: the VLA's fast VLM settings). It adds the feature
 #                  vlm_plan_yes and the marked pictures (TASK/plan_check/); the planner's episodes stay the same.
 #                  Default 0.
+#   TASK_SOURCE    rule (default: the fixed rule, one pick-and-place) | vlm: the VLM plan (planner/vlm_plan.py),
+#                  from a VLM server on PORT + 50 as for PLAN_CHECK (not with it): the VLM lists the pick-and-place
+#                  moves and the planner does them in order.
 # Several evals at once: planner_evals.sh.
 [ $# -eq 5 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 GPU=$1; PORT=$2; NAME=$3; LEVEL=$4; LAYOUTS=$5
 LS=$(layout_args "$LAYOUTS") || exit 1
 PS=${PLANNER_SEED-0}
+TS=${TASK_SOURCE:-rule}
+case $TS in rule | vlm) ;; *) echo "TASK_SOURCE must be rule or vlm"; exit 1 ;; esac
+[ "${PLAN_CHECK:-0}" = 1 ] && [ "$TS" = vlm ] && { echo "PLAN_CHECK=1 is for the fixed rule, not TASK_SOURCE=vlm"; exit 1; }
 RGB_LEVEL=${RGB_NOISE:-none}
 [ "$RGB_LEVEL" = same ] && RGB_LEVEL=$LEVEL
 RGB=$(rgb_args "$RGB_LEVEL") || exit 1
@@ -37,15 +43,16 @@ start_server $PORT "$OUT/sam3.log" "$SAM3_PYTHON" examples/Robocasa_tabletop/vis
   --port $PORT $SAM3_ARGS || exit 1
 wait_port $PORT 600 || { log "$NAME: SAM3 server never opened port $PORT"; exit 1; }
 CHECK=()
-if [ "${PLAN_CHECK:-0}" = 1 ]; then
+if [ "${PLAN_CHECK:-0}" = 1 ] || [ "$TS" = vlm ]; then
   VARGS=${PLAN_CHECK_VLM_ARGS-"--attn sdpa --seed-per-query --compile"}
   start_server $((PORT + 50)) "$OUT/vlm.log" "$SAM3_PYTHON" examples/SimplerEnv/eval_files/vlm_server_subtask_simpler.py \
     --port $((PORT + 50)) $VARGS || exit 1
   wait_port $((PORT + 50)) || { log "$NAME: VLM server never opened port $((PORT + 50))"; exit 1; }
   CHECK=(--plan-check-port $((PORT + 50)))
+  [ "$TS" = vlm ] && CHECK=(--task-source vlm --vlm-plan-port $((PORT + 50)))
 fi
 log "START $NAME ($LEVEL depth, $RGB_LEVEL RGB, ${TASK_SET:-simpler} tasks, $LAYOUTS layouts, ${INSTRUCTIONS:-default} instructions, SAM3_ARGS=[$SAM3_ARGS], PLANNER_SEED=[$PS]," \
-  "TASKS_AT_ONCE=${TASKS_AT_ONCE:-4}, PLAN_CHECK=${PLAN_CHECK:-0} [$VARGS]) on GPU $GPU (commit $(git rev-parse --short HEAD))"
+  "TASKS_AT_ONCE=${TASKS_AT_ONCE:-4}, PLAN_CHECK=${PLAN_CHECK:-0} TASK_SOURCE=$TS [$VARGS]) on GPU $GPU (commit $(git rev-parse --short HEAD))"
 
 task() {
   local out=$OUT/$1 t0=$SECONDS rc

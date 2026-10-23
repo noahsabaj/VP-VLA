@@ -180,6 +180,9 @@ def get_args():
                              "--vlm-plan-port)")
     parser.add_argument("--vlm-plan-port", type=int, default=None,
                         help="VLM server for --task-source vlm (on --vlm-host)")
+    parser.add_argument("--vlm-plan-min-score", type=float, default=0.0,
+                        help="With --task-source vlm: a name whose chosen SAM mask scores below this counts as not "
+                             "found; on the first frame that ends the planner's try (default 0: no check)")
     parser.add_argument("--robot-mask", type=str, default="sim", choices=["sim", "joints"],
                         help="Cut the robot out of the depth picture using the simulator (sim) or its joint angles (joints)")
 

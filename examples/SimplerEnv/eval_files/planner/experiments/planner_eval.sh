@@ -5,7 +5,8 @@
 #   NAME: the run folder ($RUNS_DIR/NAME/TASK). LEVEL: none | realistic | harsh. LAYOUTS: paper | heldout | seedN
 #   | iidN (layout_args in common.sh).
 # Environment:
-#   SAM3_ARGS      SAM3 server options (default: none, as in every planner-only eval; the fast SAM3 settings
+#   SAM_VERSION    sam3.1 (default) | sam3: the SAM server's model (common.sh).
+#   SAM3_ARGS      SAM server options (default: none, as in every planner-only eval; the fast SAM3 settings
 #                  change planner episodes).
 #   PLANNER_SEED   --planner-seed: MPlib's random steps seeded per episode (default 0; empty = unseeded).
 #   TASKS_AT_ONCE  tasks at the same time (default 4; 1 = one after the other). With the noise and planner seeds
@@ -21,6 +22,8 @@
 #   TASK_SOURCE    rule (default: the fixed rule, one pick-and-place) | vlm: the VLM plan (planner/vlm_plan.py),
 #                  from a VLM server on PORT + 50 as for PLAN_CHECK (not with it): the VLM lists the pick-and-place
 #                  moves and the planner does them in order.
+#   VLM_PLAN_MIN_SCORE  with TASK_SOURCE=vlm: a name whose chosen SAM mask scores below this is not found
+#                  (--vlm-plan-min-score; default 0: no check).
 # Several evals at once: planner_evals.sh.
 [ $# -eq 5 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -39,9 +42,8 @@ LOG=$OUT/status.log
 
 SERVER_ENV=(CUDA_VISIBLE_DEVICES=$GPU)
 trap stop_servers EXIT
-start_server $PORT "$OUT/sam3.log" "$SAM3_PYTHON" examples/Robocasa_tabletop/visual_prompt_utility/sam3_server.py \
-  --port $PORT $SAM3_ARGS || exit 1
-wait_port $PORT 600 || { log "$NAME: SAM3 server never opened port $PORT"; exit 1; }
+start_sam_server $PORT "$OUT/sam3.log" $SAM3_ARGS || exit 1
+wait_port $PORT 600 || { log "$NAME: SAM server never opened port $PORT"; exit 1; }
 CHECK=()
 if [ "${PLAN_CHECK:-0}" = 1 ] || [ "$TS" = vlm ]; then
   VARGS=${PLAN_CHECK_VLM_ARGS-"--attn sdpa --seed-per-query --compile"}
@@ -49,10 +51,10 @@ if [ "${PLAN_CHECK:-0}" = 1 ] || [ "$TS" = vlm ]; then
     --port $((PORT + 50)) $VARGS || exit 1
   wait_port $((PORT + 50)) || { log "$NAME: VLM server never opened port $((PORT + 50))"; exit 1; }
   CHECK=(--plan-check-port $((PORT + 50)))
-  [ "$TS" = vlm ] && CHECK=(--task-source vlm --vlm-plan-port $((PORT + 50)))
+  [ "$TS" = vlm ] && CHECK=(--task-source vlm --vlm-plan-port $((PORT + 50)) --vlm-plan-min-score ${VLM_PLAN_MIN_SCORE:-0})
 fi
-log "START $NAME ($LEVEL depth, $RGB_LEVEL RGB, ${TASK_SET:-simpler} tasks, $LAYOUTS layouts, ${INSTRUCTIONS:-default} instructions, SAM3_ARGS=[$SAM3_ARGS], PLANNER_SEED=[$PS]," \
-  "TASKS_AT_ONCE=${TASKS_AT_ONCE:-4}, PLAN_CHECK=${PLAN_CHECK:-0} TASK_SOURCE=$TS [$VARGS]) on GPU $GPU (commit $(git rev-parse --short HEAD))"
+log "START $NAME ($LEVEL depth, $RGB_LEVEL RGB, ${TASK_SET:-simpler} tasks, $LAYOUTS layouts, ${INSTRUCTIONS:-default} instructions, SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS], PLANNER_SEED=[$PS]," \
+  "TASKS_AT_ONCE=${TASKS_AT_ONCE:-4}, PLAN_CHECK=${PLAN_CHECK:-0} TASK_SOURCE=$TS VLM_PLAN_MIN_SCORE=${VLM_PLAN_MIN_SCORE:-0} [$VARGS]) on GPU $GPU (commit $(git rev-parse --short HEAD))"
 
 task() {
   local out=$OUT/$1 t0=$SECONDS rc

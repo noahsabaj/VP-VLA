@@ -8,7 +8,9 @@ Each eval writes one run folder in `$RUNS_DIR`; each scorer reads run folders an
 - `RUNS_DIR`: the folder with the run folders. Run names in the commands below are folders in it; absolute
   paths also work.
 - The eval environments, as for `auto_eval_scripts/run_eval.sh`: `CONDA_ENVS_ROOT` (or `STARVLA_PYTHON`,
-  `SAM3_PYTHON`, `SIMPLER_PYTHON`) and `SIMPLERENV_PATH` (see `examples/eval_env.sh`).
+  `SAM3_PYTHON`, `SIMPLER_PYTHON`, and `SAM31_PYTHON` for SAM 3.1, built by
+  `examples/Robocasa_tabletop/visual_prompt_utility/build_env_sam31.sh`) and `SIMPLERENV_PATH` (see
+  `examples/eval_env.sh`).
 - `CKPT`: the VP-VLA SimplerEnv checkpoint (default
   `playground/Checkpoints/VP-VLA-OXE/checkpoints/steps_70000_pytorch_model.pt`).
 
@@ -47,7 +49,7 @@ plan-check study adds `check_paper_none` (see "VLM plan-check study").
 
 | Runner | What it runs |
 |---|---|
-| `planner_eval.sh GPU PORT NAME LEVEL LAYOUTS` | one planner-only eval (one SAM3 server; the 4 tasks at the same time) |
+| `planner_eval.sh GPU PORT NAME LEVEL LAYOUTS` | one planner-only eval (one SAM server; the 4 tasks at the same time) |
 | `planner_evals.sh GPU PORT_BASE AT_ONCE NAME:LEVEL:LAYOUTS...` | several planner-only evals at the same time |
 | `vla_eval.sh GPU PORT_BASE NAME LAYOUTS K [TASK:START:END...]` | one VLA-only eval (one server set, K sim clients) |
 | `selector_eval.sh GPU PORT_BASE NAME LAYOUTS MODELS K [LEVEL:TASK:START:END...]` | the closed-loop ASM eval |
@@ -62,7 +64,16 @@ controller (default `none`; in `planner_eval.sh` and `selector_eval.sh`, `same` 
 `TASK_SET=harder` runs the 5 harder scenes of `harder_scenes.py` instead of SimplerEnv's 4 tasks (their fixed
 layouts only: `LAYOUTS=paper`). `PLAN_CHECK=1` adds the VLM plan check (`plan_check.py`): in `planner_eval.sh` it
 only logs the feature `vlm_plan_yes`; in `selector_eval.sh` a "no" gives the episode to the VLA.
-`TASK_SOURCE=vlm` replaces the planner's fixed rule with the VLM plan (`vlm_plan.py`; see "VLM plan" below). Examples:
+`TASK_SOURCE=vlm` replaces the planner's fixed rule with the VLM plan (`vlm_plan.py`; see "VLM plan" below).
+
+`SAM_VERSION` picks the model of every SAM server, both the VLA's visual prompts and the planner's masks:
+`sam3.1` (the default since 2026-10-23: SAM 3.1's detector, from the sam31 env) or `sam3` (transformers'
+`Sam3Model`: the paper's setup, and every eval before 2026-10-23). Both run the image encoder once per frame
+and keep the last 4 frames, so a frame's second prompt and the planner's retries at lower thresholds reuse it.
+Each planner record names the SAM server's model (`sam_model`), and the closed-loop eval uses a saved ASM only
+with the SAM model it was trained on. On the paper's test set (3 VLA-only evals, 288 episodes) the two gave the same success rate
+(SAM 3 56.6%, SAM 3.1 55.9%, exact McNemar p = 0.85). Examples (the evals before 2026-10-23 ran with
+`SAM_VERSION=sam3`; set it to repeat one):
 
 ```bash
 E=examples/SimplerEnv/eval_files/planner/experiments
@@ -161,6 +172,21 @@ The VLM plan-check study's eval (see "VLM plan-check study" below); it also read
 
 ```bash
 PLAN_CHECK=1 bash $E/planner_eval.sh 0 10320 check_paper_none none paper
+```
+
+The planner first ran with SAM 3.1 after 2026-10-23, so a smoke test comes before the evals above: 2 episodes
+of each task, checked by eye in the videos (the objects found, the grasps), then deleted. It is not part of any
+result.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 $SAM31_PYTHON examples/Robocasa_tabletop/visual_prompt_utility/sam3_server.py \
+    --port 10094 --sam-version sam3.1 > sam31_smoke_server.log 2>&1 &
+for t in PutSpoonOnTableClothInScene-v0 PutCarrotOnPlateInScene-v0 StackGreenCubeOnYellowCubeBakedTexInScene-v0 \
+         PutEggplantInBasketScene-v0; do
+  bash $E/sim_task.sh 0 $t 0 2 smoke_sam31/$t --controller planner --planner mplib --target-source camera \
+      --sam3-port 10094 --robot-mask joints --planner-seed 0
+done
+kill %1
 ```
 
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
@@ -284,6 +310,11 @@ levels; the closed-loop eval `cam_closed_loop_iid12` (harsh camera) with the sav
 The none level is the two-model study's evals, which have the same settings. The commands are above. About 15 GPU
 hours on one GPU (the 4 VLA-only evals about 13 hours).
 
+**Change of 2026-10-23, before any of the study's evals ran.** The study's new evals use SAM 3.1
+(`SAM_VERSION=sam3.1`, now the default) for the VLA's visual prompts and the planner's masks. The none level
+stays the two-model study's evals, which used SAM 3; it is secondary only and is reported as a SAM 3 result. The
+planned tests (harsh camera) use only SAM 3.1 evals and the ASM trained on them.
+
 **Models, rule and tests.** As in the two-model study: one ASM per camera level, trained on `iid11` at that level,
 with the same success models, features and decision rule. The planned tests are the same three, in the same fixed
 order, on the 400 episodes of `iid12` at the harsh camera level: the two-model ASM against (1) the better single
@@ -340,6 +371,15 @@ With the tasks' own instructions, `pseed_paper_none` and `fast3_train_g0/g1` are
 About 3.5 GPU hours on GPU 0. The planner-only evals also run the VLM plan check for the VLM plan-check study
 (`PLAN_CHECK=1`, added on 2026-10-17 before any eval ran); it only logs a feature, so the planner's episodes stay
 the same.
+
+**Change of 2026-10-23, before any of the study's evals ran.** All the study's evals use SAM 3.1
+(`SAM_VERSION=sam3.1`, now the default). The arms with the tasks' own instructions change with them, so that each
+test compares evals with the same SAM model: the planner's is `check_paper_none` (planner seed 0, clean camera,
+SAM 3.1; the VLM plan-check study's eval, whose check only logs a feature) instead of `pseed_paper_none`, and the
+VLA's is `sam31_paper` (VLA-only, SAM 3.1, fast settings, VLM seed offset 0; run on 2026-10-16) instead of
+`fast3_train_g0/g1`. Since then the SAM 3.1 code runs the image encoder once per frame instead of once per prompt;
+on 156 frames of an eval the two gave the same detections. The secondary ASM (`two_model/asm_none.json`) was
+trained on SAM 3 evals, and its result is reported with that label.
 
 **Planned tests.** In this fixed order, each the exact two-sided paired sign-flip test at 0.05, and each counting
 only when every test before it was significant. A layout gives one value, its sum over the 4 reworded sets, so
@@ -409,6 +449,10 @@ on GPU 0. About 4 GPU hours. The planner-only eval also runs the VLM plan check 
 (`PLAN_CHECK=1`, added on 2026-10-17 before any eval ran); it only logs a feature, so the planner's episodes stay
 the same.
 
+**Change of 2026-10-23, before any of the study's evals ran.** Both evals use SAM 3.1 (`SAM_VERSION=sam3.1`, now
+the default). In the secondary comparison with SimplerEnv's own spoon and carrot tasks, `check_paper_none` and
+`sam31_paper` (both SAM 3.1) replace `pseed_paper_none` and `fast3_train_g0/g1`.
+
 **Planned tests.** In this fixed order, each the exact two-sided paired sign-flip test at 0.05, and each counting
 only when every test before it was significant. Each layout gives one value.
 
@@ -456,6 +500,12 @@ layout, its choice from the planner-only eval's first frame, and the outcome of 
 layout. Both controllers start from the same first frame, so a closed loop should give the same (the two-model
 study's closed-loop eval matched its offline scores once the planner was seeded).
 
+**Change of 2026-10-23, before any of the study's evals ran.** All the evals above use SAM 3.1
+(`SAM_VERSION=sam3.1`, now the default), so `check_paper_none` is no longer the same episodes as
+`pseed_paper_none` (SAM 3), and the VLA-only eval with SimplerEnv's own instructions is `sam31_paper` (SAM 3.1,
+fast settings, VLM seed offset 0; see "Reworded-instruction study") instead of `fast3_train_g0/g1`. The
+secondary ASM (`two_model/asm_none.json`) was trained on SAM 3 evals, and its result is reported with that label.
+
 **Planned tests.** In this fixed order, each the exact two-sided paired sign-flip test at 0.05, and each counting
 only when every test before it was significant. Each layout gives one value; a layout of the reworded
 instructions gives its sum over the 4 sets.
@@ -489,5 +539,29 @@ next move. SAM3 finds each name as before; when it finds several masks, the one 
 episode; in the selector mode it gives the episode to the VLA before the ASM decides. An ASM is used only with
 records of the same task source (`task_source` is a run setting).
 
+**Why a VLM.** The SAM 3 paper (Carion et al., "SAM 3: Segment Anything with Concepts", arXiv:2511.16719) limits
+SAM 3 to short noun phrases with one or two attributes: it is not made for long referring expressions or for
+queries that need reasoning. For those, the paper lets a multimodal LLM write the noun phrases and check SAM 3's
+masks (its "SAM 3 Agent"). The fixed rule gives SAM parts of the instruction as they are, so reworded and harder
+instructions also reach SAM in a form it was not made for. The VLM plan gives SAM short names, and the VLM's
+points do the spatial part ("the plate closer to the robot") that SAM does not do.
+
+**SAM score check** (`VLM_PLAN_MIN_SCORE`, `--vlm-plan-min-score`; default 0: no check). The score of a SAM mask
+is its match score times its presence score (is the name in the picture at all). A name whose chosen mask scores
+below the minimum counts as not found; on the first frame this ends the planner's try (in the selector mode the
+VLA gets the episode). The SAM 3 paper counts a detection above 0.5, but correct objects in the simulator often
+score far lower (SAM 3: the spoon about 0.35, one eggplant 0.04; SAM 3.1 on single frames: the basket 0.03 to
+0.12), so 0.5 would reject them. The minimum is therefore not fixed here: the VLM-plan study's plan fixes it from
+its training set, before any test eval runs.
+
+**Fixed for the VLM-plan study on 2026-10-23, before any eval with the VLM plan ran** (the rest of its plan is
+written before its evals run too): its evals use SAM 3.1, and the ASM's candidate planner features are
+`plan_ok`, `plan_path_ratio` and the first move's SAM scores, `grasp_sam3_score` and `place_sam3_score` (the best
+score of the object's and the target's name on the first frame). In SimplerEnv's own scenes the SAM scores carried
+no signal, because SAM always found the objects; with the harder scenes and the VLM's names that may change.
+Which candidates the ASM uses is chosen on the training set only.
+
 The records add `task_source`, `vlm_plan` (the parsed plan), `vlm_plan_text` (the VLM's answer),
-`vlm_plan_feasible` and `steps_done`. The robot-contact check (`transit_contact`) covers the first move only.
+`vlm_plan_feasible`, `steps_done`, `vlm_plan_min_score` and `vlm_plan_sam` (for each name looked up: the move, object
+or target, the name, its SAM score, whether the chosen mask covers the VLM's point, and whether the score check
+rejected it). The robot-contact check (`transit_contact`) covers the first move only.

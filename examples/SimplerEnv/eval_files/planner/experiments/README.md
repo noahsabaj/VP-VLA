@@ -175,8 +175,10 @@ PLAN_CHECK=1 bash $E/planner_eval.sh 0 10320 check_paper_none none paper
 ```
 
 The planner first ran with SAM 3.1 after 2026-10-23, so a smoke test comes before the evals above: 2 episodes
-of each task, checked by eye in the videos (the objects found, the grasps), then deleted. It is not part of any
-result.
+of each task, checked in the records against `pseed_paper_none` (SAM 3, the same episodes): the outcomes, and how
+far the camera estimate is from the simulator's object (`grasp_error_xy`, `place_error_xy`). It is not part of
+any result. Done on 2026-10-23: the 8 outcomes were the same as with SAM 3 (7 successes), and the estimates were
+within 0.8 cm of SAM 3's (at most 3.4 cm from the simulator's object).
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 $SAM31_PYTHON examples/Robocasa_tabletop/visual_prompt_utility/sam3_server.py \
@@ -550,8 +552,8 @@ points do the spatial part ("the plate closer to the robot") that SAM does not d
 is its match score times its presence score (is the name in the picture at all). A name whose chosen mask scores
 below the minimum counts as not found; on the first frame this ends the planner's try (in the selector mode the
 VLA gets the episode). The SAM 3 paper counts a detection above 0.5, but correct objects in the simulator often
-score far lower (SAM 3: the spoon about 0.35, one eggplant 0.04; SAM 3.1 on single frames: the basket 0.03 to
-0.12), so 0.5 would reject them. The minimum is therefore not fixed here: the VLM-plan study's plan fixes it from
+score far lower (SAM 3: the spoon about 0.35, one eggplant 0.04; SAM 3.1 in the smoke test: the spoon 0.07), so
+0.5 would reject them. The minimum is therefore not fixed here: the VLM-plan study's plan fixes it from
 its training set, before any test eval runs.
 
 **Fixed for the VLM-plan study on 2026-10-23, before any eval with the VLM plan ran** (the rest of its plan is

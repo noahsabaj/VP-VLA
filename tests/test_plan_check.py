@@ -25,12 +25,40 @@ def test_mark_plan():
     assert (plan_check.mark_plan(image, grasp, np.zeros_like(place))[20:, 20:] == 100).all()
 
 
+def test_outline_mark():
+    image = np.full((40, 60, 3), 100, dtype=np.uint8)
+    grasp = np.zeros((40, 60), bool)
+    grasp[10:20, 10:20] = True
+    place = np.zeros((40, 60), bool)
+    out = plan_check.mark_plan(image, grasp, place, border=2, mark="outline")
+    assert (out[grasp] == 100).all()  # the object keeps its colour
+    ring = np.zeros_like(grasp)
+    ring[8:22, 8:22] = True
+    ring &= ~grasp
+    assert (out[ring] == plan_check.OBJECT_COLOR).all()  # a 2-pixel green line just outside it
+    rest = ~(ring | grasp)
+    assert (out[rest] == 100).all()
+    with pytest.raises(ValueError):
+        plan_check.mark_plan(image, grasp, place, mark="glow")
+
+
 def test_question_and_gate():
     q = plan_check.question("put carrot on plate")
-    assert '"put carrot on plate"' in q and q.endswith("Answer yes or no.")
+    assert q == (
+        'The robot is told: "put carrot on plate"\n'  # the first study's question, word for word
+        "The first image is the robot's camera view. The second image is the same view with a motion "
+        "planner's plan marked on it: the planner will pick up the object tinted green, put it down on the "
+        "place inside the blue box, and then stop. It will do nothing else.\n"
+        "Will doing exactly this complete the whole instruction? Answer yes or no."
+    )
+    assert plan_check.question("put carrot on plate", "outline") == q.replace("tinted green", "outlined in green")
     assert plan_check.gate(0.49) == "vla" and plan_check.gate(0.5) == "planner" and plan_check.gate(1.0) == "planner"
+    assert plan_check.gate(0.3, threshold=0.2) == "planner" and plan_check.gate(0.1, threshold=0.2) == "vla"
     with pytest.raises(ValueError):
         plan_check.gate(None)
+    assert plan_check.feature("tint") == "vlm_plan_yes" and plan_check.feature("outline") == "vlm_plan_yes_outline"
+    with pytest.raises(ValueError):
+        plan_check.feature("glow")
 
 
 def rows(tasks, planner, vla, p_yes, n=10):

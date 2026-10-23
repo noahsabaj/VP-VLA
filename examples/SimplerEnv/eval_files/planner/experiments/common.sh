@@ -26,7 +26,7 @@ cd "$REPO" || exit 1
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 
 # The tasks of an eval (TASK_SET): simpler = SimplerEnv's 4 WidowX tasks (the default); harder = the 5 harder scenes
-# (eval_files/harder_scenes.py), with their fixed layouts only (LAYOUTS=paper).
+# (eval_files/harder_scenes.py), with their fixed layouts (LAYOUTS=paper) or a random one per episode (LAYOUTS=iidN).
 case ${TASK_SET:-simpler} in
   simpler) TASKS=(PutSpoonOnTableClothInScene-v0 PutCarrotOnPlateInScene-v0
                   StackGreenCubeOnYellowCubeBakedTexInScene-v0 PutEggplantInBasketScene-v0) ;;

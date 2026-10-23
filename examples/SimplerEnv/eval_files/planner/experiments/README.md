@@ -40,7 +40,8 @@ and `vla_iid12`, all with the fast settings, and the reruns `rep1_*`, `rep2_*` (
 (`run_eval.sh`). `runs.py` has these names. The camera-noise study's evals are `cam_{layouts}_{level}`
 (planner-only) and `vla_{layouts}_{level}` (VLA-only), where the level is the camera's (see "Camera-noise study").
 The reworded-instruction study's are `words_{set}_paper` and `vla_words_{set}_paper` (see "Reworded-instruction
-study"). The harder-scene study's are `harder_paper` and `vla_harder_paper` (see "Harder-scene study").
+study"). The harder-scene study's are `harder_paper` and `vla_harder_paper` (see "Harder-scene study"). The VLM
+plan-check study adds `check_paper_none` (see "VLM plan-check study").
 
 ## Evals (GPU)
 
@@ -59,7 +60,8 @@ line. `RGB_NOISE=realistic|harsh` puts a real color camera's errors (`camera_noi
 controller (default `none`; in `planner_eval.sh` and `selector_eval.sh`, `same` = the depth noise's level).
 `INSTRUCTIONS=NAME` gives the 4 tasks the reworded instructions of `instruction_sets.py` instead of their own.
 `TASK_SET=harder` runs the 5 harder scenes of `harder_scenes.py` instead of SimplerEnv's 4 tasks (their fixed
-layouts only: `LAYOUTS=paper`). Examples:
+layouts only: `LAYOUTS=paper`). `PLAN_CHECK=1` adds the VLM plan check (`plan_check.py`): in `planner_eval.sh` it
+only logs the feature `vlm_plan_yes`; in `selector_eval.sh` a "no" gives the episode to the VLA. Examples:
 
 ```bash
 E=examples/SimplerEnv/eval_files/planner/experiments
@@ -136,7 +138,7 @@ The reworded-instruction study's evals (see "Reworded-instruction study" below):
 
 ```bash
 for set in synonyms attributes order reasoning; do
-  INSTRUCTIONS=$set bash $E/planner_eval.sh 0 10320 words_${set}_paper none paper
+  PLAN_CHECK=1 INSTRUCTIONS=$set bash $E/planner_eval.sh 0 10320 words_${set}_paper none paper
   INSTRUCTIONS=$set bash $E/vla_eval.sh 0 10400 vla_words_${set}_paper paper 4
 done
 ```
@@ -150,8 +152,14 @@ for t in ClutteredSpoonOnTowel-v0 ClutteredCarrotOnPlate-v0 TwoStepSpoonAndCarro
   bash $E/sim_task.sh 0 $t 0 2 smoke_harder/$t --controller planner --planner mplib --target-source sim
 done
 # the evals
-TASK_SET=harder bash $E/planner_eval.sh 0 10320 harder_paper none paper
+PLAN_CHECK=1 TASK_SET=harder bash $E/planner_eval.sh 0 10320 harder_paper none paper
 TASK_SET=harder bash $E/vla_eval.sh 0 10400 vla_harder_paper paper 4
+```
+
+The VLM plan-check study's eval (see "VLM plan-check study" below); it also reads the two studies' evals above:
+
+```bash
+PLAN_CHECK=1 bash $E/planner_eval.sh 0 10320 check_paper_none none paper
 ```
 
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
@@ -176,7 +184,8 @@ The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g
 --models 'two_model/asm_{}.json' --vla vla_iid12` (its closed-loop eval). The camera-noise study's: `score_two_model
 --runs cam --vla 'vla_{set}_{level}' --noise camera --other` and `check_closed_loop cam_closed_loop_iid12 --planner
 'cam_iid12_{}' --models 'cam_model/asm_{}.json' --vla vla_iid12_harsh`. The reworded-instruction study's:
-`score_instructions --asm two_model/asm_none.json`. The harder-scene study's: `score_harder_scenes`.
+`score_instructions --asm two_model/asm_none.json`. The harder-scene study's: `score_harder_scenes`. The VLM
+plan-check study's: `score_plan_check --asm two_model/asm_none.json`.
 
 The `dfix_*` and `seeded_*` runs and `heldout_planner_none` (the evals before the planner seed and before the
 depth fix) were archived on 2026-10-15; restore them into `$RUNS_DIR` for the result files that read them.
@@ -327,7 +336,9 @@ study measures how often. The VLA's VLM reads the instruction before the SAM3 vi
 **Evals.** The test set (`paper`, 96 layouts), clean camera. Planner-only `words_{set}_paper` (planner seed 0, as
 `pseed_paper_none`) and VLA-only `vla_words_{set}_paper` (fast settings, VLM seed offset 0, as `fast3_train_g0/g1`).
 With the tasks' own instructions, `pseed_paper_none` and `fast3_train_g0/g1` are used. The commands are above.
-About 3.5 GPU hours on one GPU.
+About 3.5 GPU hours on GPU 0. The planner-only evals also run the VLM plan check for the VLM plan-check study
+(`PLAN_CHECK=1`, added on 2026-10-17 before any eval ran); it only logs a feature, so the planner's episodes stay
+the same.
 
 **Planned tests.** In this fixed order, each the exact two-sided paired sign-flip test at 0.05, and each counting
 only when every test before it was significant. A layout gives one value, its sum over the 4 reworded sets, so
@@ -393,7 +404,9 @@ for goals that are logged wrongly, and then deleted. They can change the scenes,
 
 **Evals.** Planner-only `harder_paper` (planner seed 0, clean depth, as `pseed_paper_none`) and VLA-only
 `vla_harder_paper` (fast settings, VLM seed offset 0, as `fast3_train_g0/g1`), clean camera, 352 episodes each,
-on GPU 0. About 4 GPU hours.
+on GPU 0. About 4 GPU hours. The planner-only eval also runs the VLM plan check for the VLM plan-check study
+(`PLAN_CHECK=1`, added on 2026-10-17 before any eval ran); it only logs a feature, so the planner's episodes stay
+the same.
 
 **Planned tests.** In this fixed order, each the exact two-sided paired sign-flip test at 0.05, and each counting
 only when every test before it was significant. Each layout gives one value.
@@ -411,3 +424,51 @@ stats of each method (each goal of the two-step task, the carrot on the wrong pl
 two cluttered tasks against SimplerEnv's own spoon and carrot tasks without the extra objects (`pseed_paper_none`
 and `fast3_train_g0/g1`; other layouts, so not paired). No ASM is scored here: the saved ASMs have one column per
 SimplerEnv task and were not trained on these tasks.
+
+## VLM plan-check study
+
+The plan below was fixed on 2026-10-17, before any of the study's evals ran, and `score_plan_check` follows it.
+The results do not change it. A result that is not in the plan is reported as exploratory.
+
+**Question.** The two studies above give the planner tasks its fixed rule cannot read, and the ASMs cannot see
+that: their features come from the planner's first look at the scene (did it find a path, how long is it), not
+from the instruction. Can the VLM tell, on the first frame, whether the planner's one pick-and-place will finish
+the instruction, so that those episodes go to the VLA?
+
+**The check** (`plan_check.py`). On the first frame, after SAM3 has found the object and the target that the rule
+reads, the planner marks them on the camera picture: the object it will pick up tinted green, and a blue box
+around where it will put it. The VLM (the VP-VLA VLM, Qwen3-VL-4B, with the VLA's fast settings) gets the picture,
+the marked picture, the instruction and this question: will picking up the green object, putting it in the blue
+box and then stopping complete the whole instruction? Its probability of "yes" is read from its first answer token
+(no sampling) and logged as the feature `vlm_plan_yes`. When SAM3 finds no object or no target there is no plan
+to show, and the feature is 0. The marked pictures are saved next to the planner records.
+
+**The gate.** The VLA when `vlm_plan_yes` is below 0.5, else the planner. The threshold is fixed here, not fitted:
+no training set has tasks that break the rule. The gate needs no task name, so it works on tasks no ASM was
+trained on.
+
+**Evals.** The planner-only evals of the two studies above, run with the check (`PLAN_CHECK=1`): `harder_paper`
+(352 layouts) and `words_{set}_paper` (4 x 96); with SimplerEnv's own instructions, the new `check_paper_none`
+(96 layouts, planner seed 0, clean camera: the same episodes as `pseed_paper_none`, about 0.5 GPU hours on GPU 0).
+VLA-only: `vla_harder_paper`, `vla_words_{set}_paper` and `fast3_train_g0/g1`. The gate is scored offline: on each
+layout, its choice from the planner-only eval's first frame, and the outcome of the chosen method's eval of that
+layout. Both controllers start from the same first frame, so a closed loop should give the same (the two-model
+study's closed-loop eval matched its offline scores once the planner was seeded).
+
+**Planned tests.** In this fixed order, each the exact two-sided paired sign-flip test at 0.05, and each counting
+only when every test before it was significant. Each layout gives one value; a layout of the reworded
+instructions gives its sum over the 4 sets.
+
+1. Harder scenes (352 layouts): the gate minus planner-only.
+2. Harder scenes: the gate minus VLA-only.
+3. Reworded instructions (96 layouts): the gate minus planner-only.
+
+Intervals: 95% percentile bootstrap of the per-layout mean; each draw takes each task's layouts again, with
+replacement (10,000 draws).
+
+**Secondary (reported, no claims).** For each instruction set (own, the 4 reworded sets, the harder scenes): the
+gate against planner-only and against VLA-only (exact McNemar), and the AUC of `vlm_plan_yes` for the planner's
+success. Per task: the success rates and how many episodes the gate gives the VLA. How much of the VLM's first
+token goes to yes or no (near 1 means it answers the question). With `--asm two_model/asm_none.json`: the gate
+followed by the two-model study's ASM for clean depth (the ASM decides when the VLM says yes), on SimplerEnv's
+own and reworded instructions.

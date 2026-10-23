@@ -12,7 +12,8 @@
 # Environment: FAST and MPS as in vla_eval.sh. PLANNER_SAM3_ARGS: the planner's SAM3 server options (default:
 #   none, as in planner_eval.sh). PLANNER_SEED as in planner_eval.sh: give it the same value as the planner-only
 #   evals that the closed-loop eval is compared with. RGB_NOISE as in planner_eval.sh (same = each job's depth
-#   level). INSTRUCTIONS as in vla_eval.sh.
+#   level). INSTRUCTIONS as in vla_eval.sh. PLAN_CHECK=1: the VLM plan check (planner/plan_check.py) on the first
+#   frame, from the VLA's VLM server; a "no" gives the episode to the VLA before the ASM decides.
 [ $# -ge 6 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 GPU=$1; PB=$2; NAME=$3; LAYOUTS=$4; MODELS=$(run_dir "$5"); K=$6
@@ -47,12 +48,15 @@ start_vla_servers $PB "$OUT" &&
   wait_port $PB && wait_port $((PB + 1)) && wait_port $((PB + 2)) && wait_port $((PB + 3)) ||
   { log "servers did not start"; exit 1; }
 log "START K=$K MPS=${MPS:-1} LAYOUTS=$LAYOUTS MODELS=$MODELS RGB_NOISE=${RGB_NOISE:-none}" \
-  "INSTRUCTIONS=${INSTRUCTIONS:-default} PLANNER_SEED=[$PS]" \
+  "INSTRUCTIONS=${INSTRUCTIONS:-default} PLANNER_SEED=[$PS] PLAN_CHECK=${PLAN_CHECK:-0}" \
   "SAM3_ARGS=[$SAM3_ARGS] PLANNER_SAM3_ARGS=[$PLANNER_SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \
   "SIM_ARGS=[$SIM_ARGS]" \
   "on GPU $GPU, commit $(git log -1 --format=%h), servers up in $((SECONDS - T0)) s: ${JOBS[*]}"
 nvidia-smi dmon -i $GPU -s um -d 5 > "$OUT/dmon.txt" 2>&1 &
 DMON=$!
+
+CHECK=()
+[ "${PLAN_CHECK:-0}" = 1 ] && CHECK=(--plan-check-port $((PB + 2)))
 
 job() {
   local level task start end out t0=$SECONDS rc stats rgb
@@ -65,7 +69,7 @@ job() {
   sim $GPU $task $start $end "$out" --controller selector --selector "${MODELS//\{\}/$level}" --planner mplib \
     --target-source camera --depth-noise $level --robot-mask joints --noise-seed 0 ${PS:+--planner-seed $PS} \
     --port $PB --sam3-port $((PB + 1)) --vlm-port $((PB + 2)) --planner-sam3-port $((PB + 3)) $LS $rgb \
-    $VP_ARGS $SIM_ARGS
+    "${CHECK[@]}" $VP_ARGS $SIM_ARGS
   rc=$?
   log "job $1 exit=$rc tries=$(grep -c "" "$stats" 2>/dev/null)" \
     "vla_picks=$(grep -c '"selector_choice": "vla"' "$stats" 2>/dev/null)" \

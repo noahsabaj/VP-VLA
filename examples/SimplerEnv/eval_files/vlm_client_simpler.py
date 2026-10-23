@@ -77,6 +77,21 @@ class VLMClientSimpler:
         self._cached_place_target = None
         self._cached_decomposition_raw_response = ""
 
+    def yes_probability(self, images: List[np.ndarray], question: str) -> Dict:
+        """The VLM's P(yes) for a yes/no question about the images (uint8 RGB): {"p_yes", "answer_mass"}
+        (vlm_server_subtask_simpler.py, VLMModel.yes_probability). Raises if the server fails."""
+        request = {
+            "type": "yes_no",
+            "request_id": f"yes_no_{time.time()}",
+            "images": [np.ascontiguousarray(im, dtype=np.uint8) for im in images],
+            "question": question,
+        }
+        self._ws.send(packb(request))
+        response = unpackb(self._ws.recv())
+        if not response.get("ok", False):
+            raise RuntimeError(f"VLM yes/no question failed: {response.get('error', {}).get('message', response)}")
+        return response["data"]
+
     def decompose_task_to_subtasks(
         self,
         task_description: str,

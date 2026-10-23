@@ -35,6 +35,8 @@ VLM_SYSTEM_MESSAGE = (
     "You are a robotic manipulation reasoning assistant. "
     "Follow all rules strictly. Output VALID JSON ONLY."
 )
+# For yes/no questions (the planner's plan check, planner/plan_check.py): the answer is read from the first token.
+YES_NO_SYSTEM_MESSAGE = "You are a robotic manipulation reasoning assistant. Answer with one word: yes or no."
 
 
 def build_subtask_detection_prompt(
@@ -354,6 +356,24 @@ class VLMModel:
             "raw_response": output_text,
         }
 
+    def yes_probability(self, images: List[np.ndarray], question: str) -> dict:
+        """P(yes) for a yes/no question about the images: the first answer token's probabilities of "yes" and "Yes"
+        against those of "no" and "No", from one forward pass (no sampling, so no seed). answer_mass: how much of
+        the probability the four tokens have (near 1 when the model answers yes or no)."""
+        content = [{"type": "image", "image": self.Image.fromarray(im).convert("RGB")} for im in images]
+        messages = [
+            {"role": "system", "content": [{"type": "text", "text": YES_NO_SYSTEM_MESSAGE}]},
+            {"role": "user", "content": [*content, {"type": "text", "text": question}]},
+        ]
+        inputs = self.processor.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True, return_dict=True, return_tensors="pt",
+        ).to(self.model.device)
+        with torch.no_grad():
+            probs = torch.softmax(self.model(**inputs, logits_to_keep=1).logits[0, -1].float(), dim=-1)
+        ids = {w: self.processor.tokenizer.encode(w, add_special_tokens=False)[0] for w in ("yes", "Yes", "no", "No")}
+        yes, no = float(probs[ids["yes"]] + probs[ids["Yes"]]), float(probs[ids["no"]] + probs[ids["No"]])
+        return {"p_yes": yes / (yes + no) if yes + no > 0 else 0.5, "answer_mass": yes + no}
+
 
 class VLMServer:
     """Websocket server for single-gripper VLM subtask detection."""
@@ -489,6 +509,29 @@ class VLMServer:
                 return {
                     "status": "error", "ok": False,
                     "type": "task_decomposition_result",
+                    "request_id": req_id,
+                    "error": {"message": str(e)},
+                }
+
+        elif mtype == "yes_no":
+            try:
+                images, question = msg.get("images"), msg.get("question", "")
+                if not images or not question:
+                    return {
+                        "status": "error", "ok": False, "request_id": req_id,
+                        "error": {"message": "A yes_no request needs 'images' and 'question'"},
+                    }
+                return {
+                    "status": "ok", "ok": True,
+                    "type": "yes_no_result",
+                    "request_id": req_id,
+                    "data": self._model.yes_probability(images, question),
+                }
+            except Exception as e:
+                logging.exception("VLM yes/no error (request_id=%s)", req_id)
+                return {
+                    "status": "error", "ok": False,
+                    "type": "yes_no_result",
                     "request_id": req_id,
                     "error": {"message": str(e)},
                 }

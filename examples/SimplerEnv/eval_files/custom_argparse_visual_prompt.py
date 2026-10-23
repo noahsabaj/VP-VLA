@@ -170,6 +170,10 @@ def get_args():
     parser.add_argument("--layout-per-episode", action="store_true", default=False,
                         help="With --layout-seed: give each episode a random layout of its own (from the seed and the "
                              "episode number) instead of one of 12 placements x 4 turns")
+    parser.add_argument("--plan-check-port", type=int, default=None,
+                        help="VLM server for the planner's plan check (planner/plan_check.py): on the first frame the "
+                             "VLM says whether the planner's one pick-and-place finishes the instruction (default: "
+                             "no check)")
     parser.add_argument("--robot-mask", type=str, default="sim", choices=["sim", "joints"],
                         help="Cut the robot out of the depth picture using the simulator (sim) or its joint angles (joints)")
 

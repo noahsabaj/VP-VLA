@@ -30,6 +30,7 @@ python -m examples.SimplerEnv.eval_files.planner.experiments.SCORER ...
 | two-model study: training set | `--layout-seed 11 --layout-per-episode` | `iid11` | 400 (100 per task) |
 | two-model study: test set | `--layout-seed 12 --layout-per-episode` | `iid12` | 400 (100 per task) |
 | plan-check v2 study: test set | `--layout-seed 13 --layout-per-episode` | `iid13` | 96 (24 per task); harder scenes 240 (48 per task) |
+| learned-features data: second training set | `--layout-seed 14 --layout-per-episode` | `iid14` | 400 (100 per task) |
 
 In the first three sets, a task's episodes share a few turns of the object: SimplerEnv's layouts have 1 to 3
 turns per task, and a `--layout-seed` set has 12 placements per task, each with the same 4 turns. In the `iidN`
@@ -47,7 +48,8 @@ The reworded-instruction study's are `words_{set}_paper` and `vla_words_{set}_pa
 study"). The harder-scene study's are `harder_paper` and `vla_harder_paper` (see "Harder-scene study"). The VLM
 plan-check study adds `check_paper_none` (see "VLM plan-check study"). The VLM plan-check v2 study's are
 `check2_{own,words_SET,harder}_{paper,iid13}` (planner-only, both checks) and `vla_{own,words_SET,harder}_iid13`
-(VLA-only; see "VLM plan-check v2 study").
+(VLA-only; see "VLM plan-check v2 study"). The learned-features data are `pseed31_{iid11,iid14}_harsh` and
+`vla31_{iid11,iid14}` (SAM 3.1; see "Learned first-frame features").
 
 ## Evals (GPU)
 
@@ -224,6 +226,14 @@ done
 kill %1
 ```
 
+The learned-features training data, with SAM 3.1 (see "Learned first-frame features" below):
+
+```bash
+bash $E/planner_evals.sh 0 10320 2 pseed31_iid11_harsh:harsh:iid11 pseed31_iid14_harsh:harsh:iid14
+HIDDEN=1 bash $E/vla_eval.sh 0 10400 vla31_iid11 iid11 4
+HIDDEN=1 bash $E/vla_eval.sh 0 10400 vla31_iid14 iid14 4
+```
+
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
 `TASK:0:8 TASK:8:16 TASK:16:24` for each task and `heldout_vla_g1` the episodes 24 to 47.
 
@@ -314,6 +324,36 @@ chunk over 8 changed copies of the input, `vla_perturbation.py`); the linear pro
 numbers, as planned before); the previous ASM v3 and the heuristic baseline; the success models' AUC, within-task
 AUC, log-loss, Brier score and calibration (ECE, 10 equal bins) against the task's rate; the closed-loop eval
 against the offline result (`check_closed_loop`).
+
+## Learned first-frame features
+
+The two-model ASM's success models use hand-made features (`selector.PLANNER_FEATURES`, `selector.VLA_FEATURES`).
+A one-time CPU look on the two-model study's training set only (`iid11`; `iid12` was not read) asked whether
+learned features do better, and whether the ASM can be one model: the first-frame features and the method in,
+P(success) out, so that one model gives both P(planner) and P(VLA). Its cross-validation folds held out whole
+episode indices, because the 4 tasks of one episode index share a layout (spoon and carrot have the same object
+position), and its within-task AUC used only the features' part of the logit, without the task intercepts, which
+change from fold to fold. Results, with 95% intervals from a bootstrap over episode indices
+(`learned_features_look_2026-10-23.txt`):
+
+- P(VLA): a logistic regression with an L2 penalty on all 2560 numbers of the VLA's last layer (its first-step
+  hidden state, `vla_iid11/hidden`) had a within-task AUC of 0.695 against 0.629 for the hand-made features
+  (+0.07, -0.02 to +0.16) and a lower log-loss (-0.036, -0.073 to +0.001): a trend, not a significant gain. The
+  linear probe (PCA to 10 numbers) did worse than both, and the ground-truth layout (positions and turn from the
+  simulator) did worse than the hidden state (0.616). The hand-made features from clean depth, or with a more
+  flexible form, did not do better.
+- P(planner) with harsh depth: the hidden state is at chance. The planner fails from depth noise, which the
+  camera picture does not show.
+- Decisions: nothing beat the two-model ASM. The learned P(VLA) and the one-model ASM (a logistic regression or
+  a small network) were between 0.9 points below it and 0.2 points above it; the linear probe was 3.6 points below
+  (-6.2 to -0.8).
+- With 25%, 50%, 75% and all of the about 360 training episodes of a fold, the hidden state's within-task AUC was
+  0.617, 0.626, 0.670 and 0.685; the hand-made features' was nearly flat (0.627 with all).
+
+So more training data comes first, before any plan or test set: a second training set (`iid14`) and the training
+set again, both with SAM 3.1 (the default), so that all 800 episodes share one setup. The planner-only evals are
+at harsh depth only; the VLA-only evals save the first-step hidden states, without the action spread (it added
+nothing). Commands: under "Evals (GPU)".
 
 ## Camera-noise study
 

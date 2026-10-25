@@ -39,7 +39,7 @@ sets, each episode has a random placement and turn of its own (`IID_EPISODES` se
 harder scenes take `paper` (their fixed layouts) or `iidN` (`harder_scenes.random_layout`).
 
 Planner-only evals are named `{prefix}_{layouts}_{level}`, with the depth-noise level `none` (clean),
-`realistic` or `harsh`. The current ones are `pseed_*` (planner seeded per episode). The VLA-only evals:
+`realistic` or `harsh`, or `harsh_xS` (harsh's errors times S; see "Difficulty sweep"). The current ones are `pseed_*` (planner seeded per episode). The VLA-only evals:
 `fast3_train_g0/g1` (test set), `heldout_vla_g0/g1` (training set), `seed2_vla` (held-out test set), `vla_iid11`
 and `vla_iid12`, all with the fast settings, and the reruns `rep1_*`, `rep2_*` (VLM seed offsets 1 and 2).
 `exact_vla_1` to `exact_vla_5` link to the 5 VLA-only evals of the test set with the paper's settings
@@ -52,7 +52,11 @@ plan-check study adds `check_paper_none` (see "VLM plan-check study"). The VLM p
 (VLA-only; see "VLM plan-check v2 study"). The learned-features data are `pseed31_{iid11,iid14}_harsh` and
 `vla31_{iid11,iid14}` (SAM 3.1; see "Learned first-frame features"). The VLM-plan study's are
 `vlmplan_{iid11,iid15}_{none,harsh}` (planner-only with the VLM plan), `vla31_iid15`, `pseed31_iid15_harsh` and the
-closed-loop eval `closed_loop_vlmplan_iid15`, with the ASMs `vlmplan_model/asm_{level}.json` (see "VLM-plan study").
+closed-loop eval `closed_loop_vlmplan_iid15`, with the ASMs `vlmplan_model/asm_{level}.json`, and the role split's
+closed-loop eval `handoff_vlmplan_iid15` (see "VLM-plan study"). The difficulty sweep adds `vlmplan_iid15_harsh_xS`
+(see "Difficulty sweep"), and the missing-depth study `miss_{iid11,iid15}_none` (see "Missing-depth study"). The
+harder-task system study's are `vlmplan_harder_paper_harsh`, `vlmplan_{own,words_SET,harder}_iid13_harsh` and
+`pseed31_{own,words_SET,harder}_iid13_harsh` (see "Harder-task system study").
 
 ## Evals (GPU)
 
@@ -61,7 +65,7 @@ closed-loop eval `closed_loop_vlmplan_iid15`, with the ASMs `vlmplan_model/asm_{
 | `planner_eval.sh GPU PORT NAME LEVEL LAYOUTS` | one planner-only eval (one SAM server; the 4 tasks at the same time) |
 | `planner_evals.sh GPU PORT_BASE AT_ONCE NAME:LEVEL:LAYOUTS...` | several planner-only evals at the same time |
 | `vla_eval.sh GPU PORT_BASE NAME LAYOUTS K [TASK:START:END...]` | one VLA-only eval (one server set, K sim clients) |
-| `selector_eval.sh GPU PORT_BASE NAME LAYOUTS MODELS K [LEVEL:TASK:START:END...]` | the closed-loop ASM eval |
+| `selector_eval.sh GPU PORT_BASE NAME LAYOUTS MODELS K [LEVEL:TASK:START:END...]` | the closed-loop ASM eval (`CONTROLLER=planner_then_vla`: the role split) |
 | `sim_task.sh GPU TASK START END OUT [ARGS...]` | one sim run (smoke tests; the servers must already run) |
 
 Each script's header lists its options. The VLA runners use the fast settings by default (`FAST=1`, see
@@ -74,6 +78,9 @@ controller (default `none`; in `planner_eval.sh` and `selector_eval.sh`, `same` 
 layouts only: `LAYOUTS=paper`). `PLAN_CHECK=1` adds the VLM plan check (`plan_check.py`): in `planner_eval.sh` it
 only logs the feature `vlm_plan_yes`; in `selector_eval.sh` a "no" gives the episode to the VLA.
 `TASK_SOURCE=vlm` replaces the planner's fixed rule with the VLM plan (`vlm_plan.py`; see "VLM plan" below).
+`MISSING_DEPTH=target` takes all depth away from the place target in half of the episodes (see "Missing-depth
+study"). In `selector_eval.sh`, `CONTROLLER=planner_then_vla` runs the role split instead of the ASM: the planner
+moves the hand to above the object, and then the VLA does the rest of the episode (MODELS must be `-`).
 
 **Costs** (since 2026-10-23). Each sim writes `episode_costs.jsonl` (`model_time.py`): for each episode, its
 wall-clock seconds from the model's reset to the last step, and its model requests, the count and the round-trip
@@ -270,6 +277,38 @@ bash $E/vla_eval.sh 0 10400 vla31_iid15 iid15 4
 bash $E/planner_evals.sh 0 10320 1 pseed31_iid15_harsh:harsh:iid15
 ```
 
+The evals of the studies planned on 2026-10-25 (see "VLM-plan study", "Difficulty sweep", "Missing-depth study"
+and "Harder-task system study" below), each alone on GPU 0. They also read the VLM-plan study's evals above. The
+harder-task system study needs the VLA-only evals of the harder-scene study (`vla_harder_paper`) and of the
+plan-check v2 study (`vla_{own,words_SET,harder}_iid13`; commands above), whatever that study's dev step says:
+
+```bash
+export TASK_SOURCE=vlm VLM_PLAN_MIN_SCORE=0
+# the VLM-plan study's role split: the planner to above the object, then the VLA (closed loop, no ASM)
+CONTROLLER=planner_then_vla DEPTHS="harsh none" CHUNK_SIZE=25 bash $E/selector_eval.sh 0 10510 \
+    handoff_vlmplan_iid15 iid15 - 6
+# the difficulty sweep
+bash $E/planner_evals.sh 0 10320 1 vlmplan_iid15_harsh_x0.25:harsh_x0.25:iid15 \
+    vlmplan_iid15_harsh_x0.5:harsh_x0.5:iid15 vlmplan_iid15_harsh_x0.75:harsh_x0.75:iid15 \
+    vlmplan_iid15_harsh_x1.5:harsh_x1.5:iid15 vlmplan_iid15_harsh_x2:harsh_x2:iid15
+# the missing-depth study
+MISSING_DEPTH=target bash $E/planner_evals.sh 0 10320 1 miss_iid11_none:none:iid11 miss_iid15_none:none:iid15
+# the harder-task system study: the harder scenes' training eval, then the test set
+TASK_SET=harder bash $E/planner_eval.sh 0 10320 vlmplan_harder_paper_harsh harsh paper
+IID_EPISODES=24 bash $E/planner_eval.sh 0 10320 vlmplan_own_iid13_harsh harsh iid13
+for set in synonyms attributes order reasoning; do
+  IID_EPISODES=24 INSTRUCTIONS=$set bash $E/planner_eval.sh 0 10320 vlmplan_words_${set}_iid13_harsh harsh iid13
+done
+IID_EPISODES=48 TASK_SET=harder bash $E/planner_eval.sh 0 10320 vlmplan_harder_iid13_harsh harsh iid13
+unset TASK_SOURCE VLM_PLAN_MIN_SCORE
+# the harder-task system study's fixed rule (secondary)
+IID_EPISODES=24 bash $E/planner_eval.sh 0 10320 pseed31_own_iid13_harsh harsh iid13
+for set in synonyms attributes order reasoning; do
+  IID_EPISODES=24 INSTRUCTIONS=$set bash $E/planner_eval.sh 0 10320 pseed31_words_${set}_iid13_harsh harsh iid13
+done
+IID_EPISODES=48 TASK_SET=harder bash $E/planner_eval.sh 0 10320 pseed31_harder_iid13_harsh harsh iid13
+```
+
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
 `TASK:0:8 TASK:8:16 TASK:16:24` for each task and `heldout_vla_g1` the episodes 24 to 47.
 
@@ -295,9 +334,11 @@ The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g
 `score_instructions --asm two_model/asm_none.json`. The harder-scene study's: `score_harder_scenes`. The VLM
 plan-check study's: `score_plan_check --asm two_model/asm_none.json`. The VLM plan-check v2 study's:
 `score_plan_check_v2 --dev --save plan_check_v2.json` (the dev step) and `score_plan_check_v2` (the test). The
-VLM-plan study's: `score_vlm_plan` (all its tables and tests), `check_closed_loop closed_loop_vlmplan_iid15 --planner
-'vlmplan_iid15_{}' --models 'vlmplan_model/asm_{}.json' --vla vla31_iid15` (its closed-loop eval) and `score_costs
-vlmplan_iid15_harsh vla31_iid15 closed_loop_vlmplan_iid15` (its costs). Any eval's costs (see "Costs" above):
+VLM-plan study's: `score_vlm_plan` (all its tables and tests, with the role split and the other baselines),
+`check_closed_loop closed_loop_vlmplan_iid15 --planner 'vlmplan_iid15_{}' --models 'vlmplan_model/asm_{}.json' --vla
+vla31_iid15` (its closed-loop eval) and `score_costs vlmplan_iid15_harsh vla31_iid15 closed_loop_vlmplan_iid15
+handoff_vlmplan_iid15` (its costs). The difficulty sweep's: `score_sweep`. The missing-depth study's:
+`score_missing_depth`. The harder-task system study's: `score_harder_system`. Any eval's costs (see "Costs" above):
 `score_costs RUN...`.
 
 The `dfix_*` and `seeded_*` runs and `heldout_planner_none` (the evals before the planner seed and before the
@@ -832,3 +873,187 @@ rule on the same episodes, planner-only and with the ASM (the fixed rule's ASM h
 is trained on `pseed31_iid11_harsh` and `vla31_iid11`); the closed-loop eval against the offline result
 (`check_closed_loop`); each eval's cost per episode (`score_costs`: seconds, model requests and GPU energy), where the
 closed-loop eval's cost is the whole system's.
+
+**Change of 2026-10-25, before any of the study's evals ran.** Dr. Zhu asked how the system compares with other
+ways to combine a planner and a VLA, and what makes it better. Tests 1 and 2 above stay as they are, and these are
+added (`score_vlm_plan` does them):
+
+- **Two more planned tests**, on the same 400 episodes and with the same test, which count only when tests 1 and 2
+  were both wins. The system against:
+
+  3. the role split: VLM -> planner moves the hand to above the object, and then the VLA does the rest of the
+     episode. Hybrid systems often divide the work this way (a planner for the free-space motion, a learned policy
+     for the contact). A plan that is not pick-and-place, or a planner that fails before the hand-off, gives the
+     whole episode to the VLA. It is a closed-loop eval of its own, `handoff_vlmplan_iid15`, with harsh and clean
+     depth (`selector_eval.sh` with `CONTROLLER=planner_then_vla`; about 4 GPU hours on GPU 0);
+  4. the per-task choice: the gate, then for each task the method with the higher success rate on the training
+     set's episodes that the gate does not give to the VLA (the planner on a tie). It is a router that chooses per
+     task and does not look at the episode.
+
+  Tests 3 and 4 are corrected for two tests by Holm's method at 0.05: the smaller p must be below 0.025, and then
+  the other below 0.05. A test is a win when it is significant with the system higher. If the role-split eval did
+  not run, test 3 has no result and counts as p = 1. The role split's value for an episode index is its own
+  outcome, summed over the 4 tasks as for the other setups; an index that its eval did not run in full is left out
+  of test 3 only.
+- **Secondary baselines** (the same test, no claims), each behind the same gate and trained on the same episodes as
+  the ASM: rule A, the planner when P(planner) >= 0.5 (the ASM's planner model alone); rule C, the planner when
+  P(planner) >= the task's VLA success rate on the training set; a retrieval router, the method with more successes
+  on the k most similar training episodes of the same task (Euclidean distance on the ASM's features, each
+  standardized on the training set; the planner on a tie), with k from 1, 3, 5, 9, 15, 25 and 45 chosen by the
+  routed success in 10-fold cross-validation on the training set (folds by episode index, seed 0; the larger k on
+  a tie). Also a random choice with the system's share of planner picks (its expected success, no test), and the
+  share of the oracle's gain over VLM -> planner that the system gets.
+- **What makes the system better** (`mechanism.py`; reported at each depth level, with intervals and no tests):
+  - complementarity: how many test episodes both methods solve, only VLM -> planner, only the VLA, or neither. The
+    oracle's gain over the better method equals the share of episodes that only the worse method solves, so a
+    choice per episode can gain only on those;
+  - failure dependence: within each task, P(the VLA succeeds | VLM -> planner failed) - P(the VLA succeeds |
+    VLM -> planner succeeded) (Mantel-Haenszel), with a bootstrap interval over the episode indices. Near 0, the
+    two methods fail on different episodes; below 0, on the same ones;
+  - the gain decomposition: of the episodes that only one method solves, how many the system gave to that method;
+  - the success and the gain over the VLA that the ASM's own probabilities predict, against the real ones;
+  - ablations: the ASM trained again without each of its features, and with only the task columns in one of its
+    success models;
+  - a learning curve: the ASM trained on 10%, 25% and 50% of the training set's episode indices (20 random draws
+    each, seed 0) and on all of them;
+  - the system minus the oracle.
+
+## Difficulty sweep
+
+The plan below was fixed on 2026-10-25, before any of the study's evals ran, and `score_sweep` follows it. The
+results do not change it. A result that is not in the plan is reported as exploratory.
+
+**Question.** A choice per episode can only gain on the episodes that one method solves and the other does not. In
+an exploratory look at the two-model study's test set (2026-10-25), harsh depth gave many such episodes (89 that
+only the planner solved and 108 that only the VLA solved, of 400) and clean depth few. As the depth noise grows, the
+planner falls and the better of the two methods changes from the planner to the VLA. Does the system stay above the
+better method across the whole range, from clean depth to twice the harsh level?
+
+**Levels** (`geometry.DepthNoise`). Seven: clean (`none`), and harsh's errors times 0.25, 0.5, 0.75, 1 (`harsh`),
+1.5 and 2 (`harsh_x0.25`, `harsh_x0.5`, `harsh_x0.75`, `harsh_x1.5`, `harsh_x2`). The scale multiplies the depth
+noise of each pixel, the chance that a pixel or an edge pixel has no depth (at most 1) and the camera pose error;
+the threshold that says what counts as a depth edge stays. All levels draw the same random numbers, so in an
+episode's first picture a level's errors are harsh's times its scale, and its pixels without depth include those
+of every smaller scale. The camera picture is clean at every level.
+
+**System.** The VLM-plan study's (the VLM plan, its gate, then a two-model ASM), with one ASM for every level. It
+is not told the level: it is trained on the training set's clean and harsh evals together (`vlmplan_iid11_none`
+and `vlmplan_iid11_harsh` with `vla31_iid11`; `selector.train_pooled`), and P(planner)'s features are chosen from
+the VLM-plan study's two candidates by the same cross-validation, with folds that hold out an episode index at both
+levels at once. The VLA does not use depth, so one VLA-only eval serves every level.
+
+**Evals.** The VLM-plan study's test set `iid15`, planner-only with the VLM plan at the 5 new levels:
+`vlmplan_iid15_harsh_x{0.25,0.5,0.75,1.5,2}` (2,000 episodes; SAM 3.1, noise seed 0, planner seed 0). The clean
+and harsh levels (`vlmplan_iid15_{none,harsh}`) and the VLA-only eval (`vla31_iid15`) are the VLM-plan study's.
+About 2 GPU hours on GPU 0. The commands are above.
+
+**Planned test.** The system against the better of VLM -> planner and the VLA at each level (the one with the
+higher success rate on the test set at that level, which favors this baseline). The exact two-sided paired
+sign-flip test at 0.05, with one value per episode index: its sum, over the 7 levels and the 4 tasks, of the
+difference in success. It is a win when it is significant with the system higher. Only the episode indices with all
+4 tasks at every level count. Interval: 95% percentile bootstrap of the mean difference; each draw takes the
+episode indices again, with replacement (10,000 draws).
+
+**Secondary (reported, no claims).** At each level: each method, the better one, the system and the oracle, the
+oracle's gain over the better method and the share of it that the system gets, and how many episodes the system
+gives the VLA; the system against VLM -> planner and against the VLA (the same test); the complementarity, the
+failure dependence and the gain decomposition (see "VLM-plan study"). At the clean and harsh levels: the sweep's
+ASM against the VLM-plan study's ASM of that level (trained on that level only).
+
+## Missing-depth study
+
+The plan below was fixed on 2026-10-25, before any of the study's evals ran, and `score_missing_depth` follows it.
+The results do not change it. A result that is not in the plan is reported as exploratory.
+
+**Question.** Some surfaces give a depth camera no depth at all: glass, mirror-like metal, or black cloth that takes
+in the camera's light. The color picture still shows them. When the place target is such a surface, the planner
+cannot place the object on it, but the VLA, which does not use depth, can. Can the system's first look find these
+episodes and give them to the VLA?
+
+**The change to the scene** (`MISSING_DEPTH=target`, `geometry.MissingDepth`). In each episode, with chance 1/2,
+no pixel of the place target has depth (the towel, the plate or the yellow cube). The eggplant task keeps its depth,
+because its basket is part of the sink, not an object of its own. The draw depends only on the noise seed and the
+episode, in a random stream of its own, so the other noise stays the same. The rest of the depth is clean, and the
+camera picture does not change. The records log `target_depth_missing`.
+
+**What the planner does** (from its code, before any eval ran). The first look finds the place target only for the
+ASM's features, and the planner does not stop when the target has no depth. It finds a path to above the object
+(`plan_ok` is 1), picks the object up and fails after the lift, when it looks for the target again ("place target
+not found"). In the first look, only the share of the target mask's pixels with depth (`place_valid_depth_frac`, 0
+in these episodes) shows the problem.
+
+**System.** The VLM-plan study's: the VLM plan, its gate, then a two-model ASM trained on the training set's
+missing-depth eval. P(planner)'s features are chosen by the VLM-plan study's cross-validation from three candidates:
+the VLM-plan study's two, and the two-model study's features with the share of each mask's pixels that have depth
+(`plan_ok`, `plan_path_ratio`, `grasp_valid_depth_frac`, `place_valid_depth_frac`). The first wins a tie.
+
+**Tasks and evals.** SimplerEnv's 4 tasks with their own instructions, on the VLM-plan study's training set
+(`iid11`) and test set (`iid15`). Planner-only with the VLM plan and missing target depth: `miss_iid11_none` and
+`miss_iid15_none` (800 episodes; SAM 3.1, noise seed 0, planner seed 0). VLA-only: `vla31_iid11` and `vla31_iid15`
+(the VLM-plan study's: the VLA does not use depth). Under 1 GPU hour on GPU 0. The commands are above.
+
+**Planned tests.** On the 400 episodes of `miss_iid15_none`, the system against, in this order:
+
+1. VLM -> planner alone (the same planner-only eval);
+2. the VLA alone (`vla31_iid15`).
+
+The tests, their order and their intervals are those of the VLM-plan study's tests 1 and 2.
+
+**Secondary (reported, no claims).** Each setup per task, the gate alone and the oracle. The system against (the
+same test): the planner first (the gate, then the planner whenever its first look found a path, else the VLA); the
+VLM-plan study's clean ASM (trained on `vlmplan_iid11_none`, which had no missing depth); the per-task choice. A
+random choice with the system's share of planner picks (expected). Each setup on the episodes with and without the
+target's depth, and why VLM -> planner failed in each. VLM -> planner against the same episodes with the target's
+depth (`vlmplan_iid15_none`). The candidates' cross-validated log-loss, and the success models' AUC, within-task
+AUC, log-loss, Brier score and calibration. What makes the system better (see "VLM-plan study").
+
+## Harder-task system study
+
+The plan below was fixed on 2026-10-25, before any of the study's evals ran, and `score_harder_system` follows it.
+The results do not change it. A result that is not in the plan is reported as exploratory.
+
+**Question.** The VLM-plan study tests the system on SimplerEnv's own tasks and instructions. With reworded
+instructions and harder scenes, where the planner's fixed rule fails, does the whole system (the VLM plan, its gate
+and the ASM) still beat VLM -> planner, the VLA, and a choice per task?
+
+**Tasks.** Harsh depth throughout, and the VLM plan. SimplerEnv's 4 tasks with their own instructions and with each
+of the 4 reworded sets (`instruction_sets.py`, see "Reworded-instruction study"), and the 5 harder scenes
+(`harder_scenes.py`, see "Harder-scene study"): 9 tasks, as a reworded instruction keeps its task.
+
+**Training set.** The VLM-plan study's training eval with harsh depth (`vlmplan_iid11_harsh` with `vla31_iid11`:
+SimplerEnv's tasks, 400 episodes) and the harder scenes' fixed layouts (`vlmplan_harder_paper_harsh` with
+`vla_harder_paper`: 352 episodes). No reworded instruction is in it. One ASM with a task column for each of the 9
+tasks is trained on both together (`selector.train_pooled`), with P(planner)'s features chosen from the VLM-plan
+study's two candidates by the same cross-validation (folds hold out an episode index of each layout set).
+
+**Test set.** The `iid13` layouts (layout seed 13; see "VLM plan-check v2 study"): SimplerEnv's 4 tasks, 24
+episodes each, with their own instructions and with each reworded set (5 x 96 episodes; episode N has the same
+layout in every set), and the 5 harder scenes, 48 episodes each (240 episodes): 720 episodes.
+
+**Evals.** Planner-only with the VLM plan and harsh depth (SAM 3.1, noise seed 0, planner seed 0):
+`vlmplan_harder_paper_harsh` (training), and `vlmplan_own_iid13_harsh`, `vlmplan_words_{set}_iid13_harsh` and
+`vlmplan_harder_iid13_harsh` (test). VLA-only: `vla_harder_paper` (the harder-scene study's) and
+`vla_{own,words_SET,harder}_iid13` (the plan-check v2 study's; they run for this study whatever that study's dev
+step says). For the secondary results, planner-only with the fixed rule and harsh depth:
+`pseed31_{own,words_SET,harder}_iid13_harsh`. About 1.5 GPU hours on GPU 0 for these planner-only evals, besides
+the VLA-only evals of the other studies. The commands are above.
+
+**Planned tests.** On the 720 test episodes, the system against, in this order:
+
+1. VLM -> planner alone;
+2. the VLA alone;
+3. the per-task choice (as in the VLM-plan study: the gate, then each task's better method on the training set).
+
+Each is the exact two-sided paired sign-flip test at 0.05, and each counts only when every test before it was a win
+(significant with the system higher). In `iid13` an episode index is one layout in every instruction set, and the
+tasks of a scene share it, so each test takes one value per episode index: its sum over every instruction group and
+task (indices 24 to 47 have the harder scenes only). The tests need every group's evals. Intervals: 95% percentile
+bootstrap of the mean difference per episode; each draw takes the episode indices again, with replacement (10,000
+draws).
+
+**Secondary (reported, no claims).** Each setup per instruction group and per task; the gate alone and the oracle;
+rule A, rule C and the retrieval router (see "VLM-plan study"; the same test); a random choice with the system's
+share of planner picks (expected); the success models' AUC, within-task AUC, log-loss, Brier score and calibration;
+what makes the system better (see "VLM-plan study"); what the VLM planned in each task. The VLM plan against the
+fixed rule on the same episodes: planner-only in every group, and the fixed rule's ASM (the two-model study's
+features, trained on `pseed31_iid11_harsh` and `vla31_iid11`, so on SimplerEnv's tasks only).

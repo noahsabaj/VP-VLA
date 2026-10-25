@@ -44,16 +44,18 @@ def videos(roots):
     return out
 
 
-def live_records(root):
+def live_records(root, mode="selector", tasks=None):
+    """(task, episode) -> record of a closed-loop eval at one depth level (root/TASK/eps_*/planner_stats.jsonl), all
+    of the controller mode `mode` (selector: the ASM; planner_then_vla: the role split). tasks: default TASKS."""
     out = {}
-    for task in s.TASKS:
+    for task in tasks or s.TASKS:
         for path in sorted(glob.glob(os.path.join(root, task, "**", "planner_stats.jsonl"), recursive=True)):
             with open(path) as fh:
                 lines = list(fh)
             for n, line in enumerate(lines, 1):
                 r = json.loads(line)
-                if r.get("mode") != "selector":
-                    raise SystemExit(f"{path}:{n}: mode {r.get('mode')!r}, not a live ASM try")
+                if r.get("mode") != mode:
+                    raise SystemExit(f"{path}:{n}: mode {r.get('mode')!r}, not {mode}")
                 key = (task, r["obj_episode_id"])
                 if key in out:
                     raise SystemExit(f"{path}:{n}: a second record for {key}")

@@ -120,3 +120,51 @@ def fleiss_kappa(v: np.ndarray) -> float:
     q = v.mean()
     chance = q ** 2 + (1 - q) ** 2
     return float((agree - chance) / (1 - chance)) if chance < 1 else float("nan")
+
+
+def unit_sums(v: np.ndarray, units: np.ndarray) -> np.ndarray:
+    """The sum of v over the episodes of each unit (an episode index, whose tasks share a layout), the units in sorted
+    order."""
+    names = sorted(set(np.asarray(units).tolist()))
+    pos = {u: i for i, u in enumerate(names)}
+    out = np.zeros(len(names))
+    np.add.at(out, [pos[u] for u in np.asarray(units).tolist()], np.asarray(v, float))
+    return out
+
+
+def cluster_bootstrap_interval(v: np.ndarray, units: np.ndarray, draws: int = 10000, seed: int = 0,
+                               level: float = 0.95) -> Tuple[float, float]:
+    """Percentile bootstrap interval of mean(v) when the episodes come in units that are not independent (episode
+    indices): each draw takes as many units as there are, with replacement, and divides their sum of v by their
+    episodes. With units of one size it is bootstrap_interval of the per-unit means, with the same draws."""
+    sums, sizes = unit_sums(v, units), unit_sums(np.ones(len(v)), units)
+    idx = np.random.default_rng(seed).integers(0, len(sums), size=(draws, len(sums)))
+    lo, hi = np.quantile(sums[idx].sum(1) / sizes[idx].sum(1), [(1 - level) / 2, (1 + level) / 2])
+    return float(lo), float(hi)
+
+
+def holm(ps: List[float], alpha: float = 0.05) -> List[bool]:
+    """Holm's step-down method: which tests are significant, with the chance of any false claim among them at most
+    alpha. The smallest p is compared with alpha / m, the next with alpha / (m - 1), and so on, until one is not
+    below its bar."""
+    out = [False] * len(ps)
+    for rank, i in enumerate(np.argsort(ps, kind="stable")):
+        if ps[i] >= alpha / (len(ps) - rank):
+            break
+        out[i] = True
+    return out
+
+
+def mh_risk_difference(y: np.ndarray, exposed: np.ndarray, strata: np.ndarray) -> float:
+    """Mantel-Haenszel risk difference: mean(y | exposed) - mean(y | not exposed) within each stratum (task), weighted
+    by n1 * n0 / n. Strata without both groups add nothing; nan when no stratum has both."""
+    num = den = 0.0
+    exposed = np.asarray(exposed, bool)
+    for k in sorted(set(np.asarray(strata).tolist())):
+        e, u = (strata == k) & exposed, (strata == k) & ~exposed
+        n1, n0 = int(e.sum()), int(u.sum())
+        if n1 and n0:
+            w = n1 * n0 / (n1 + n0)
+            num += w * (y[e].mean() - y[u].mean())
+            den += w
+    return num / den if den else float("nan")

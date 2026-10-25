@@ -65,7 +65,7 @@ def probe_other_tasks(h, y, tasks, d):
 
 
 def within_task_auc(p, y, t):
-    return float(np.nanmean([auc(p[t == k], y[t == k]) for k in s.TASKS if (t == k).any()]))
+    return float(np.nanmean([auc(p[t == k], y[t == k]) for k in sorted(set(np.asarray(t).tolist()))]))
 
 
 def metrics(p, y, t, base):

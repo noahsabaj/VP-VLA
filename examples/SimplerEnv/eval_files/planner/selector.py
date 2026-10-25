@@ -28,7 +28,8 @@ regression on the task and its method's first-frame features (PLANNER_FEATURES, 
 the planner when P(planner succeeds) >= P(VLA succeeds). experiments/score_two_model.py scores it.
 With --planner-candidates (feature lists, each comma-separated), P(planner) uses the list with the
 lowest log-loss in 10-fold cross-validation on the training set (choose_features). Episodes that the
-VLM plan gives to the VLA before the ASM decides (vlm_plan_gate) are not training data.
+VLM plan gives to the VLA before the ASM decides (vlm_plan_gate) are not training data. train_pooled trains one
+ASM on several layout sets or depth levels at once (the scorers of the newer studies use it).
 """
 
 import argparse
@@ -75,7 +76,11 @@ HEURISTIC_FEATURES = ["plan_ok", "grasp_sam3_score"]
 FEATURES_VERSION = 2
 # Settings a folder's runs must share; --save stores them and the eval checks them.
 RUN_SETTINGS = ("depth_noise", "rgb_noise", "noise_seed", "robot_mask", "layout_seed", "planner_seed",
-                "layout_per_episode", "task_source", "vlm_plan_min_score", "sam_model", "plan_check_marks")
+                "layout_per_episode", "task_source", "vlm_plan_min_score", "sam_model", "plan_check_marks",
+                "missing_depth")
+# The settings that may differ between the parts of a pooled ASM (train_pooled): the depth noise (one ASM for every
+# level) and the layouts. merged_settings sets them to None, which the eval accepts with any value.
+POOLED_SETTINGS = ("depth_noise", "layout_seed", "layout_per_episode")
 
 
 def row_features(record: dict, names: List[str]) -> np.ndarray:
@@ -293,38 +298,47 @@ def load_saved(path: str) -> Tuple[Classifier, List[str]]:
 
 class SuccessModel:
     """P(one method succeeds) from first-frame features: a logistic regression on the features and one column per
-    task (so each task has its own base rate; the tasks are the same in training and in use)."""
+    task (so each task has its own base rate; the tasks are the same in training and in use). tasks: the task
+    columns (default TASKS); a task that has none cannot be scored."""
 
-    def __init__(self, features: List[str], l2: float = 1.0):
+    def __init__(self, features: List[str], l2: float = 1.0, tasks: Optional[List[str]] = None):
         self.features = list(features)
+        self.tasks = list(tasks or TASKS)
         self.model = LogisticRegression(l2=l2)
 
     def x(self, records: List[dict]) -> np.ndarray:
         return np.stack([row_features(r, self.features) for r in records])
 
+    def columns(self, x: np.ndarray, tasks) -> np.ndarray:
+        unknown = sorted(set(np.asarray(tasks).tolist()) - set(self.tasks))
+        if unknown:
+            raise ValueError(f"no task column for {', '.join(unknown)}")
+        return with_tasks(x, np.asarray(tasks), self.tasks)
+
     def fit(self, x: np.ndarray, tasks: np.ndarray, y: np.ndarray) -> "SuccessModel":
-        self.model.fit(with_tasks(x, np.asarray(tasks), TASKS), y)
+        self.model.fit(self.columns(x, tasks), y)
         return self
 
     def prob(self, x: np.ndarray, tasks: np.ndarray) -> np.ndarray:
-        return self.model.prob(with_tasks(x, np.asarray(tasks), TASKS))
+        return self.model.prob(self.columns(x, tasks))
 
     def plain(self) -> Tuple[Dict[str, float], Dict[str, float]]:
         """The model in the features' own units: logit P = intercept[task] + sum of slope[feature] * feature."""
         m, k = self.model, len(self.features)
         slope = m.w / m.std
         base = m.b - float(slope @ m.mean)
-        return ({t: base + float(slope[k + i]) for i, t in enumerate(TASKS)},
+        return ({t: base + float(slope[k + i]) for i, t in enumerate(self.tasks)},
                 {f: float(slope[i]) for i, f in enumerate(self.features)})
 
     def to_json(self) -> dict:
-        return {"features": self.features, "tasks": TASKS, **self.model.to_json()}
+        return {"features": self.features, "tasks": self.tasks, **self.model.to_json()}
 
     @classmethod
     def from_json(cls, d: dict) -> "SuccessModel":
-        if d["tasks"] != TASKS:
-            raise ValueError(f"saved with the task columns {d['tasks']}, not {TASKS}")
-        m = cls(d["features"])
+        if len(d["w"]) != len(d["features"]) + len(d["tasks"]):
+            raise ValueError(f"{len(d['w'])} weights for {len(d['features'])} features and "
+                             f"{len(d['tasks'])} task columns")
+        m = cls(d["features"], tasks=d["tasks"])
         m.model = LogisticRegression.from_json(d)
         return m
 
@@ -425,7 +439,7 @@ def leave_one_task_out(tasks: np.ndarray, predict: Callable[[np.ndarray, np.ndar
 
 def task_rate(y: np.ndarray, tasks: np.ndarray, test_tasks: np.ndarray) -> np.ndarray:
     """For each test row, the success rate of its task in (y, tasks); the overall rate for a task not there."""
-    rate = {k: y[tasks == k].mean() for k in TASKS if (tasks == k).any()}
+    rate = {k: y[tasks == k].mean() for k in set(np.asarray(tasks).tolist())}
     return np.array([rate.get(k, y.mean()) for k in test_tasks])
 
 
@@ -522,30 +536,34 @@ def grouped_folds(episodes: np.ndarray, k: int, seed: int) -> np.ndarray:
 
 
 def cv_logloss(records: List[dict], tasks: np.ndarray, y: np.ndarray, features: List[str], episodes: np.ndarray,
-               k: int = 10, seed: int = 0) -> float:
+               k: int = 10, seed: int = 0, task_columns: Optional[List[str]] = None) -> float:
     """Log-loss of the out-of-fold P of a SuccessModel on `features`, with folds by episode index (grouped_folds)."""
     x, folds, p = SuccessModel(features).x(records), grouped_folds(episodes, k, seed), np.zeros(len(y))
     for i in range(k):
         test = folds == i
         if test.any():
-            p[test] = SuccessModel(features).fit(x[~test], tasks[~test], y[~test]).prob(x[test], tasks[test])
+            model = SuccessModel(features, tasks=task_columns).fit(x[~test], tasks[~test], y[~test])
+            p[test] = model.prob(x[test], tasks[test])
     p = np.clip(p, 1e-6, 1 - 1e-6)
     return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
 
 
 def choose_features(records: List[dict], tasks: np.ndarray, y: np.ndarray, candidates: List[List[str]],
-                    episodes: np.ndarray, k: int = 10, seed: int = 0) -> Tuple[List[str], List[float]]:
+                    episodes: np.ndarray, k: int = 10, seed: int = 0,
+                    task_columns: Optional[List[str]] = None) -> Tuple[List[str], List[float]]:
     """The candidate feature list with the lowest cv_logloss (the first one on a tie), and each candidate's
     log-loss."""
-    losses = [cv_logloss(records, tasks, y, list(c), episodes, k, seed) for c in candidates]
+    losses = [cv_logloss(records, tasks, y, list(c), episodes, k, seed, task_columns) for c in candidates]
     return list(candidates[int(np.argmin(losses))]), losses
 
 
 def fit_two_model(records: List[dict], tasks: np.ndarray, y_plan: np.ndarray, y_vla: np.ndarray,
-                  trained_on: Optional[dict] = None, planner_features: Optional[List[str]] = None) -> TwoModelASM:
+                  trained_on: Optional[dict] = None, planner_features: Optional[List[str]] = None,
+                  task_columns: Optional[List[str]] = None) -> TwoModelASM:
     """The two-model ASM fit to these episodes: their planner records, tasks and the two controllers' outcomes.
-    planner_features: P(planner)'s features (default PLANNER_FEATURES)."""
-    asm = TwoModelASM(SuccessModel(planner_features or PLANNER_FEATURES), SuccessModel(VLA_FEATURES), trained_on)
+    planner_features: P(planner)'s features (default PLANNER_FEATURES); task_columns: default TASKS."""
+    asm = TwoModelASM(SuccessModel(planner_features or PLANNER_FEATURES, tasks=task_columns),
+                      SuccessModel(VLA_FEATURES, tasks=task_columns), trained_on)
     asm.planner.fit(asm.planner.x(records), tasks, y_plan)
     asm.vla.fit(asm.vla.x(records), tasks, y_vla)
     return asm
@@ -568,6 +586,68 @@ def train_two_model(planner_root: str, vla_roots: List[str],
               + f" -> {', '.join(features)}")
     return fit_two_model(records, tasks, y_plan, np.array([vla[k] for k in keys]),
                          planner_settings(list(planner.values()), planner_root), features)
+
+
+class Part(NamedTuple):
+    """One part of a pooled ASM's training data: a planner-only eval, the VLA-only evals of the same layouts, and
+    the tasks to read (default TASKS)."""
+
+    planner_root: str
+    vla_roots: List[str]
+    tasks: Optional[List[str]] = None
+
+
+def merged_settings(parts: List[dict], may_differ=POOLED_SETTINGS) -> dict:
+    """The run settings of a pooled ASM: those its parts share; one in may_differ that differs is None (the eval then
+    accepts any value), with the parts' values under "pooled". Any other difference stops the training."""
+    out, pooled = {}, {}
+    for name in RUN_SETTINGS:
+        values = [p[name] for p in parts if name in p]
+        if not values:
+            continue
+        if any(v != values[0] for v in values) or len(values) < len(parts):
+            if name not in may_differ:
+                raise SystemExit(f"the parts of a pooled ASM have different {name}: {values}")
+            out[name], pooled[name] = None, values
+        else:
+            out[name] = values[0]
+    return {**out, "pooled": pooled} if pooled else out
+
+
+def layout_groups(records: List[dict]) -> np.ndarray:
+    """One number per layout group, for the cross-validation folds: the layout set (its seed, and one layout per
+    episode or not) and the episode index. The tasks of an index share a layout in the iidN sets and in the harder
+    scenes, and the depth levels of one layout set have the same layouts, so all of them are held out together."""
+    keys = [(str(r.get("layout_seed")), bool(r.get("layout_per_episode")), int(r["obj_episode_id"])) for r in records]
+    number = {k: i for i, k in enumerate(sorted(set(keys)))}
+    return np.array([number[k] for k in keys])
+
+
+def train_pooled(parts: List[Part], planner_candidates: Optional[List[List[str]]] = None,
+                 task_columns: Optional[List[str]] = None) -> TwoModelASM:
+    """One two-model ASM trained on several parts at once (layout sets, depth levels, task sets): every episode that
+    both controllers ran, except those the VLM plan gives to the VLA first (vlm_plan_gate). With
+    planner_candidates, P(planner)'s features are chosen as in train_two_model, with folds by layout group
+    (layout_groups). task_columns: one per task (default TASKS); every part's tasks must have one."""
+    records, settings = [], []
+    y_vla = []
+    for part in parts:
+        planner, vla, keys = matched_layouts(part.planner_root, part.vla_roots, part.tasks)
+        settings.append(planner_settings(list(planner.values()), part.planner_root))
+        for k in keys:
+            if vlm_plan_gate(planner[k]) is None:
+                records.append({**planner[k], "task_folder": k[0]})
+                y_vla.append(vla[k])
+    tasks = np.array([r["task_folder"] for r in records])
+    y_plan = np.array([float(r["success"]) for r in records])
+    features = None
+    if planner_candidates:
+        features, losses = choose_features(records, tasks, y_plan, planner_candidates, layout_groups(records),
+                                           task_columns=task_columns)
+        print("P(planner) features, cross-validated log-loss: "
+              + "; ".join(f"{', '.join(c)}: {v:.4f}" for c, v in zip(planner_candidates, losses, strict=True))
+              + f" -> {', '.join(features)}")
+    return fit_two_model(records, tasks, y_plan, np.array(y_vla), merged_settings(settings), features, task_columns)
 
 
 def describe(asm: TwoModelASM) -> List[str]:

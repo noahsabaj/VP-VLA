@@ -88,6 +88,7 @@ if __name__ == "__main__":
             vlm_plan_min_score=args.vlm_plan_min_score,
             plan_check_marks=args.plan_check_marks,
             plan_check_threshold=args.plan_check_threshold,
+            missing_depth=args.missing_depth,
         )
 
     success_arr = maniskill2_evaluator(model, args)

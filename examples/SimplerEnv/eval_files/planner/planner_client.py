@@ -39,8 +39,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "Robocasa_tabletop"
 
 from ..model_time import METER, time_requests
 from . import plan_check, vlm_plan
-from .geometry import (CameraView, DepthNoise, corridor_points, depth_roughness, ee_delta_action, mat_to_pose,
-                       path_length, pose_to_mat, short_width)
+from .geometry import (CameraView, DepthNoise, MissingDepth, corridor_points, depth_roughness, ee_delta_action,
+                       mat_to_pose, path_length, pose_to_mat, short_width)
 from .planners import FINGER_OPEN, WORKSPACE, RobotSpheres, make_planner
 from .selector import FEATURES_VERSION, vlm_plan_gate
 
@@ -154,6 +154,7 @@ class PlannerClient:
         vlm_plan_min_score: float = 0.0,
         plan_check_marks: Sequence[str] = ("tint",),
         plan_check_threshold: float = plan_check.THRESHOLD,
+        missing_depth: str = "none",
     ) -> None:
         self.planner = make_planner(planner)
         self.planner_name = planner
@@ -169,7 +170,8 @@ class PlannerClient:
             # A selector saved before the RGB noise existed was trained without it.
             for name, value, old in (("depth_noise", depth_noise, None), ("rgb_noise", rgb_noise, "none"),
                                      ("robot_mask", robot_mask, None), ("task_source", task_source, "rule"),
-                                     ("vlm_plan_min_score", vlm_plan_min_score, 0.0)):
+                                     ("vlm_plan_min_score", vlm_plan_min_score, 0.0),
+                                     ("missing_depth", missing_depth, "none")):
                 if trained.get(name, old) not in (None, value):
                     raise ValueError(f"the selector was trained with {name}={trained.get(name, old)}, but this run "
                                      f"uses {value}")
@@ -187,6 +189,9 @@ class PlannerClient:
         self.grasp_retries = grasp_retries
         self.log_path = log_path
         self.noise = DepthNoise(depth_noise, noise_seed)
+        # Surfaces the depth camera cannot measure (geometry.MissingDepth): with "target", the place target in about
+        # half of the episodes.
+        self.missing_depth = MissingDepth(missing_depth, noise_seed)
         # The evaluator puts the RGB noise into the picture (camera_noise.py); the planner only logs its level.
         self.rgb_noise = rgb_noise
         # The planner's random steps (MPlib: IK restarts, RRT) are seeded per episode like the depth noise, so a
@@ -267,6 +272,8 @@ class PlannerClient:
         self.hold_steps = 0
         self.step_count = 0
         self.noise.new_episode(self.episode_key)
+        self.target_depth_missing = self.missing_depth.new_episode(self.episode_key)
+        self.no_depth_ids: List[int] = []  # the target's actor when it gives no depth (set in _start)
         if self.planner_seed is not None:
             self.planner.seed(zlib.crc32(f"{self.planner_seed}/{self.episode_key}".encode()) % 2147483647 + 1)
         # The run settings go into every record, so the selector can refuse to mix runs.
@@ -274,7 +281,8 @@ class PlannerClient:
                       "noise_seed": self.noise.seed, "planner_seed": self.planner_seed, "robot_mask": self.robot_mask,
                       "features_version": FEATURES_VERSION, "features": {}, "plan_check": self.plan_check is not None,
                       "task_source": self.task_source, "vlm_plan_min_score": self.vlm_plan_min_score,
-                      "sam_model": self.sam_model}
+                      "sam_model": self.sam_model, "missing_depth": self.missing_depth.mode,
+                      "target_depth_missing": self.target_depth_missing}
         if self.plan_check is not None:
             self.stats.update(plan_check_marks=self.plan_check_marks, plan_check_threshold=self.plan_check_threshold)
         # The VLM plan's pick-and-place moves (vlm_plan.parse) and the one being done; None with the fixed rule.
@@ -361,6 +369,8 @@ class PlannerClient:
     def _start(self, image, obs, env, qpos, target) -> None:
         self.home_orientation = target[3:].copy()
         self.robot_ids = [link.id for link in env.unwrapped.agent.robot.get_links()]
+        if self.target_depth_missing:
+            self.no_depth_ids = [env.unwrapped.episode_target_obj.id]
         self._approach(image, obs, env, qpos, target)
 
     def _choose(self) -> None:
@@ -523,7 +533,7 @@ class PlannerClient:
             self._approach(None, obs, env, qpos, target)
 
     def _obstacle_view(self, obs, qpos) -> CameraView:
-        view = CameraView(obs, noise=self.noise)
+        view = CameraView(obs, noise=self.noise, no_depth_ids=self.no_depth_ids)
         if self.robot_spheres is not None:
             view.robot_spheres = self.robot_spheres(qpos)
         return view
@@ -608,7 +618,7 @@ class PlannerClient:
         score = float(scores[chosen])
         self.stats[f"{which}_sam3_score"] = score
         mask = np.asarray(masks[chosen])
-        view = view if view is not None else CameraView(obs, noise=self.noise)
+        view = view if view is not None else CameraView(obs, noise=self.noise, no_depth_ids=self.no_depth_ids)
         pts = view.object_points(mask)
         if record:
             self._record_features(which, scores, mask, pts, view)

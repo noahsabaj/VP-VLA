@@ -13,13 +13,14 @@ vlmplan_harder_paper_harsh with vla_harder_paper; test vlmplan_{group}_{test}_ha
 with the plan-check v2 study's VLA-only evals vla_{group}_{test}. Secondary: the fixed rule's
 pseed31_{group}_{test}_harsh, and its ASM trained on pseed31_{train}_harsh (SimplerEnv's 4 tasks only). In the test
 set an episode index is one layout in every instruction set, so the tests and intervals take one value per episode
-index: its sum over every group and task.
+index: its sum over every group and task. Only the design's episodes (DESIGN_EPISODES) of the indices that have every
+task of every group in both evals count.
 """
 
 import argparse
 import os
-from collections import Counter
-from typing import Dict, List
+from collections import Counter, defaultdict
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -41,6 +42,8 @@ HARDER_TRAIN = ("vlmplan_harder_paper_harsh", "vla_harder_paper")  # the harder 
 SEQUENCE = (VLM_PLANNER, VLA, PER_TASK)  # planned tests 1 to 3, in this order
 SECONDARY = (RULE_A, RULE_C, KNN)
 GROUP_NAMES = {"own": "Own", "harder": "Harder scenes"}
+# The test set's episodes per task in each instruction group (the plan's design).
+DESIGN_EPISODES = {g: 48 if g == "harder" else 24 for g in GROUPS}
 
 
 def group_run(prefix: str, group: str, layouts: str) -> str:
@@ -66,15 +69,39 @@ def training_parts(train: str) -> List[s.Part]:
             s.Part(runs.path(HARDER_TRAIN[0]), runs.paths([HARDER_TRAIN[1]]), list(hs.TASKS))]
 
 
-def load_test(prefix: str, test: str) -> Dict[str, LayoutSet]:
-    """Each group's episodes that both its planner-only eval and its VLA-only eval ran; a group without its
-    planner-only eval is left out."""
-    out = {}
+def load_test(prefix: str, test: str) -> Tuple[Dict[str, LayoutSet], List[str]]:
+    """Each group's episodes that both its planner-only eval and its VLA-only eval ran, and the evals that are not
+    there (a group without one of its two evals is left out)."""
+    out, missing = {}, []
     for g in GROUPS:
-        root = runs.path(group_run(prefix, g, test))
-        if os.path.isdir(root):
-            out[g] = load_part(g, root, runs.paths([vla_run(g, test)]), group_tasks(g))
-    return out
+        names = [group_run(prefix, g, test), vla_run(g, test)]
+        absent = [n for n in names if not os.path.isdir(runs.path(n))]
+        if absent:
+            missing += absent
+        else:
+            out[g] = load_part(g, runs.path(names[0]), runs.paths(names[1:]), group_tasks(g))
+    return out, missing
+
+
+def design_indices(ls: LayoutSet) -> LayoutSet:
+    """The design's episodes (DESIGN_EPISODES) of the episode indices that have, in both evals, every task of every
+    group here that the design gives them; a note for the others."""
+    groups = [g for g in GROUPS if any(k[0] == g for k in ls.keys)]
+    have = defaultdict(set)
+    for g, t, e in ls.keys:
+        have[e].add((g, t))
+    need = {e: {(g, t) for g in groups for t in group_tasks(g) if e < DESIGN_EPISODES[g]}
+            for e in range(max(DESIGN_EPISODES[g] for g in groups))}
+    extra = sum(e >= DESIGN_EPISODES[g] for g, _, e in ls.keys)
+    short = [e for e, pairs in need.items() if not pairs <= have[e]]
+    if extra:
+        print(f"note: {extra} episodes beyond the design ({DESIGN_EPISODES}), left out")
+    if short:
+        print(f"note: {len(short)} episode indices without every task of every group in both evals, left out")
+    keep = [e < DESIGN_EPISODES[g] and e not in short for g, _, e in ls.keys]
+    return LayoutSet([k for k, ok in zip(ls.keys, keep, strict=True) if ok],
+                     [r for r, ok in zip(ls.records, keep, strict=True) if ok],
+                     *[getattr(ls, f)[np.array(keep, bool)] for f in ("tasks", "y_plan", "y_vla")])
 
 
 def units(ls: LayoutSet) -> np.ndarray:
@@ -118,7 +145,7 @@ def print_tests(rows: Dict[str, np.ndarray], ls: LayoutSet, complete: bool) -> N
     secondary baselines."""
     print("Planned tests (each two-sided; one value per episode index):")
     if not complete:
-        print("not run: they need every instruction group")
+        print("not run: they need the planner-only and the VLA-only evals of every instruction group")
     counts, u = complete, units(ls)
     for i, base in enumerate(SEQUENCE, 1):
         line, p, mean = paired(rows[ASM], rows[base], u)
@@ -143,7 +170,7 @@ def print_plans(ls: LayoutSet) -> None:
 def print_rule(test: LayoutSet, rows: Dict[str, np.ndarray], train: str, name: str) -> None:
     """The fixed rule against the VLM plan (secondary), on the episodes that both planner-only evals ran: rule ->
     planner in every group, and the fixed rule's ASM (trained on pseed31_{train}_harsh, so SimplerEnv's tasks only)."""
-    rule = load_test("pseed31", name)
+    rule, _ = load_test("pseed31", name)
     root = runs.path(f"pseed31_{train}_{LEVEL}")
     if not rule or not os.path.isdir(root):
         print(f"\nnote: the fixed-rule rows are left out: no pseed31_{train}_{LEVEL} or pseed31_*_{name}_{LEVEL}")
@@ -185,13 +212,12 @@ def main():
     print("\n".join(s.describe(asm)))
     train = concat([load_part(os.path.basename(p.planner_root), p.planner_root, p.vla_roots, p.tasks or s.TASKS)
                     for p in parts])
-    groups = load_test("vlmplan", a.test)
-    missing = [group_run("vlmplan", g, a.test) for g in GROUPS if g not in groups]
+    groups, missing = load_test("vlmplan", a.test)
     if missing:
         print(f"note: no {', '.join(missing)}")
     if not groups:
         return
-    test = concat(list(groups.values()))
+    test = design_indices(concat(list(groups.values())))
     use, gated, p_plan, p_vla = asm_choice(asm, test)
     rows = {VLM_PLANNER: test.y_plan, VLA: test.y_vla, GATE: np.where(gated, test.y_vla, test.y_plan),
             ASM: np.where(use, test.y_plan, test.y_vla), "oracle": np.maximum(test.y_plan, test.y_vla)}

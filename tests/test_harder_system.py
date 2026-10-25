@@ -2,6 +2,7 @@
 study's scorer (experiments/score_harder_system.py)."""
 
 import json
+import shutil
 import sys
 
 import numpy as np
@@ -105,6 +106,10 @@ def test_merged_settings():
     assert s.merged_settings(parts[:1]) == parts[0]  # one part: nothing pooled
     with pytest.raises(SystemExit, match="different task_source"):
         s.merged_settings([parts[0], {**parts[0], "task_source": "rule"}])
+    # a part written before missing_depth existed had none
+    assert s.merged_settings([{**parts[0], "missing_depth": "none"}, parts[0]])["missing_depth"] == "none"
+    with pytest.raises(SystemExit, match="different missing_depth"):
+        s.merged_settings([{**parts[0], "missing_depth": "target"}, parts[0]])
 
 
 def test_layout_groups_hold_out_a_layout_in_every_set_and_level():
@@ -113,6 +118,11 @@ def test_layout_groups_hold_out_a_layout_in_every_set_and_level():
 
     g = s.layout_groups([rec(3, 11), rec(3, 11), rec(4, 11), rec(3, None, False), rec(3, 13)])
     assert g[0] == g[1] and len(set(g.tolist())) == 4  # the same layout at two depth levels: one group
+    # the harder scenes' fixed layouts: episodes 2k and 2k + 1 have the same xy config, in every task of a scene
+    fixed = [{**rec(e, None, False), "task_folder": t} for t in HARDER[:2] for e in range(4)]
+    assert s.layout_groups(fixed).tolist() == [0, 0, 1, 1] * 2
+    own = [{**rec(e, None, False), "task_folder": s.TASKS[0]} for e in range(2)]  # SimplerEnv's own: by episode
+    assert s.layout_groups(own).tolist() == [0, 1]
 
 
 def test_train_pooled_with_more_task_columns(tmp_path, monkeypatch):
@@ -131,11 +141,13 @@ def test_train_pooled_with_more_task_columns(tmp_path, monkeypatch):
 
 def test_score_harder_system(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(hsys, "DESIGN_EPISODES", {g: 16 if g == "harder" else 8 for g in hsys.GROUPS})
     _write_study(tmp_path, np.random.default_rng(1), groups=hsys.GROUPS[:-1])  # the harder scenes' test has not run
     monkeypatch.setattr(sys, "argv", ["score_harder_system"])
     hsys.main()
     out = capsys.readouterr().out
-    assert "note: no vlmplan_harder_iid13_harsh" in out and "not run: they need every instruction group" in out
+    assert "note: no vlmplan_harder_iid13_harsh, vla_harder_iid13" in out
+    assert "not run: they need the planner-only and the VLA-only evals of every instruction group" in out
 
     _write_study(tmp_path, np.random.default_rng(1))
     hsys.main()
@@ -149,6 +161,18 @@ def test_score_harder_system(tmp_path, monkeypatch, capsys):
     assert "| Two-step |" in out and "### What makes the ASM better" in out
     assert "### The fixed rule (secondary): pseed31_*_iid13_harsh, 240 episodes" in out
     assert "(SimplerEnv's tasks, 160 episodes)" in out
+
+    # an episode that one eval did not run takes its whole episode index out: 20 + 5 episodes at index 2
+    next((tmp_path / "vla_words_order_iid13" / s.TASKS[1]).glob("*_obj_episode_2.mp4")).unlink()
+    hsys.main()
+    out = capsys.readouterr().out
+    assert "note: 1 episode indices without every task of every group in both evals, left out" in out
+    assert "215 episodes, 15 episode indices:" in out and "1. vs VLM -> planner (planner-only): " in out
+    # a VLA-only eval that did not run: no planned tests
+    shutil.rmtree(tmp_path / "vla_words_order_iid13")
+    hsys.main()
+    out = capsys.readouterr().out
+    assert "note: no vla_words_order_iid13" in out and "not run: they need the planner-only and the VLA-only" in out
 
 
 def test_tests_take_one_value_per_episode_index():

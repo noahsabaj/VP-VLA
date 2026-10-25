@@ -1,5 +1,6 @@
 """What makes the ASM better than either method alone: analyses of a test set's outcomes and the ASM's choices (numpy
-only). The newer studies' scorers report them as planned secondary results, with intervals and no tests.
+only). The newer studies' scorers report them as planned secondary results, with no tests. The outcomes must be 0 or
+1 (one eval of each method): the identities below hold only then, and the code checks them.
 
 * complementarity: how often only one method succeeds. The oracle's gain over the better method is
   min(planner-only, VLA-only) / N, the share of episodes that only the worse method solves: a choice per episode can

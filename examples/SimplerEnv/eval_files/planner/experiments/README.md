@@ -903,7 +903,9 @@ added (`score_vlm_plan` does them):
   routed success in 10-fold cross-validation on the training set (folds by episode index, seed 0; the larger k on
   a tie). Also a random choice with the system's share of planner picks (its expected success, no test), and the
   share of the oracle's gain over VLM -> planner that the system gets.
-- **What makes the system better** (`mechanism.py`; reported at each depth level, with intervals and no tests):
+- **What makes the system better** (`mechanism.py`; reported at each depth level, with no tests; the failure
+  dependence and the system minus the oracle have bootstrap intervals, and the learning curve the spread of its
+  draws):
   - complementarity: how many test episodes both methods solve, only VLM -> planner, only the VLA, or neither. The
     oracle's gain over the better method equals the share of episodes that only the worse method solves, so a
     choice per episode can gain only on those;
@@ -915,7 +917,8 @@ added (`score_vlm_plan` does them):
   - ablations: the ASM trained again without each of its features, and with only the task columns in one of its
     success models;
   - a learning curve: the ASM trained on 10%, 25% and 50% of the training set's episode indices (20 random draws
-    each, seed 0) and on all of them;
+    each, seed 0; a draw without any episode of a task is skipped, and the table gives the draws used) and on all
+    of them;
   - the system minus the oracle.
 
 ## Difficulty sweep
@@ -979,8 +982,9 @@ camera picture does not change. The records log `target_depth_missing`.
 **What the planner does** (from its code, before any eval ran). The first look finds the place target only for the
 ASM's features, and the planner does not stop when the target has no depth. It finds a path to above the object
 (`plan_ok` is 1), picks the object up and fails after the lift, when it looks for the target again ("place target
-not found"). In the first look, only the share of the target mask's pixels with depth (`place_valid_depth_frac`, 0
-in these episodes) shows the problem.
+not found"). In the first look only the target's depth features show it: the share of its mask's pixels with depth
+(`place_valid_depth_frac`) and its number of 3D points (`place_points`) are 0, and the features of its shape are not
+computed. Of the ASM's candidate features, only `place_valid_depth_frac` shows it.
 
 **System.** The VLM-plan study's: the VLM plan, its gate, then a two-model ASM trained on the training set's
 missing-depth eval. P(planner)'s features are chosen by the VLM-plan study's cross-validation from three candidates:
@@ -1002,9 +1006,9 @@ The tests, their order and their intervals are those of the VLM-plan study's tes
 **Secondary (reported, no claims).** Each setup per task, the gate alone and the oracle. The system against (the
 same test): the planner first (the gate, then the planner whenever its first look found a path, else the VLA); the
 VLM-plan study's clean ASM (trained on `vlmplan_iid11_none`, which had no missing depth); the per-task choice. A
-random choice with the system's share of planner picks (expected). Each setup on the episodes with and without the
-target's depth, and why VLM -> planner failed in each. VLM -> planner against the same episodes with the target's
-depth (`vlmplan_iid15_none`). The candidates' cross-validated log-loss, and the success models' AUC, within-task
+random choice with the system's share of planner picks (expected). VLM -> planner, the VLA, the system, the planner
+first, the clean ASM and the oracle on the episodes with and without the target's depth, and why VLM -> planner
+failed in each. VLM -> planner against the same episodes with the target's depth (`vlmplan_iid15_none`). The candidates' cross-validated log-loss, and the success models' AUC, within-task
 AUC, log-loss, Brier score and calibration. What makes the system better (see "VLM-plan study").
 
 ## Harder-task system study
@@ -1024,7 +1028,9 @@ of the 4 reworded sets (`instruction_sets.py`, see "Reworded-instruction study")
 SimplerEnv's tasks, 400 episodes) and the harder scenes' fixed layouts (`vlmplan_harder_paper_harsh` with
 `vla_harder_paper`: 352 episodes). No reworded instruction is in it. One ASM with a task column for each of the 9
 tasks is trained on both together (`selector.train_pooled`), with P(planner)'s features chosen from the VLM-plan
-study's two candidates by the same cross-validation (folds hold out an episode index of each layout set).
+study's two candidates by the same cross-validation. The folds hold out an episode index of each layout set; in the
+harder scenes' fixed layouts the two episodes of an xy config differ only in the turns, so they are held out
+together.
 
 **Test set.** The `iid13` layouts (layout seed 13; see "VLM plan-check v2 study"): SimplerEnv's 4 tasks, 24
 episodes each, with their own instructions and with each reworded set (5 x 96 episodes; episode N has the same
@@ -1047,12 +1053,14 @@ the VLA-only evals of the other studies. The commands are above.
 Each is the exact two-sided paired sign-flip test at 0.05, and each counts only when every test before it was a win
 (significant with the system higher). In `iid13` an episode index is one layout in every instruction set, and the
 tasks of a scene share it, so each test takes one value per episode index: its sum over every instruction group and
-task (indices 24 to 47 have the harder scenes only). The tests need every group's evals. Intervals: 95% percentile
-bootstrap of the mean difference per episode; each draw takes the episode indices again, with replacement (10,000
-draws).
+task (indices 24 to 47 have the harder scenes only). The tests need the planner-only and the VLA-only evals of every
+instruction group. Only the design's episodes count (0 to 23 of SimplerEnv's tasks in each instruction group, 0 to 47
+of the harder scenes), and of these only the episode indices that have every task of every group in both evals.
+Intervals: 95% percentile bootstrap of the mean difference per episode; each draw takes the episode indices again,
+with replacement (10,000 draws).
 
-**Secondary (reported, no claims).** Each setup per instruction group and per task; the gate alone and the oracle;
-rule A, rule C and the retrieval router (see "VLM-plan study"; the same test); a random choice with the system's
+**Secondary (reported, no claims).** Each setup per instruction group, with the gate alone and the oracle;
+VLM -> planner, the VLA, the system and the oracle per task; rule A, rule C and the retrieval router (see "VLM-plan study"; the same test); a random choice with the system's
 share of planner picks (expected); the success models' AUC, within-task AUC, log-loss, Brier score and calibration;
 what makes the system better (see "VLM-plan study"); what the VLM planned in each task. The VLM plan against the
 fixed rule on the same episodes: planner-only in every group, and the fixed rule's ASM (the two-model study's

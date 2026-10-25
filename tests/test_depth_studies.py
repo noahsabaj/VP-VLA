@@ -4,6 +4,7 @@ and their scorers (experiments/score_sweep.py and experiments/score_missing_dept
 import json
 import sys
 import zlib
+from collections import Counter
 
 import numpy as np
 import pytest
@@ -181,8 +182,11 @@ def test_score_sweep(tmp_path, monkeypatch, capsys):
     out = {lvl: sw.outcomes(asm, ls[lvl]) for _, lvl in sw.SWEEP}
     d = sw.index_values([out[lvl]["asm"] - out[lvl]["better"] for _, lvl in sw.SWEEP], keys)
     assert d.shape == (20, 7 * 4)
-    total = sum((out[lvl]["asm"] - out[lvl]["better"]).sum() for _, lvl in sw.SWEEP)
-    assert d.sum() == pytest.approx(total)
+    # one row per episode index, one column per level and task: level i puts i + 1 on the carrot task of index 7
+    probe = [np.array([(i + 1.0) * (t == s.TASKS[1] and e == 7) for t, e in keys]) for i in range(7)]
+    d = sw.index_values(probe, keys)
+    row = sorted({e for _, e in keys}).index(7)
+    assert d[row].tolist() == [(j // 4 + 1.0) * (j % 4 == 1) for j in range(28)] and d.sum() == 28
 
 
 def test_pooled_asm_trains_on_both_levels_as_one(tmp_path, monkeypatch):
@@ -190,9 +194,18 @@ def test_pooled_asm_trains_on_both_levels_as_one(tmp_path, monkeypatch):
     train = _draws(30, np.random.default_rng(4))
     _write_vla(tmp_path, "iid11", train)
     _write_sweep(tmp_path, "iid11", train, TRAIN_LEVELS)
+    trained, fit = {}, s.fit_two_model
+
+    def spy(records, *args, **kwargs):
+        trained["levels"] = Counter(r["depth_noise"] for r in records)
+        return fit(records, *args, **kwargs)
+
+    monkeypatch.setattr(s, "fit_two_model", spy)
     asm = sw.train("iid11")
     assert asm.trained_on["depth_noise"] is None and asm.trained_on["pooled"]["depth_noise"] == ["none", "harsh"]
     assert asm.trained_on["task_source"] == "vlm"
+    ungated = sum(e % 7 != 3 for _, e in train)  # the episodes of each level that the gate does not give the VLA
+    assert trained["levels"] == {"none": ungated, "harsh": ungated}
 
 
 def _write_missing(root, name, draws, prefix):

@@ -42,6 +42,8 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
+from .. import harder_scenes
+
 TASKS = ["PutSpoonOnTableClothInScene-v0", "PutCarrotOnPlateInScene-v0",
          "StackGreenCubeOnYellowCubeBakedTexInScene-v0", "PutEggplantInBasketScene-v0"]
 # v1: the first 16 features.
@@ -81,6 +83,9 @@ RUN_SETTINGS = ("depth_noise", "rgb_noise", "noise_seed", "robot_mask", "layout_
 # The settings that may differ between the parts of a pooled ASM (train_pooled): the depth noise (one ASM for every
 # level) and the layouts. merged_settings sets them to None, which the eval accepts with any value.
 POOLED_SETTINGS = ("depth_noise", "layout_seed", "layout_per_episode")
+# Settings that records written before them do not have, with the value they had then (planner_client reads a saved
+# selector's missing ones the same way).
+OLD_SETTINGS = {"rgb_noise": "none", "task_source": "rule", "vlm_plan_min_score": 0.0, "missing_depth": "none"}
 
 
 def row_features(record: dict, names: List[str]) -> np.ndarray:
@@ -599,12 +604,15 @@ class Part(NamedTuple):
 
 def merged_settings(parts: List[dict], may_differ=POOLED_SETTINGS) -> dict:
     """The run settings of a pooled ASM: those its parts share; one in may_differ that differs is None (the eval then
-    accepts any value), with the parts' values under "pooled". Any other difference stops the training."""
+    accepts any value), with the parts' values under "pooled". Any other difference stops the training. A part
+    written before a setting in OLD_SETTINGS existed has that setting's old value."""
     out, pooled = {}, {}
     for name in RUN_SETTINGS:
         values = [p[name] for p in parts if name in p]
         if not values:
             continue
+        if name in OLD_SETTINGS:
+            values = [p.get(name, OLD_SETTINGS[name]) for p in parts]
         if any(v != values[0] for v in values) or len(values) < len(parts):
             if name not in may_differ:
                 raise SystemExit(f"the parts of a pooled ASM have different {name}: {values}")
@@ -617,8 +625,15 @@ def merged_settings(parts: List[dict], may_differ=POOLED_SETTINGS) -> dict:
 def layout_groups(records: List[dict]) -> np.ndarray:
     """One number per layout group, for the cross-validation folds: the layout set (its seed, and one layout per
     episode or not) and the episode index. The tasks of an index share a layout in the iidN sets and in the harder
-    scenes, and the depth levels of one layout set have the same layouts, so all of them are held out together."""
-    keys = [(str(r.get("layout_seed")), bool(r.get("layout_per_episode")), int(r["obj_episode_id"])) for r in records]
+    scenes, and the depth levels of one layout set have the same layouts, so all of them are held out together. In
+    the harder scenes' fixed layouts the episodes of one xy config differ only in the turns, so they are one group."""
+    def index(r):
+        fixed = r.get("layout_seed") is None and not r.get("layout_per_episode")
+        if fixed and r.get("task_folder") in harder_scenes.TASKS:
+            return harder_scenes.fixed_layout_group(r["task_folder"], int(r["obj_episode_id"]))
+        return int(r["obj_episode_id"])
+
+    keys = [(str(r.get("layout_seed")), bool(r.get("layout_per_episode")), index(r)) for r in records]
     number = {k: i for i, k in enumerate(sorted(set(keys)))}
     return np.array([number[k] for k in keys])
 

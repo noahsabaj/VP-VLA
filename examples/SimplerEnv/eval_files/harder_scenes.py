@@ -130,6 +130,11 @@ def episodes(task: str) -> int:
     return len(xys) * len(quats)
 
 
+def fixed_layout_group(task: str, episode: int) -> int:
+    """The xy config of a fixed layout (layouts): the episodes of one xy config differ only in the turns."""
+    return episode // len(KITCHEN_YAWS if TASKS[task].scene == "kitchen" else CARROT_YAWS)
+
+
 def extent(model: str, yaw: float) -> np.ndarray:
     """The x and y size (m) of the box around the object's footprint when it is turned by yaw."""
     c, s = abs(np.cos(yaw)), abs(np.sin(yaw))

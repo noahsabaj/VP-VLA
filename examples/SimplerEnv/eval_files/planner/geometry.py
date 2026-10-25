@@ -5,7 +5,7 @@ planners see is expressed in the robot base frame.
 """
 
 import zlib
-from typing import Optional
+from typing import Optional, Sequence
 
 import cv2
 import numpy as np
@@ -41,6 +41,24 @@ def ee_delta_action(target_pose: np.ndarray, desired_pose: np.ndarray, ee_pos: n
     return world_vector, Rotation.from_matrix(r_delta).as_rotvec()
 
 
+HARSH = dict(k=0.012, drop=0.08, edge_drop=0.9, edge_jump=0.01, pos_mm=10.0, rot_deg=1.0)
+# The difficulty sweep's scales of harsh's errors (sweep_level names them); scale 0 is "none" and scale 1 "harsh".
+SWEEP_SCALES = (0.25, 0.5, 0.75, 1.5, 2.0)
+
+
+def sweep_level(scale: float) -> str:
+    """The depth-noise level with harsh's errors times scale: harsh_x0.25 ... harsh_x2."""
+    return f"harsh_x{scale:g}"
+
+
+def scaled_level(cfg: dict, scale: float) -> dict:
+    """cfg's errors times scale: the pixel noise, the drop chances (at most 1) and the camera pose error. The edge
+    threshold says what counts as a depth edge, not how large an error is, so it stays."""
+    out = {name: value * scale for name, value in cfg.items()}
+    out.update(drop=min(out["drop"], 1.0), edge_drop=min(out["edge_drop"], 1.0), edge_jump=cfg["edge_jump"])
+    return out
+
+
 class DepthNoise:
     """A real depth camera's errors, so the planner doesn't get the simulator's perfect depth.
 
@@ -49,13 +67,16 @@ class DepthNoise:
     * A camera pose error drawn once per episode (calibration error), in mm and degrees.
 
     With a seed and an episode key, an episode's draws depend only on (seed, key), not on the
-    episodes run before it, so splitting or reordering a run gives the same noise.
+    episodes run before it, so splitting or reordering a run gives the same noise. The levels draw the same
+    random numbers, so in an episode's first picture a sweep level's errors are harsh's times its scale, and
+    its dropped pixels include those of every smaller scale.
     """
 
     LEVELS = {
         "none": None,
         "realistic": dict(k=0.004, drop=0.02, edge_drop=0.5, edge_jump=0.02, pos_mm=3.0, rot_deg=0.3),
-        "harsh": dict(k=0.012, drop=0.08, edge_drop=0.9, edge_jump=0.01, pos_mm=10.0, rot_deg=1.0),
+        "harsh": HARSH,
+        **{sweep_level(scale): scaled_level(HARSH, scale) for scale in SWEEP_SCALES},
     }
 
     def __init__(self, level: str = "none", seed: Optional[int] = None):
@@ -98,10 +119,46 @@ class DepthNoise:
         return noisy
 
 
-class CameraView:
-    """One observation's depth picture, turned into 3D points in the robot base frame."""
+class MissingDepth:
+    """Surfaces that a depth camera cannot measure, such as glass, mirror-like metal, or black cloth that takes in the
+    camera's light: none of their pixels has depth (the color picture is not changed).
 
-    def __init__(self, obs: dict, camera: str = CAMERA, noise: Optional[DepthNoise] = None):
+    Mode "target": in each episode, with chance p, the place target is such a surface. The draw comes from (seed, key)
+    in a stream of its own, so the depth noise's and the RGB noise's draws stay the same. The target must be an object
+    of its own: in SCENE_TARGETS (SimplerEnv's eggplant task, whose basket is part of the sink) the episodes keep their
+    depth.
+    """
+
+    MODES = ("none", "target")
+    STREAM = 2  # DepthNoise seeds its generator with (seed, key), camera_noise.RGBNoise with (seed, key, 1)
+    SCENE_TARGETS = ("PutEggplantInBasketScene-v0",)
+
+    def __init__(self, mode: str = "none", seed: Optional[int] = None, p: float = 0.5):
+        if mode not in self.MODES:
+            raise ValueError(f"missing depth must be one of {self.MODES}, not {mode}")
+        self.mode, self.seed, self.p = mode, seed, p
+        self.rng = np.random.default_rng(seed)
+        self.missing = False
+
+    def new_episode(self, key: Optional[str] = None) -> bool:
+        """Draw whether this episode's place target gives no depth. `key` names the episode (task/layouts/episode);
+        without it, the draws go on from the previous episode's."""
+        self.missing = False
+        if self.mode == "none":
+            return False
+        if self.seed is not None and key is not None:
+            self.rng = np.random.default_rng([self.seed, zlib.crc32(key.encode()), self.STREAM])
+        draw = self.rng.random() < self.p
+        self.missing = bool(draw) and (key or "").split("/")[0] not in self.SCENE_TARGETS
+        return self.missing
+
+
+class CameraView:
+    """One observation's depth picture, turned into 3D points in the robot base frame. no_depth_ids: the actors whose
+    pixels have no depth (MissingDepth), taken out after the noise, which so draws as it would without them."""
+
+    def __init__(self, obs: dict, camera: str = CAMERA, noise: Optional[DepthNoise] = None,
+                 no_depth_ids: Sequence[int] = ()):
         image = obs["image"][camera]
         param = obs["camera_param"][camera]
         self.rgb = image["rgb"]
@@ -114,6 +171,8 @@ class CameraView:
         if noise is not None and noise.active:
             self.depth = noise.apply(self.depth)
             self.base_from_cam = self.base_from_cam @ noise.pose_error  # we believe the camera is where it isn't
+        if len(no_depth_ids):
+            self.depth[np.isin(self.actor_seg, np.asarray(list(no_depth_ids)))] = 0.0
         self.ignore_sphere = None  # (center, radius): e.g. the object held in the gripper
         self.robot_spheres = None  # (N, 4) [x, y, z, r] in the base frame: the arm, from its joint angles
 

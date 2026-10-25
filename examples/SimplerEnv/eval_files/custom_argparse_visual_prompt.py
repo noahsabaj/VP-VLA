@@ -11,6 +11,7 @@ from transforms3d.euler import euler2quat
 from simpler_env.utils.io import DictAction
 
 from examples.SimplerEnv.eval_files.instruction_sets import NAMES as INSTRUCTION_SET_NAMES
+from examples.SimplerEnv.eval_files.planner.geometry import DepthNoise, MissingDepth
 
 
 def parse_range_tuple(t):
@@ -154,8 +155,12 @@ def get_args():
                         help="Meters above the object's top where the planner stops")
     parser.add_argument("--planner-log", type=str, default=None,
                         help="JSON-lines file for per-episode planner stats (default: <logging-dir>/planner_stats.jsonl)")
-    parser.add_argument("--depth-noise", type=str, default="none", choices=["none", "realistic", "harsh"],
-                        help="Simulated depth-camera errors for the planner (the simulator's depth is perfect)")
+    parser.add_argument("--depth-noise", type=str, default="none", choices=list(DepthNoise.LEVELS),
+                        help="Simulated depth-camera errors for the planner (the simulator's depth is perfect): none, "
+                             "realistic, harsh, or harsh_xS (harsh's errors times S, the difficulty sweep)")
+    parser.add_argument("--missing-depth", type=str, default="none", choices=list(MissingDepth.MODES),
+                        help="target: in each episode, with chance 1/2, the place target gives no depth, as glass or "
+                             "black cloth would (planner/geometry.py MissingDepth; default none)")
     parser.add_argument("--rgb-noise", type=str, default="none", choices=["none", "realistic", "harsh"],
                         help="Simulated color-camera errors in the picture every controller gets (camera_noise.py)")
     parser.add_argument("--noise-seed", type=int, default=0, help="Seed of the depth and RGB noise")

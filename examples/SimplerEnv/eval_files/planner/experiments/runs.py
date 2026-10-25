@@ -11,7 +11,10 @@ are harder_paper and vla_harder_paper. The VLM plan-check study adds check_paper
 check). The VLM plan-check v2 study's are named in score_plan_check_v2 (check2_*, and vla_*_iid13). The evals with
 SAM 3.1 are pseed31_{layouts}_harsh (planner-only, the fixed rule) and vla31_{layouts} (VLA-only); the VLM-plan
 study adds vlmplan_{layouts}_{level} (planner-only, the VLM plan) and closed_loop_vlmplan_iid15, with the ASMs
-vlmplan_model/asm_{level}.json (score_vlm_plan).
+vlmplan_model/asm_{level}.json, and the role split's closed-loop eval handoff_vlmplan_iid15 (score_vlm_plan). The
+difficulty sweep's depth levels harsh_xS (harsh's errors times S) give vlmplan_iid15_harsh_xS (score_sweep); the
+missing-depth study's evals are miss_{layouts}_none (score_missing_depth); the harder-task system study's are named
+in score_harder_system (vlmplan_* and pseed31_* of each instruction group, with harsh depth).
 """
 
 import os

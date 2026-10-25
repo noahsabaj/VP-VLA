@@ -198,8 +198,22 @@ def test_success_model_plain_units_give_the_same_probabilities():
     np.testing.assert_allclose(model.prob(x, tasks), s.sigmoid(logit), rtol=1e-9)
     copy = s.SuccessModel.from_json(json.loads(json.dumps(model.to_json())))
     np.testing.assert_array_equal(copy.prob(x, tasks), model.prob(x, tasks))
-    with pytest.raises(ValueError):  # other task columns
-        s.SuccessModel.from_json({**model.to_json(), "tasks": s.TASKS[::-1]})
+    with pytest.raises(ValueError):  # a weight for each feature and task column
+        s.SuccessModel.from_json({**model.to_json(), "tasks": s.TASKS[:3]})
+
+
+def test_success_model_keeps_its_own_task_columns():
+    rng = np.random.default_rng(3)
+    x, tasks = rng.normal(size=(40, 1)), np.array([CARROT, "Other-v0"] * 20)
+    y = (x[:, 0] > 0).astype(float)
+    model = s.SuccessModel(["a"], tasks=["Other-v0", CARROT]).fit(x, tasks, y)
+    copy = s.SuccessModel.from_json(json.loads(json.dumps(model.to_json())))
+    assert copy.tasks == ["Other-v0", CARROT] and list(copy.plain()[0]) == ["Other-v0", CARROT]
+    np.testing.assert_array_equal(copy.prob(x, tasks), model.prob(x, tasks))
+    with pytest.raises(ValueError, match="no task column for " + SPOON):
+        model.prob(x[:1], np.array([SPOON]))
+    with pytest.raises(ValueError, match="no task column for Other-v0"):
+        s.SuccessModel(["a"]).fit(x, tasks, y)  # the default columns: TASKS
 
 
 def test_two_model_asm_trains_saves_and_decides(tmp_path, capsys):

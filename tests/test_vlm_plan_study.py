@@ -65,6 +65,18 @@ def _write_set(root, name, episodes, rng, source="vlm"):
         _write_planner(root / f"{prefix}_{name}_harsh", task, records)
 
 
+def _write_handoff(root, name, level, episodes, rng, skip=()):
+    """The role split's closed-loop eval at one depth level (selector_eval.sh with CONTROLLER=planner_then_vla); skip:
+    the (task, episode) pairs it did not run."""
+    for task in s.TASKS:
+        records = [
+            {"mode": "planner_then_vla", "obj_episode_id": e, "success": bool(rng.random() < 0.6)}
+            for e in range(episodes)
+            if (task, e) not in skip
+        ]
+        _write_planner(root / f"handoff_vlmplan_{name}" / level / task, "eps_0", records)
+
+
 def test_vlm_plan_gate():
     assert s.vlm_plan_gate(_record(0, True, source="rule")) is None
     assert s.vlm_plan_gate(_record(0, True)) is None
@@ -188,6 +200,37 @@ def test_planned_tests_need_a_win_before_the_next_counts(capsys):
     assert lines[2].endswith("does not count (a test before it was not a win)")
 
 
+def test_tests_3_and_4_use_holms_method_after_two_wins(capsys):
+    st = score_vlm_plan
+    keys = [(t, e) for t in s.TASKS for e in range(40)]
+    ls = st.LayoutSet(keys, [{}] * 160, np.array([k[0] for k in keys]), np.ones(160), np.zeros(160))
+
+    def fails_spoon(indices):  # a baseline that fails only the spoon task of these episode indices
+        return np.array([0.0 if t == SPOON and e in indices else 1.0 for t, e in keys])
+
+    def tests(rows):
+        st.print_tests({st.ASM: np.ones(160), st.VLA: np.zeros(160), "oracle": np.ones(160), **rows}, ls, planned=True)
+        out = capsys.readouterr().out
+        assert "Tests 3 and 4 (only when tests 1 and 2 were wins; Holm's method at 0.05" in out
+        return {line[0]: line for line in out.splitlines() if line[:1].isdigit()}
+
+    # 6 and 5 episode indices up: p = 1/32 and 1/16. Alone, 1/32 is below 0.05; by Holm's method it must be below 0.025
+    out = tests({st.VLM_PLANNER: np.zeros(160), st.HANDOFF: fails_spoon(range(6)), st.PER_TASK: fails_spoon(range(5))})
+    assert out["1"].endswith(": a win") and out["2"].endswith(": a win")
+    assert "exact p = 0.031" in out["3"] and out["3"].endswith(": not significant")
+    assert "exact p = 0.062" in out["4"] and out["4"].endswith(": not significant")
+    # the smaller p below 0.025, then the other below 0.05
+    out = tests({st.VLM_PLANNER: np.zeros(160), st.HANDOFF: fails_spoon(range(6)), st.PER_TASK: np.zeros(160)})
+    assert out["3"].endswith(": a win") and out["4"].endswith(": a win")
+    # no role-split eval: no test 3, and p = 1 in its place, so test 4 needs p below 0.025
+    out = tests({st.VLM_PLANNER: np.zeros(160), st.PER_TASK: fails_spoon(range(6))})
+    assert out["3"].endswith(f"no result: {st.HANDOFF} did not run") and out["4"].endswith(": not significant")
+    # test 1 is not a win: the tests after it do not count
+    out = tests({st.VLM_PLANNER: np.ones(160), st.HANDOFF: np.zeros(160), st.PER_TASK: np.zeros(160)})
+    assert out["1"].endswith(": not significant")
+    assert all(out[i].endswith("does not count (a test before it was not a win)") for i in "234")
+
+
 def test_score_vlm_plan(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("RUNS_DIR", str(tmp_path))
     rng = np.random.default_rng(2)
@@ -204,6 +247,10 @@ def test_score_vlm_plan(tmp_path, monkeypatch, capsys):
     assert "note: vlmplan_iid15_harsh: 1 episode indices without all 4 tasks, left out" in out
     assert "76 episodes, 19 episode indices:" in out
     assert "1. vs VLM -> planner (planner-only): " in out and "2. vs VLA-only: " in out
+    assert "note: no role-split eval handoff_vlmplan_iid15/harsh" in out
+    assert f"3. vs {score_vlm_plan.HANDOFF}: no result" in out and f"4. vs {score_vlm_plan.PER_TASK}: " in out
+    assert "Retrieval router: k = " in out and "- vs rule A: " in out and "- vs retrieval router: " in out
+    assert "### What makes the ASM better (planned secondary results, no tests)" in out
     assert "### The fixed rule (secondary)" in out and "The VLM plan minus the fixed rule (no claims):" in out
     assert "- planner-only: " in out and "- with the ASM: " in out
     assert "note: clean depth is left out: no vlmplan_iid11_none or vlmplan_iid15_none" in out
@@ -217,3 +264,19 @@ def test_score_vlm_plan(tmp_path, monkeypatch, capsys):
     live = [(s.vlm_plan_gate(r) or asm.decide(r, t))["choice"] for r, t in zip(test.records, test.tasks, strict=True)]
     assert use.tolist() == [c == "planner" for c in live]
     assert gated.sum() == 4 * 3  # episodes 3, 10 and 17 of each task
+
+    # the role split's closed-loop eval: its row and test 3 take the episode indices it ran
+    _write_handoff(tmp_path, "iid15", "harsh", 20, rng, skip={(SPOON, 8)})
+    score_vlm_plan.main()
+    out = capsys.readouterr().out
+    assert "note: handoff_vlmplan_iid15/harsh: 1 episodes not run" in out
+    assert f"| {score_vlm_plan.HANDOFF} (18 episode indices) |" in out
+    line = next(ln for ln in out.splitlines() if ln.startswith(f"3. vs {score_vlm_plan.HANDOFF}: "))
+    assert "episode indices up" in line and "exact p = " in line
+    _write_planner(
+        tmp_path / "handoff_vlmplan_iid15" / "harsh" / CARROT,
+        "eps_1",
+        [{"mode": "selector", "obj_episode_id": 30, "success": True}],
+    )
+    with pytest.raises(SystemExit, match="mode 'selector', not planner_then_vla"):
+        score_vlm_plan.main()

@@ -60,6 +60,10 @@ if __name__ == "__main__":
 
     if args.controller == "vla":
         model = make_vla()
+    elif args.controller == "null":
+        from examples.SimplerEnv.eval_files.energy import NullController
+
+        model = NullController()
     else:
         from examples.SimplerEnv.eval_files.planner.planner_client import PlannerClient
         from examples.SimplerEnv.eval_files.planner.selector import load_asm

@@ -18,8 +18,10 @@ The changes, marked "CHANGED":
    instruction now stays for the whole episode; SimplerEnv's loop replaced it with the task's own after the first
    step. Off by default.
 8. The harder scenes (harder_scene_envs.py) are registered on import, so `env_name` can be one of them.
-9. Each episode's cost (model_time.py): its wall-clock time from the model's reset to the last step, and its model
-   requests' round trips, one JSON line per episode in `logging_dir/episode_costs.jsonl`.
+9. Each episode's cost (model_time.py): its wall-clock time from the model's reset to the last step, its model
+   requests' round trips and the time spent in the model's reset() and step(), one JSON line per episode in
+   `logging_dir/episode_costs.jsonl`. In the energy runs (ENERGY_GPU set, energy.py), also the GPU's energy over the
+   same window (`gpu_joules`).
 Everything else is unchanged, so the AI-only setup behaves exactly as with SimplerEnv's loop.
 """
 
@@ -166,7 +168,8 @@ def run_maniskill2_eval_single_episode(
     # Initialize model
     if hasattr(model, "set_episode"):
         model.set_episode(episode_key)
-    model.reset(task_description)
+    with METER.controller():
+        model.reset(task_description)
 
     timestep = 0
     success = "failure"
@@ -175,7 +178,8 @@ def run_maniskill2_eval_single_episode(
     while not (predicted_terminated or truncated):
         # step the model; "raw_action" is raw model action output; "action" is the processed action to be sent into maniskill env
         # CHANGED: also pass the full observation and the simulator.
-        raw_action, action = model.step(image, task_description, obs=obs, env=env)
+        with METER.controller():
+            raw_action, action = model.step(image, task_description, obs=obs, env=env)
         predicted_actions.append(raw_action)
         predicted_terminated = bool(action["terminate_episode"][0] > 0)
         if predicted_terminated:
@@ -204,6 +208,7 @@ def run_maniskill2_eval_single_episode(
         timestep += 1
 
     seconds = time.perf_counter() - t0
+    energy = {} if METER.energy is None else {"gpu_joules": METER.gpu_joules(), "energy_gpu": METER.energy.index}
     episode_stats = info.get("episode_stats", {})
 
     # CHANGED: let the model log its own per-episode record.
@@ -220,7 +225,7 @@ def run_maniskill2_eval_single_episode(
     with open(os.path.join(logging_dir, "episode_costs.jsonl"), "a") as f:
         f.write(json.dumps(cost_record(episode_key, success == "success", timestep, seconds, env_name=env_name,
                                        obj_episode_id=obj_episode_id, layout_seed=layout_seed,
-                                       layout_per_episode=bool(layout_per_episode))) + "\n")
+                                       layout_per_episode=bool(layout_per_episode), **energy)) + "\n")
 
     # save video
     env_save_name = env_name

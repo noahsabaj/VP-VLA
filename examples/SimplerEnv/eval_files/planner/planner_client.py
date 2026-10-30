@@ -325,14 +325,17 @@ class PlannerClient:
         ee_pose = ee_pose_from_obs(obs)
 
         if self.phase == "start":
-            t0 = time.perf_counter()
+            t0, c0 = time.perf_counter(), time.process_time()
             self._start(image, obs, env, qpos, target)
             if self.selector is not None:
                 self._choose()
             # What the episode cost up to here (model_time.py): the first look, which the ASM needs in every episode,
-            # and in the selector mode the VLA's reset before it.
+            # and in the selector mode the VLA's reset before it (the model requests and, in the energy runs, the
+            # GPU's energy since the episode's start; None in other runs).
             self.stats["first_look_seconds"] = time.perf_counter() - t0
+            self.stats["first_look_cpu_seconds"] = time.process_time() - c0
             self.stats["first_look_model"] = METER.snapshot()
+            self.stats["first_look_gpu_joules"] = METER.gpu_joules()
         if (out := self._end_action(image, task_description, target, ee_pose)) is not None:
             return out
 

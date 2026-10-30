@@ -82,6 +82,13 @@ only logs the feature `vlm_plan_yes`; in `selector_eval.sh` a "no" gives the epi
 study"). In `selector_eval.sh`, `CONTROLLER=planner_then_vla` runs the role split instead of the ASM: the planner
 moves the hand to above the object, and then the VLA does the rest of the episode (MODELS must be `-`).
 
+**Demonstrations** (since 2026-10-30). `RECORD_DEMOS=1` records every episode of any runner as a demonstration for
+the VLA, in each sim's folder (`.../demos`; `demos.py`): the camera pictures, each step's command as the VLA's 7
+action numbers (the exact inverse of the VLA's own conversion), the hand's pose and the instruction.
+`examples/SimplerEnv/train_files/planner_demos_to_lerobot.py --out DATA_ROOT/NAME --stats
+CHECKPOINT_RUN/dataset_statistics.json RUN...` makes a VP-VLA training set (starVLA's LeRobot v2.0 layout, the
+Bridge data config's keys) of the successful ones, and prints how many actions training would clip.
+
 **Costs** (since 2026-10-23). Each sim writes `episode_costs.jsonl` (`model_time.py`): for each episode, its
 wall-clock seconds from the model's reset to the last step, and its model requests, the count and the round-trip
 seconds for each model (`vla`, `vlm`, `sam`). The planner records add what the first look cost (`first_look_seconds`,

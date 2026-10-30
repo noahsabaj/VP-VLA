@@ -7,8 +7,9 @@ choice from the first frame of the planner-only eval, and the outcome of the cho
     python -m examples.SimplerEnv.eval_files.planner.experiments.score_plan_check [--asm two_model/asm_none.json]
 
 Runs (the planner-only ones with PLAN_CHECK=1): the harder scenes, harder_paper and vla_harder_paper; the reworded
-instructions, words_{set}_paper and vla_words_{set}_paper; SimplerEnv's own instructions, check_paper_none and
-runs.FAST_VLA["paper"]. --asm adds the gate followed by the saved ASM (secondary; SimplerEnv's tasks only).
+instructions, words_{set}_paper and vla_words_{set}_paper; SimplerEnv's own instructions, runs.OWN31_PLANNER and
+runs.OWN31_VLA (all with SAM 3.1, the plan's change of 2026-10-23). --asm adds the gate followed by the saved ASM
+(secondary; SimplerEnv's tasks only).
 """
 
 import argparse
@@ -91,7 +92,7 @@ def main():
     a = ap.parse_args()
     harder = load("harder_paper", ["vla_harder_paper"], list(hs.TASKS))
     words = {n: load(f"words_{n}_paper", [f"vla_words_{n}_paper"]) for n in INSTRUCTION_SETS}
-    own = load("check_paper_none", runs.FAST_VLA["paper"])
+    own = load(runs.OWN31_PLANNER, runs.OWN31_VLA)
 
     print("# VLM plan check: the gate (the VLA when P(yes) < 0.5, else the planner), offline\n")
     print("| Instructions | Task | Layouts | Planner-only | VLA-only | Gate | Oracle | VLA picks |\n"
@@ -117,7 +118,7 @@ def main():
           f"mean {np.nanmean(mass):.3f} (episodes with no plan to show: {int(np.isnan(mass).sum())})")
     if a.asm:
         asm = s.load_asm(runs.path(a.asm))
-        print(f"\nThe gate, then the ASM {a.asm} (SimplerEnv's tasks only):")
+        print(f"\nThe gate, then the ASM {a.asm} (trained on SAM 3 evals; SimplerEnv's tasks only):")
         for label, rows in [("own", own), *words.items()]:
             out = [r["vla"] if plan_check.gate(r["p_yes"]) == "vla" or asm.decide(r["record"], k[0])["choice"] == "vla"
                    else r["planner"] for k, r in sorted(rows.items())]

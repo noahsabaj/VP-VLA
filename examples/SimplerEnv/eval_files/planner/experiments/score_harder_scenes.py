@@ -6,7 +6,8 @@ clean camera), layout by layout.
     python -m examples.SimplerEnv.eval_files.planner.experiments.score_harder_scenes
 
 Runs: planner-only harder_paper and VLA-only vla_harder_paper. The descriptive rows of SimplerEnv's own spoon and
-carrot tasks (no extra objects; other layouts): pseed_paper_none and runs.FAST_VLA["paper"].
+carrot tasks (no extra objects; other layouts): runs.OWN31_PLANNER and runs.OWN31_VLA (SAM 3.1, the plan's change of
+2026-10-23).
 """
 
 import argparse
@@ -117,7 +118,7 @@ def main():
 
     print("\nSimplerEnv's own tasks without the extra objects (other layouts, so not paired):")
     own = {"PutSpoonOnTableClothInScene-v0": ONE_STEP[0], "PutCarrotOnPlateInScene-v0": ONE_STEP[1]}
-    o_rec, o_vla, o_keys = s.matched_layouts(runs.path("pseed_paper_none"), runs.paths(runs.FAST_VLA["paper"]))
+    o_rec, o_vla, o_keys = s.matched_layouts(runs.path(runs.OWN31_PLANNER), runs.paths(runs.OWN31_VLA))
     for src, t in own.items():
         ks = [k for k in o_keys if k[0] == src]
         new = [k for k in keys if k[0] == t]

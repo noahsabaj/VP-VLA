@@ -32,6 +32,10 @@ CHECK = [n for n in s.FEATURES_V1 + [n for n in s.FEATURES_V2 if n not in s.FEAT
 # split over two folders (one per GPU). The reruns with VLM seed offsets 1 and 2 are rep1_{set} and rep2_{set}.
 FAST_VLA = {"heldout": ["heldout_vla_g0", "heldout_vla_g1"], "paper": ["fast3_train_g0", "fast3_train_g1"],
             "seed2": ["seed2_vla"], "iid11": ["vla_iid11"], "iid12": ["vla_iid12"]}
+# The test set with SimplerEnv's own instructions and SAM 3.1: planner-only (planner seed 0, clean camera) and
+# VLA-only (fast settings, VLM seed offset 0). The reworded-instruction, harder-scene and VLM plan-check studies use
+# them since their changes of 2026-10-23, instead of pseed_paper_none and FAST_VLA["paper"] (SAM 3).
+OWN31_PLANNER, OWN31_VLA = "check_paper_none", ["sam31_paper"]
 # The 5 VLA-only evals of the test set with the paper's settings (links to where they were written).
 EXACT_VLA = [f"exact_vla_{i}" for i in range(1, 6)]
 # The VLA's first-step files with the action spread (vla_eval.sh with HIDDEN=1 PERTURB=8): those of the two-model

@@ -6,8 +6,8 @@ layouts, clean camera) against the same evals with the tasks' own instructions, 
     python -m examples.SimplerEnv.eval_files.planner.experiments.score_instructions [--asm two_model/asm_none.json]
 
 Runs: planner-only {prefix}_{set}_paper and VLA-only vla_{prefix}_{set}_paper (prefix: words); with the tasks' own
-instructions, pseed_paper_none and runs.FAST_VLA["paper"]. --asm adds the saved ASM's offline choice from each
-planner-only eval's first look (secondary).
+instructions, runs.OWN31_PLANNER and runs.OWN31_VLA (all with SAM 3.1, the plan's change of 2026-10-23). --asm adds
+the saved ASM's offline choice from each planner-only eval's first look (secondary).
 """
 
 import argparse
@@ -63,7 +63,7 @@ def main():
     ap.add_argument("--prefix", default="words", help="run-name prefix of the reworded-instruction evals")
     ap.add_argument("--asm", default=None, help="a saved ASM (selector.py --save) for the offline rows (secondary)")
     a = ap.parse_args()
-    sets = {DEFAULT: load("pseed_paper_none", runs.FAST_VLA["paper"])}
+    sets = {DEFAULT: load(runs.OWN31_PLANNER, runs.OWN31_VLA)}
     for name in INSTRUCTION_SETS:
         sets[name] = load(f"{a.prefix}_{name}_paper", [f"vla_{a.prefix}_{name}_paper"])
     keys = sorted(set.intersection(*(set(v) for v in sets.values())))
@@ -95,7 +95,8 @@ def main():
         print(f"- {name}: " + "; ".join(lines))
     if a.asm:
         asm = s.load_asm(runs.path(a.asm))
-        print(f"\nThe ASM {a.asm}, offline (its choice from each planner-only eval's first look):")
+        print(f"\nThe ASM {a.asm} (trained on SAM 3 evals), offline (its choice from each planner-only eval's first "
+              "look):")
         print("| Instructions | ASM | VLA picks |\n|---|---|---|")
         for j, name in enumerate(sets):
             picks = [asm.decide(sets[name][k][0], k[0])["choice"] for k in keys]

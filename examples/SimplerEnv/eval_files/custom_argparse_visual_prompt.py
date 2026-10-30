@@ -132,6 +132,9 @@ def get_args():
     parser.add_argument("--overlay-video-dir", type=str, default="./overlay_videos")
     parser.add_argument("--no-action-plots", action="store_true", default=False,
                         help="Do not save the per-episode action plot PNG (about 0.6 s per episode)")
+    parser.add_argument("--record-demos", type=str, default=None,
+                        help="Record each episode here as a demonstration for the VLA (planner/demos.py): the "
+                             "pictures, the commands as the VLA's actions and the hand's pose")
     parser.add_argument("--vla-hidden-dir", type=str, default=None,
                         help="Save the policy's hidden states at the action tokens on each try's first step here (for probes)")
     parser.add_argument("--vla-perturb", type=int, default=0,

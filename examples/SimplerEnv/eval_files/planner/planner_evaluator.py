@@ -22,6 +22,8 @@ The changes, marked "CHANGED":
    requests' round trips and the time spent in the model's reset() and step(), one JSON line per episode in
    `logging_dir/episode_costs.jsonl`. In the energy runs (ENERGY_GPU set, energy.py), also the GPU's energy over the
    same window (`gpu_joules`).
+10. `demos` (`--record-demos DIR`): each episode recorded as a demonstration for the VLA (demos.py): the pictures, the
+   commands as the VLA's actions and the hand's pose. Off by default.
 Everything else is unchanged, so the AI-only setup behaves exactly as with SimplerEnv's loop.
 """
 
@@ -41,6 +43,7 @@ from .. import harder_scenes
 from ..camera_noise import RGBNoise
 from ..instruction_sets import instruction_for
 from ..model_time import METER, cost_record
+from .demos import DemoRecorder
 
 
 def run_maniskill2_eval_single_episode(
@@ -70,6 +73,7 @@ def run_maniskill2_eval_single_episode(
     action_plots=True,
     layout_per_episode=False,
     rgb_noise=None,
+    demos=None,
 ):
 
     if additional_env_build_kwargs is None:
@@ -170,6 +174,10 @@ def run_maniskill2_eval_single_episode(
         model.set_episode(episode_key)
     with METER.controller():
         model.reset(task_description)
+    # CHANGED: record the episode as a demonstration.
+    if demos is not None:
+        demos.start(episode_key, env_name=env_name, obj_episode_id=obj_episode_id, layout_seed=layout_seed,
+                    layout_per_episode=bool(layout_per_episode))
 
     timestep = 0
     success = "failure"
@@ -187,6 +195,8 @@ def run_maniskill2_eval_single_episode(
                 # advance the environment to the next subtask
                 predicted_terminated = False
                 env.advance_to_next_subtask()
+        if demos is not None:
+            demos.add(image, obs, action, task_description)
 
         # step the environment
         obs, reward, done, truncated, info = env.step(
@@ -226,6 +236,9 @@ def run_maniskill2_eval_single_episode(
         f.write(json.dumps(cost_record(episode_key, success == "success", timestep, seconds, env_name=env_name,
                                        obj_episode_id=obj_episode_id, layout_seed=layout_seed,
                                        layout_per_episode=bool(layout_per_episode), **energy)) + "\n")
+    if demos is not None:
+        demos.finish(success == "success", episode_stats={k: bool(v) if isinstance(v, (bool, np.bool_)) else v
+                                                          for k, v in episode_stats.items()})
 
     # save video
     env_save_name = env_name
@@ -347,6 +360,8 @@ def maniskill2_evaluator(model, args):
     success_arr = []
     # CHANGED: one RGB camera noise for the run; each episode reseeds it.
     rgb_noise = RGBNoise(getattr(args, "rgb_noise", "none"), getattr(args, "noise_seed", None))
+    demo_dir = getattr(args, "record_demos", None)
+    demos = DemoRecorder(demo_dir) if demo_dir else None
 
     # run inference
     for robot_init_x in args.robot_init_xs:
@@ -375,6 +390,7 @@ def maniskill2_evaluator(model, args):
                     action_plots=not getattr(args, "no_action_plots", False),
                     layout_per_episode=getattr(args, "layout_per_episode", False),
                     rgb_noise=rgb_noise,
+                    demos=demos,
                     instruction=instruction_for(getattr(args, "instruction_set", "default"), args.env_name),
                 )
                 if args.obj_variation_mode == "xy":

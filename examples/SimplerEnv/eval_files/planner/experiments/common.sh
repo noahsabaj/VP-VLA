@@ -121,6 +121,7 @@ fast_defaults() {
 # sim GPU TASK START END OUT ARGS...: episodes START..END-1 of TASK with the paper's SimplerEnv settings. OUT is
 # replaced; it gets the videos, the planner records and sim.log. ARGS choose the controller and its servers.
 # INSTRUCTIONS=NAME: the reworded instructions of instruction_sets.py instead of the task's own (default: none).
+# RECORD_DEMOS=1: each episode also recorded as a demonstration for the VLA in OUT/demos (planner/demos.py).
 sim() {
   local gpu=$1 task=$2 start=$3 end=$4 out=$5
   shift 5
@@ -137,7 +138,8 @@ sim() {
     --rgb-overlay-path "$SIMPLERENV_PATH/ManiSkill2_real2sim/data/real_inpainting/$overlay" \
     --robot-init-x $x $x 1 --robot-init-y $y $y 1 --obj-variation-mode episode --obj-episode-range "$start" "$end" \
     --robot-init-rot-quat-center 0 0 0 1 --robot-init-rot-rpy-range 0 0 1 0 0 1 0 0 1 \
-    --logging-dir "$out" ${INSTRUCTIONS:+--instruction-set "$INSTRUCTIONS"} "$@" > "$out/sim.log" 2>&1
+    --logging-dir "$out" ${INSTRUCTIONS:+--instruction-set "$INSTRUCTIONS"} \
+    $([ "${RECORD_DEMOS:-0}" = 1 ] && echo --record-demos "$out/demos") "$@" > "$out/sim.log" 2>&1
 }
 
 # Energy runs (ENERGY=1; the experiments README's "Energy study"). energy_setup SIMS_AT_ONCE: the sims read the

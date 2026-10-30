@@ -15,7 +15,8 @@ test loop passes in. Three modes:
 What to pick up and where to put it comes from the instruction: by default from one fixed rule (one
 pick-and-place); with `task_source="vlm"` from the VLM plan (vlm_plan.py: the VLM lists the pick-and-place moves,
 and the planner does them one after another; an instruction that is not pick-and-place goes to the VLA in the
-selector mode).
+selector mode); with `task_source="vp"` from VP-VLA's own VLM (vp_marks.py: its subtasks and the object and target
+that it names in each, which VP-VLA's SAM turns into its crosshair and box), in the same way.
 
 Targets come from the camera: SAM3 masks the object named in the instruction, and the
 masked depth pixels give its 3D position. `target_source="sim"` reads them from the
@@ -38,7 +39,7 @@ from scipy.spatial.transform import Rotation, Slerp
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "Robocasa_tabletop" / "visual_prompt_utility"))
 
 from ..model_time import METER, time_requests
-from . import plan_check, vlm_plan
+from . import plan_check, vlm_plan, vp_marks
 from .geometry import (CameraView, DepthNoise, MissingDepth, corridor_points, depth_roughness, ee_delta_action,
                        mat_to_pose, path_length, pose_to_mat, short_width)
 from .planners import FINGER_OPEN, WORKSPACE, RobotSpheres, make_planner
@@ -234,16 +235,17 @@ class PlannerClient:
         if not self.plan_check_marks or len(set(self.plan_check_marks)) < len(self.plan_check_marks):
             raise ValueError(f"plan_check_marks must name each mark once: {self.plan_check_marks}")
         self.plan_check_threshold = plan_check_threshold
-        # Where the object and target come from: the fixed rule, or the VLM plan (vlm_plan.py).
-        if task_source not in ("rule", "vlm"):
-            raise ValueError(f"task_source must be rule or vlm, not {task_source}")
+        # Where the object and target come from: the fixed rule, the VLM plan (vlm_plan.py) or VP-VLA's VLM marks.
+        if task_source not in ("rule", "vlm", "vp"):
+            raise ValueError(f"task_source must be rule, vlm or vp, not {task_source}")
         self.task_source = task_source
         self.vlm_planner = None
-        if task_source == "vlm":
+        if task_source in ("vlm", "vp"):
             if target_source != "camera" or vlm_plan_port is None:
-                raise ValueError("the VLM plan needs --target-source camera and --vlm-plan-port")
+                raise ValueError(f"task_source {task_source} needs --target-source camera and --vlm-plan-port")
             if plan_check_port is not None:
-                raise ValueError("the plan check asks about the fixed rule's one pick-and-place: not with the VLM plan")
+                raise ValueError(f"the plan check asks about the fixed rule's one pick-and-place: not with task_source "
+                                 f"{task_source}")
             from ..vlm_client_simpler import VLMClientSimpler
 
             self.vlm_planner = time_requests(VLMClientSimpler(host=vlm_plan_host, port=vlm_plan_port), "vlm")
@@ -396,9 +398,11 @@ class PlannerClient:
     def _approach(self, image, obs, env, qpos, target) -> None:
         """Find the object and plan to just above it."""
         first, self.first_look = self.first_look, False  # a grasp retry comes back here: no new features
-        if first and self.vlm_planner is not None and not self._vlm_plan(image):
-            self._give_up()
-            return
+        if first and self.vlm_planner is not None:
+            plan = self._vlm_plan if self.task_source == "vlm" else self._vp_plan
+            if not plan(image):
+                self._give_up()
+                return
         self.view = self._obstacle_view(obs, qpos)
         # One frame, one noisy depth picture: the object estimate and the obstacle map share it.
         grasp = self._locate(image, obs, env, which="grasp", record=first, view=self.view)
@@ -441,6 +445,18 @@ class PlannerClient:
                            "steps_done": 0, "vlm_plan_sam": []})
         if not plan["feasible"]:
             self.stats["failure"] = "VLM plan: not pick-and-place" + (f" ({plan['error']})" if plan["error"] else "")
+            return False
+        self.steps = plan["steps"]
+        return True
+
+    def _vp_plan(self, image) -> bool:
+        """VP-VLA's VLM marks (vp_marks.py) from the first frame: False when no subtask names a target."""
+        plan = vp_marks.ask(self.vlm_planner, self.task_description, image)
+        self.stats.update({"vp_subtasks": plan["subtasks"], "vp_subtasks_from": plan["subtasks_from"],
+                           "vp_marks": plan["marks"], "vlm_plan_feasible": bool(plan["steps"]), "steps_done": 0,
+                           "vlm_plan_sam": []})
+        if not plan["steps"]:
+            self.stats["failure"] = "VLM marks: no target"
             return False
         self.steps = plan["steps"]
         return True

@@ -19,7 +19,7 @@
 #   planner_eval.sh, from the VLA's VLM server (an ASM trained on records with the same TASK_SOURCE), and
 #   VLM_PLAN_MIN_SCORE and MISSING_DEPTH as in planner_eval.sh. CONTROLLER=planner_then_vla: the role split instead of
 #   the ASM (MODELS must be -): the planner moves the hand to above the object, then the VLA does the rest (with
-#   TASK_SOURCE=vlm, a plan that is not pick-and-place gives the whole episode to the VLA). ENERGY=1: an energy run
+#   TASK_SOURCE=vlm or vp, no pick-and-place move found gives the whole episode to the VLA). ENERGY=1: an energy run
 #   (K must be 1): each episode's GPU energy, the idle power and the null episodes (energy_setup and energy_baseline
 #   in common.sh), once for all levels.
 [ $# -ge 6 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
@@ -34,6 +34,7 @@ case $CTRL in
 esac
 MD=${MISSING_DEPTH:-none}
 case $MD in none | target) ;; *) echo "MISSING_DEPTH must be none or target" >&2; exit 1 ;; esac
+case ${TASK_SOURCE:-rule} in rule | vlm | vp) ;; *) echo "TASK_SOURCE must be rule, vlm or vp" >&2; exit 1 ;; esac
 LS=$(layout_args "$LAYOUTS") || exit 1
 JOBS=("$@")
 if [ ${#JOBS[@]} -eq 0 ]; then
@@ -76,6 +77,7 @@ CHECK=()
 [ "${PLAN_CHECK:-0}" = 1 ] && CHECK=(--plan-check-port $((PB + 2)) --plan-check-marks "${PLAN_CHECK_MARKS:-tint}"
                                     --plan-check-threshold "${PLAN_CHECK_THRESHOLD:-0.5}")
 [ "${TASK_SOURCE:-rule}" = vlm ] && CHECK+=(--task-source vlm --vlm-plan-port $((PB + 2)) --vlm-plan-min-score ${VLM_PLAN_MIN_SCORE:-0})
+[ "${TASK_SOURCE:-rule}" = vp ] && CHECK+=(--task-source vp --vlm-plan-port $((PB + 2)))
 
 job() {
   local level task start end out t0=$SECONDS rc stats rgb ctrl

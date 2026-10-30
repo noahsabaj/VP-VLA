@@ -20,6 +20,28 @@ def test_each_test_family_is_caught_by_its_own_words():
         assert "harder scenes: camera" in rw.exclusions(HARDER_TASKS[name].instruction)
 
 
+def test_every_training_rewording_passes_the_exclusion_list():
+    assert set(rw.REWORDINGS) == set(TASKS)
+    seen = set()
+    for task, families in rw.REWORDINGS.items():
+        assert tuple(families) == rw.FAMILIES
+        for family, options in families.items():
+            assert len(options) == 8, (task, family)
+            for option in options:
+                assert rw.exclusions(option) == [], (task, family, option)
+                assert rw.normalize(option) not in {rw.normalize(i) for i in rw.OWN.values()}
+                assert option not in seen
+                seen.add(option)
+
+
+def test_each_episode_keeps_its_rewordings():
+    task = TASKS[1]
+    first = rw.rewording(task, "order", f"{task}/iid90/7")
+    assert first in rw.REWORDINGS[task]["order"] and rw.rewording(task, "order", f"{task}/iid90/7") == first
+    chosen = {rw.rewording(task, "reasoning", f"{task}/iid90/{i}") for i in range(200)}
+    assert chosen == set(rw.REWORDINGS[task]["reasoning"])  # the episodes spread over all of them
+
+
 def test_simplerenvs_own_instructions_are_allowed():
     assert rw.OWN[TASKS[0]] == HARDER_TASKS["ClutteredSpoonOnTowel-v0"].instruction
     assert rw.OWN[TASKS[1]] == HARDER_TASKS["ClutteredCarrotOnPlate-v0"].instruction

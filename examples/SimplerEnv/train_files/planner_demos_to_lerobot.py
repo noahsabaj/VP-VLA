@@ -3,7 +3,7 @@
 (starVLA/dataloader/gr00t_lerobot/datasets.py), with the keys of its Bridge data config (oxe_bridge):
 
     python examples/SimplerEnv/train_files/planner_demos_to_lerobot.py --out DATA_ROOT/NAME \
-        --stats CHECKPOINT_RUN/dataset_statistics.json DEMOS_DIR...
+        --stats CHECKPOINT_RUN/dataset_statistics.json [--visual-prompts VP_DIR] DEMOS_DIR...
 
 DEMOS_DIR: a folder with recorded episodes at any depth (each one a folder with meta.json), e.g. a run folder. The
 script takes every successful episode (--all: every episode), in the order of their folders, and writes into NAME:
@@ -18,13 +18,23 @@ statistics (oxe_bridge in its dataset_statistics.json), so a fine-tuned action h
 (the eval undoes the scale with the training run's own dataset_statistics.json). Training clips the actions to
 Bridge's 1st to 99th percentiles, so the script prints how many actions are outside them, in each dimension. --stats
 data computes the statistics from the demonstrations instead. Needs numpy and pyarrow (the starVLA environment).
+
+With --visual-prompts VP_DIR it also writes each episode's visual prompts, which VP-VLA's training draws on the camera
+picture (starVLA/dataloader/visual_prompt_datasets.py: a crosshair on the object to move, a box around its place):
+VP_DIR/NAME/chunk-000/episode_000000.npz, ..., in the format of the data preparation
+(data_preparation/SimplerEnv/process_dataset_parallel_oxe.py), so the training config's visual_prompt_dir is VP_DIR.
+The masks are the simulator's own (the recorded object maps), not SAM's, and the subtasks and names that the data
+preparation asks a VLM for come from the recording (vlm_entries). One pick-and-place per episode. The script prints,
+for each task, the share of steps with the crosshair and with the box (a step has none when its object is hidden).
 """
 
 import argparse
 import json
 import os
+import re
 import shutil
-from typing import Dict, List
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -34,6 +44,15 @@ VIDEO_KEY = "observation.images.image_0"
 STATE_NAMES = ["x", "y", "z", "roll", "pitch", "yaw", "pad", "gripper"]
 ACTION_NAMES = ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]
 STAT_NAMES = ("mean", "std", "min", "max", "q01", "q99")
+# What SimplerEnv's instructions call the simulator's objects (model names; a scene's second copy ends in _2). The
+# eggplant's basket is part of the background picture: its place is SimplerEnv's invisible target plane in it.
+WORDS = {"bridge_carrot_generated_modified": "carrot", "bridge_plate_objaverse_larger": "plate",
+         "bridge_spoon_generated_modified": "spoon", "table_cloth_generated_shorter": "towel",
+         "green_cube_3cm": "green block", "yellow_cube_3cm": "yellow block", "baked_green_cube_3cm": "green block",
+         "baked_yellow_cube_3cm": "yellow block", "eggplant": "eggplant", "dummy_sink_target_plane": "yellow basket"}
+SUBTASK_SPLIT = r",\s*and\s*|,\s*|\s+and\s+"  # the data preparation's parse_explicit_task
+PLACE_WORDS = (" on ", " onto ", " in ", " into ")  # a subtask with one of these puts something down
+LABEL_NOTE = "from the recorded episode, not a VLM"
 
 
 def load_meta(folder: str) -> dict:
@@ -117,6 +136,85 @@ def clip_report(actions: np.ndarray, stats: dict) -> List[str]:
     return lines
 
 
+def object_word(model: str) -> str:
+    return WORDS.get(re.sub(r"_\d+$", "", model), model)
+
+
+def is_placing(subtask: str) -> bool:
+    return any(word in f" {subtask} " for word in PLACE_WORDS)
+
+
+def vlm_entries(instruction: str, actions: np.ndarray, object_name: str, place_name: str) -> List[dict]:
+    """The data preparation's VLM answers (vlm_results), from the recording instead of a VLM: an entry at the first
+    step and at each change of the gripper (open: the action's last number above 0.5). The subtasks are the
+    instruction's parts (the data preparation's split at commas and "and"). A part that names a place ("... on the
+    plate") puts something down and also names the place, as the VLM's prompt asks. Each grasp ends a pick part and
+    each release a place part (a failed grasp too), and the next entry has the next part. Training reads only each
+    entry's frame and subtask and whether it names an object and a place."""
+    parts = [p.strip() for p in re.split(SUBTASK_SPLIT, instruction.lower()) if p.strip()] or [instruction]
+    entries, gripper_before, part = [], None, 0
+    names = {"target_object": None, "target_location": None}
+    for t, action in enumerate(actions):
+        gripper = "OPEN" if action[6] > 0.5 else "CLOSED"
+        if gripper == gripper_before:
+            continue
+        changed = gripper_before is not None
+        decision = "continue"
+        if changed and is_placing(parts[part]) == (gripper == "OPEN") and part + 1 < len(parts):
+            part, decision = part + 1, "proceed"
+        names["target_object"] = object_name
+        if is_placing(parts[part]):
+            names["target_location"] = place_name
+        entries.append({"frame": t, "subtask": parts[part], "subtask_idx": part, "decision": decision, **names,
+                        "reasoning": LABEL_NOTE, "gripper_state_changed": changed})
+        gripper_before = gripper
+    return entries
+
+
+def mask_boxes(masks: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Each mask's box around its pixels (x1, y1, x2, y2) and its score: 1 with pixels, 0 without."""
+    boxes = np.zeros((len(masks), 4), np.float32)
+    for t, mask in enumerate(masks):
+        rows, cols = np.flatnonzero(mask.any(1)), np.flatnonzero(mask.any(0))
+        if len(rows):
+            boxes[t] = [cols[0], rows[0], cols[-1] + 1, rows[-1] + 1]
+    return boxes, masks.any((1, 2)).astype(np.float32)
+
+
+def prompt_masks(object_map: np.ndarray, entries: List[dict], goal: List[int]) -> Dict[str, np.ndarray]:
+    """The masks, boxes and scores of the object to move (target_*) and of its place (location_*) at each step: the
+    object map's pixels of the goal's object and place, from the entry on that names them."""
+    steps = len(object_map)
+    named = {key: np.zeros(steps, bool) for key in ("target_object", "target_location")}
+    ends = [e["frame"] for e in entries[1:]] + [steps]
+    for entry, end in zip(entries, ends, strict=True):
+        for key, on in named.items():
+            on[entry["frame"]:end] = entry[key] is not None
+    out = {}
+    for prefix, key, index in (("target", "target_object", goal[0]), ("location", "target_location", goal[1])):
+        masks = ((object_map == index + 1) & named[key][:, None, None]).astype(np.uint8)
+        out[f"{prefix}_masks"] = masks
+        out[f"{prefix}_boxes"], out[f"{prefix}_scores"] = mask_boxes(masks)
+    return out
+
+
+def episode_visual_prompts(folder: str, meta: dict, actions: np.ndarray, object_map: Optional[np.ndarray],
+                           instruction: str, episode: int) -> Dict[str, np.ndarray]:
+    """One episode's visual-prompt file (the data preparation's npz)."""
+    if object_map is None:
+        raise SystemExit(f"{folder}: recorded without object maps")
+    if len(meta["goals"]) != 1:
+        raise SystemExit(f"{folder}: {len(meta['goals'])} goals; the visual prompts take one pick-and-place")
+    goal = meta["goals"][0]
+    entries = vlm_entries(instruction, actions, object_word(meta["objects"][goal[0]]),
+                          object_word(meta["objects"][goal[1]]))
+    return {"episode_index": np.array(episode), "task_description": np.array(instruction),
+            "num_frames": np.array(len(actions)), "fps": np.array(float(FPS)),
+            "target_object": np.array(entries[-1]["target_object"] or ""),
+            "target_location": np.array(entries[-1]["target_location"] or ""),
+            **prompt_masks(object_map, entries, goal), "vlm_results": np.array(json.dumps(entries))}
+
+
 def write_parquet(path: str, states: np.ndarray, actions: np.ndarray, episode: int, first_index: int,
                   task_index: List[int]) -> None:
     import pyarrow as pa
@@ -137,21 +235,25 @@ def write_parquet(path: str, states: np.ndarray, actions: np.ndarray, episode: i
     pq.write_table(table, path)
 
 
-def write_dataset(out: str, folders: List[str], stats: str) -> Dict[str, object]:
+def write_dataset(out: str, folders: List[str], stats: str, visual_prompts: Optional[str] = None) -> Dict[str, object]:
     """The training set of the recorded episodes in `folders` (see the module docstring); `stats` is a
-    dataset_statistics.json or "data". Returns a summary."""
-    if os.path.exists(out) and os.listdir(out):
-        raise SystemExit(f"{out} exists and is not empty")
+    dataset_statistics.json or "data"; with `visual_prompts` (VP_DIR) also the visual prompts. Returns a summary."""
+    vp_out = None if visual_prompts is None else os.path.join(visual_prompts, os.path.basename(os.path.normpath(out)))
+    for new in (out, vp_out):
+        if new is not None and os.path.exists(new) and os.listdir(new):
+            raise SystemExit(f"{new} exists and is not empty")
     if not folders:
         raise SystemExit("no recorded episodes")
     tasks: Dict[str, int] = {}
     all_actions, all_states, episodes, sources = [], [], [], []
+    shown = defaultdict(lambda: np.zeros(3))  # for each task: steps, steps with the crosshair, steps with the box
     size = None
     frames = 0
     for episode, folder in enumerate(folders):
         meta = load_meta(folder)
         with np.load(os.path.join(folder, "episode.npz")) as z:
             actions, states = z["actions"], z["states"]
+            object_map = z["object_map"] if vp_out is not None and "object_map" in z.files else None
         steps = len(actions)
         instructions = episode_instructions(meta)
         if len(instructions) != steps or len(states) != steps or meta["steps"] != steps:
@@ -167,6 +269,14 @@ def write_dataset(out: str, folders: List[str], stats: str) -> Dict[str, object]
         video = os.path.join(out, f"videos/chunk-{chunk:03d}/{VIDEO_KEY}/episode_{episode:06d}.mp4")
         os.makedirs(os.path.dirname(video), exist_ok=True)
         shutil.copyfile(os.path.join(folder, "frames.mp4"), video)
+        if vp_out is not None:
+            if object_map is not None and object_map.shape != (steps, *size):
+                raise SystemExit(f"{folder}: object maps of {object_map.shape}, not {(steps, *size)}")
+            vp = episode_visual_prompts(folder, meta, actions, object_map, instructions[0], episode)
+            path = os.path.join(vp_out, f"chunk-{chunk:03d}", f"episode_{episode:06d}.npz")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            np.savez_compressed(path, **vp)
+            shown[meta.get("env_name", "?")] += [steps, vp["target_scores"].sum(), vp["location_scores"].sum()]
         episodes.append({"episode_index": episode, "tasks": list(dict.fromkeys(instructions)), "length": steps})
         sources.append({"episode_index": episode, "source": folder, "episode_key": meta.get("episode_key"),
                         "success": meta["success"]})
@@ -187,7 +297,10 @@ def write_dataset(out: str, folders: List[str], stats: str) -> Dict[str, object]
     for name, rows in lines.items():
         with open(os.path.join(meta_dir, name), "w") as fh:
             fh.writelines(json.dumps(r) + "\n" for r in rows)
-    return {"episodes": len(folders), "frames": frames, "tasks": len(tasks), "clip": clip_report(actions, stat)}
+    prompts = [f"visual prompts, {task}: crosshair {100 * a / n:.1f}% of {n:.0f} steps, box {100 * b / n:.1f}%"
+               for task, (n, a, b) in sorted(shown.items())]
+    return {"episodes": len(folders), "frames": frames, "tasks": len(tasks), "clip": clip_report(actions, stat),
+            "visual_prompts": prompts}
 
 
 def main() -> None:
@@ -196,10 +309,11 @@ def main() -> None:
     ap.add_argument("--out", required=True, help="the new training set's folder (DATA_ROOT/NAME)")
     ap.add_argument("--stats", required=True, help='a training run\'s dataset_statistics.json, or "data"')
     ap.add_argument("--all", action="store_true", help="also the failed episodes")
+    ap.add_argument("--visual-prompts", metavar="VP_DIR", help="also write the visual prompts into VP_DIR/NAME")
     a = ap.parse_args()
-    summary = write_dataset(a.out, find_episodes(a.demos, a.all), a.stats)
+    summary = write_dataset(a.out, find_episodes(a.demos, a.all), a.stats, a.visual_prompts)
     print(f"{a.out}: {summary['episodes']} episodes, {summary['frames']} steps, {summary['tasks']} instructions")
-    print("\n".join(summary["clip"]))
+    print("\n".join(summary["clip"] + summary["visual_prompts"]))
 
 
 if __name__ == "__main__":

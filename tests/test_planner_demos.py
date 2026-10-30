@@ -11,6 +11,7 @@ import pytest
 
 from examples.SimplerEnv.eval_files.planner import demos
 from examples.SimplerEnv.train_files import planner_demos_to_lerobot as tl
+from examples.SimplerEnv.train_files.rewordings import FAMILIES, rewording
 
 SPOON = "PutSpoonOnTableClothInScene-v0"
 CARROT = "PutCarrotOnPlateInScene-v0"
@@ -268,12 +269,46 @@ def test_the_visual_prompts_need_object_maps_and_one_goal(tmp_path):
         tl.write_dataset(str(tmp_path / "set_b"), tl.find_episodes([str(tmp_path / "b")]), "data", str(tmp_path / "w"))
 
 
+def test_the_rewordings(tmp_path):
+    pytest.importorskip("pyarrow")
+    runs = tmp_path / "run"
+    key = f"{CARROT}/iid15/0"
+    _record(
+        runs,
+        key,
+        4,
+        True,
+        np.random.default_rng(8),
+        instruction="put carrot on plate",
+        scene=SCENE,
+        maps=_object_map,
+        grippers=[1, 0, 0, 1],
+    )
+    out, vp = tmp_path / "data" / "planner_demos", tmp_path / "vp"
+    summary = tl.write_dataset(str(out), tl.find_episodes([str(runs)]), "data", str(vp), reword=True)
+    assert (summary["recorded"], summary["episodes"], summary["frames"]) == (1, 5, 20)
+    expected = ["put carrot on plate"] + [rewording(CARROT, f, key) for f in FAMILIES]
+    tasks = [json.loads(line)["task"] for line in (out / "meta" / "tasks.jsonl").read_text().splitlines()]
+    assert tasks == expected
+    sources = [json.loads(line) for line in (out / "meta" / "sources.jsonl").read_text().splitlines()]
+    assert [s["rewording"] for s in sources] == [None, *FAMILIES] and len({s["source"] for s in sources}) == 1
+    for episode, instruction in enumerate(expected):
+        with np.load(vp / "planner_demos" / "chunk-000" / f"episode_{episode:06d}.npz") as z:
+            entries = json.loads(str(z["vlm_results"]))
+            assert str(z["task_description"]) == instruction
+            assert entries[-1]["target_object"] == "carrot" and entries[-1]["target_location"] == "plate"
+    # a task without training rewordings
+    _record(tmp_path / "harder", "ClutteredCarrotOnPlate-v0/iid15/0", 2, True, np.random.default_rng(9))
+    with pytest.raises(SystemExit, match="no training rewordings for ClutteredCarrotOnPlate-v0"):
+        tl.write_dataset(str(tmp_path / "set_h"), tl.find_episodes([str(tmp_path / "harder")]), "data", reword=True)
+
+
 def test_main(tmp_path, monkeypatch, capsys):
     pytest.importorskip("pyarrow")
     _record(tmp_path / "run", f"{SPOON}/iid15/0", 4, True, np.random.default_rng(4))
     out = tmp_path / "set"
     monkeypatch.setattr(sys, "argv", ["x", str(tmp_path / "run"), "--out", str(out), "--stats", "data"])
     tl.main()
-    assert "1 episodes, 4 steps, 1 instructions" in capsys.readouterr().out
+    assert "1 episodes of 1 recorded, 4 steps, 1 instructions" in capsys.readouterr().out
     q99 = json.loads((out / "meta/stats_gr00t.json").read_text())["action"]["q99"]
     assert len(q99) == 7

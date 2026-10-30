@@ -86,14 +86,17 @@ moves the hand to above the object, and then the VLA does the rest of the episod
 the VLA, in each sim's folder (`.../demos`; `demos.py`): the camera pictures, each step's command as the VLA's 7
 action numbers (the exact inverse of the VLA's own conversion), the hand's pose, the instruction and which of the
 episode's objects each pixel shows (the simulator's own segmentation).
-`examples/SimplerEnv/train_files/planner_demos_to_lerobot.py --out DATA_ROOT/NAME --stats
+`python -m examples.SimplerEnv.train_files.planner_demos_to_lerobot --out DATA_ROOT/NAME --stats
 CHECKPOINT_RUN/dataset_statistics.json RUN...` makes a VP-VLA training set (starVLA's LeRobot v2.0 layout, the
 Bridge data config's keys) of the successful ones, and prints how many actions training would clip. With
 `--visual-prompts VP_DIR` it also writes the visual prompts that VP-VLA's training draws (a crosshair on the object to
 move, a box around its place) from the simulator's masks instead of SAM's, with the subtasks taken from the
 recording instead of a VLM, and prints how often each task's steps show them. The eggplant's basket is part of the
 background picture, so its box is around SimplerEnv's invisible target plane in the basket: check it in the first
-recorded demonstrations.
+recorded demonstrations. With `--reword` each episode is also written once with a training rewording of each of the
+test sets' four families (`train_files/rewordings.py`, 8 per task and family). Their exclusion list of every test
+instruction (the four reworded sets and the harder scenes) and of the words that carry each test family's concepts
+was fixed on 2026-10-30 before any rewording was written; the tests check every rewording against it.
 
 **Costs** (since 2026-10-23). Each sim writes `episode_costs.jsonl` (`model_time.py`): for each episode, its
 wall-clock seconds from the model's reset to the last step, and its model requests, the count and the round-trip

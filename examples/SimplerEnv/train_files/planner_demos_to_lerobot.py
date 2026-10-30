@@ -2,8 +2,8 @@
 --record-demos, or RECORD_DEMOS=1 in the experiments' runners), in the layout that starVLA's LeRobot v2.0 reader wants
 (starVLA/dataloader/gr00t_lerobot/datasets.py), with the keys of its Bridge data config (oxe_bridge):
 
-    python examples/SimplerEnv/train_files/planner_demos_to_lerobot.py --out DATA_ROOT/NAME \
-        --stats CHECKPOINT_RUN/dataset_statistics.json [--visual-prompts VP_DIR] DEMOS_DIR...
+    python -m examples.SimplerEnv.train_files.planner_demos_to_lerobot --out DATA_ROOT/NAME \
+        --stats CHECKPOINT_RUN/dataset_statistics.json [--visual-prompts VP_DIR] [--reword] DEMOS_DIR...
 
 DEMOS_DIR: a folder with recorded episodes at any depth (each one a folder with meta.json), e.g. a run folder. The
 script takes every successful episode (--all: every episode), in the order of their folders, and writes into NAME:
@@ -26,6 +26,10 @@ VP_DIR/NAME/chunk-000/episode_000000.npz, ..., in the format of the data prepara
 The masks are the simulator's own (the recorded object maps), not SAM's, and the subtasks and names that the data
 preparation asks a VLM for come from the recording (vlm_entries). One pick-and-place per episode. The script prints,
 for each task, the share of steps with the crosshair and with the box (a step has none when its object is hidden).
+
+With --reword each recorded episode is written once with its own instruction and once with one training rewording of
+each family (rewordings.py; the 4 WidowX tasks only), the same pictures and actions with another instruction. The
+visual prompts of every copy mark the objects of the episode's own task.
 """
 
 import argparse
@@ -37,6 +41,8 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+
+from examples.SimplerEnv.train_files.rewordings import FAMILIES, rewording
 
 FPS = 5  # demos.FPS
 CHUNK = 1000  # episodes per chunk folder
@@ -76,9 +82,15 @@ def find_episodes(roots: List[str], include_failures: bool = False) -> List[str]
     return keep
 
 
-def episode_instructions(meta: dict) -> List[str]:
-    """The instruction of each step of a recorded episode."""
-    return list(meta["instructions"])
+def episode_instructions(meta: dict, family: Optional[str] = None) -> List[str]:
+    """The instruction of each step of a recorded episode: its own, or its task's training rewording of `family` for
+    this episode at every step."""
+    if family is None:
+        return list(meta["instructions"])
+    try:
+        return [rewording(meta["env_name"], family, meta["episode_key"])] * meta["steps"]
+    except KeyError:
+        raise SystemExit(f"{meta['episode_key']}: no training rewordings for {meta['env_name']}") from None
 
 
 def modality() -> dict:
@@ -235,27 +247,30 @@ def write_parquet(path: str, states: np.ndarray, actions: np.ndarray, episode: i
     pq.write_table(table, path)
 
 
-def write_dataset(out: str, folders: List[str], stats: str, visual_prompts: Optional[str] = None) -> Dict[str, object]:
+def write_dataset(out: str, folders: List[str], stats: str, visual_prompts: Optional[str] = None,
+                  reword: bool = False) -> Dict[str, object]:
     """The training set of the recorded episodes in `folders` (see the module docstring); `stats` is a
-    dataset_statistics.json or "data"; with `visual_prompts` (VP_DIR) also the visual prompts. Returns a summary."""
+    dataset_statistics.json or "data"; with `visual_prompts` (VP_DIR) also the visual prompts; with `reword` each
+    episode also once with a rewording of each family. Returns a summary."""
     vp_out = None if visual_prompts is None else os.path.join(visual_prompts, os.path.basename(os.path.normpath(out)))
     for new in (out, vp_out):
         if new is not None and os.path.exists(new) and os.listdir(new):
             raise SystemExit(f"{new} exists and is not empty")
     if not folders:
         raise SystemExit("no recorded episodes")
+    items = [(folder, family) for folder in folders for family in ((None, *FAMILIES) if reword else (None,))]
     tasks: Dict[str, int] = {}
     all_actions, all_states, episodes, sources = [], [], [], []
     shown = defaultdict(lambda: np.zeros(3))  # for each task: steps, steps with the crosshair, steps with the box
     size = None
     frames = 0
-    for episode, folder in enumerate(folders):
+    for episode, (folder, family) in enumerate(items):
         meta = load_meta(folder)
         with np.load(os.path.join(folder, "episode.npz")) as z:
             actions, states = z["actions"], z["states"]
             object_map = z["object_map"] if vp_out is not None and "object_map" in z.files else None
         steps = len(actions)
-        instructions = episode_instructions(meta)
+        instructions = episode_instructions(meta, family)
         if len(instructions) != steps or len(states) != steps or meta["steps"] != steps:
             raise SystemExit(f"{folder}: {steps} actions, {len(states)} states, {len(instructions)} instructions")
         if size is None:
@@ -279,7 +294,7 @@ def write_dataset(out: str, folders: List[str], stats: str, visual_prompts: Opti
             shown[meta.get("env_name", "?")] += [steps, vp["target_scores"].sum(), vp["location_scores"].sum()]
         episodes.append({"episode_index": episode, "tasks": list(dict.fromkeys(instructions)), "length": steps})
         sources.append({"episode_index": episode, "source": folder, "episode_key": meta.get("episode_key"),
-                        "success": meta["success"]})
+                        "success": meta["success"], "rewording": family})
         all_actions.append(actions)
         all_states.append(states)
         frames += steps
@@ -287,7 +302,7 @@ def write_dataset(out: str, folders: List[str], stats: str, visual_prompts: Opti
     stat = data_stats(actions, states) if stats == "data" else checkpoint_stats(stats)
     meta_dir = os.path.join(out, "meta")
     os.makedirs(meta_dir, exist_ok=True)
-    files = {"info.json": info(len(folders), frames, len(tasks), *size), "modality.json": modality(),
+    files = {"info.json": info(len(items), frames, len(tasks), *size), "modality.json": modality(),
              "stats_gr00t.json": stat}
     for name, value in files.items():
         with open(os.path.join(meta_dir, name), "w") as fh:
@@ -299,8 +314,8 @@ def write_dataset(out: str, folders: List[str], stats: str, visual_prompts: Opti
             fh.writelines(json.dumps(r) + "\n" for r in rows)
     prompts = [f"visual prompts, {task}: crosshair {100 * a / n:.1f}% of {n:.0f} steps, box {100 * b / n:.1f}%"
                for task, (n, a, b) in sorted(shown.items())]
-    return {"episodes": len(folders), "frames": frames, "tasks": len(tasks), "clip": clip_report(actions, stat),
-            "visual_prompts": prompts}
+    return {"recorded": len(folders), "episodes": len(items), "frames": frames, "tasks": len(tasks),
+            "clip": clip_report(actions, stat), "visual_prompts": prompts}
 
 
 def main() -> None:
@@ -310,9 +325,11 @@ def main() -> None:
     ap.add_argument("--stats", required=True, help='a training run\'s dataset_statistics.json, or "data"')
     ap.add_argument("--all", action="store_true", help="also the failed episodes")
     ap.add_argument("--visual-prompts", metavar="VP_DIR", help="also write the visual prompts into VP_DIR/NAME")
+    ap.add_argument("--reword", action="store_true", help="also each episode with a rewording of each family")
     a = ap.parse_args()
-    summary = write_dataset(a.out, find_episodes(a.demos, a.all), a.stats, a.visual_prompts)
-    print(f"{a.out}: {summary['episodes']} episodes, {summary['frames']} steps, {summary['tasks']} instructions")
+    summary = write_dataset(a.out, find_episodes(a.demos, a.all), a.stats, a.visual_prompts, a.reword)
+    print(f"{a.out}: {summary['episodes']} episodes of {summary['recorded']} recorded, {summary['frames']} steps, "
+          f"{summary['tasks']} instructions")
     print("\n".join(summary["clip"] + summary["visual_prompts"]))
 
 

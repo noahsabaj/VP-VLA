@@ -24,7 +24,8 @@
 #                  outline; default tint). Each mark is one more question and feature (outline: vlm_plan_yes_outline).
 #   TASK_SOURCE    rule (default: the fixed rule, one pick-and-place) | vlm: the VLM plan (planner/vlm_plan.py),
 #                  from a VLM server on PORT + 50 as for PLAN_CHECK (not with it): the VLM lists the pick-and-place
-#                  moves and the planner does them in order.
+#                  moves and the planner does them in order | vp: VP-VLA's VLM marks from the same server (its
+#                  subtasks and the object and target that it names in each; planner/vp_marks.py).
 #   VLM_PLAN_MIN_SCORE  with TASK_SOURCE=vlm: a name whose chosen SAM mask scores below this is not found
 #                  (--vlm-plan-min-score; default 0: no check).
 #   MISSING_DEPTH  none (default) | target: in each episode, with chance 1/2, the place target gives no depth, as glass
@@ -38,10 +39,10 @@ GPU=$1; PORT=$2; NAME=$3; LEVEL=$4; LAYOUTS=$5
 LS=$(layout_args "$LAYOUTS") || exit 1
 PS=${PLANNER_SEED-0}
 TS=${TASK_SOURCE:-rule}
-case $TS in rule | vlm) ;; *) echo "TASK_SOURCE must be rule or vlm"; exit 1 ;; esac
+case $TS in rule | vlm | vp) ;; *) echo "TASK_SOURCE must be rule, vlm or vp"; exit 1 ;; esac
 MD=${MISSING_DEPTH:-none}
 case $MD in none | target) ;; *) echo "MISSING_DEPTH must be none or target"; exit 1 ;; esac
-[ "${PLAN_CHECK:-0}" = 1 ] && [ "$TS" = vlm ] && { echo "PLAN_CHECK=1 is for the fixed rule, not TASK_SOURCE=vlm"; exit 1; }
+[ "${PLAN_CHECK:-0}" = 1 ] && [ "$TS" != rule ] && { echo "PLAN_CHECK=1 is for the fixed rule, not TASK_SOURCE=$TS"; exit 1; }
 RGB_LEVEL=${RGB_NOISE:-none}
 [ "$RGB_LEVEL" = same ] && RGB_LEVEL=$LEVEL
 RGB=$(rgb_args "$RGB_LEVEL") || exit 1
@@ -55,13 +56,14 @@ trap stop_servers EXIT
 start_sam_server $PORT "$OUT/sam3.log" $SAM3_ARGS || exit 1
 wait_port $PORT 600 || { log "$NAME: SAM server never opened port $PORT"; exit 1; }
 CHECK=()
-if [ "${PLAN_CHECK:-0}" = 1 ] || [ "$TS" = vlm ]; then
+if [ "${PLAN_CHECK:-0}" = 1 ] || [ "$TS" != rule ]; then
   VARGS=${PLAN_CHECK_VLM_ARGS-"--attn sdpa --seed-per-query --compile"}
   start_server $((PORT + 50)) "$OUT/vlm.log" "$SAM3_PYTHON" examples/SimplerEnv/eval_files/vlm_server_subtask_simpler.py \
     --port $((PORT + 50)) $VARGS || exit 1
   wait_port $((PORT + 50)) || { log "$NAME: VLM server never opened port $((PORT + 50))"; exit 1; }
   CHECK=(--plan-check-port $((PORT + 50)) --plan-check-marks "${PLAN_CHECK_MARKS:-tint}")
   [ "$TS" = vlm ] && CHECK=(--task-source vlm --vlm-plan-port $((PORT + 50)) --vlm-plan-min-score ${VLM_PLAN_MIN_SCORE:-0})
+  [ "$TS" = vp ] && CHECK=(--task-source vp --vlm-plan-port $((PORT + 50)))
 fi
 energy_baseline $GPU "$OUT" "$LAYOUTS" $(for t in "${TASKS[@]}"; do echo "$t:0:$(layout_episodes "$LAYOUTS" "$t")"; done) ||
   exit 1

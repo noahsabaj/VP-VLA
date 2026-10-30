@@ -526,9 +526,12 @@ def evaluate(planner_root: str, vla_roots: List[str], save: Optional[str] = None
 
 def vlm_plan_gate(record: dict) -> Optional[dict]:
     """The selector mode's choice before the ASM (planner_client.py): the VLA when the VLM plan found the instruction
-    not to be pick-and-place. None when the ASM decides (always with the fixed rule)."""
-    if record.get("task_source") == "vlm" and not record.get("vlm_plan_feasible"):
-        return {"choice": "vla", "reason": "VLM plan: not pick-and-place"}
+    not to be pick-and-place, or VP-VLA's VLM marked no target (task_source vp). None when the ASM decides (always
+    with the fixed rule)."""
+    source = record.get("task_source")
+    if source in ("vlm", "vp") and not record.get("vlm_plan_feasible"):
+        reason = "VLM plan: not pick-and-place" if source == "vlm" else "VLM marks: no target"
+        return {"choice": "vla", "reason": reason}
     return None
 
 

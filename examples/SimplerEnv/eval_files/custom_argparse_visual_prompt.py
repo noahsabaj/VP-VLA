@@ -189,12 +189,13 @@ def get_args():
                              "the first (default: tint)")
     parser.add_argument("--plan-check-threshold", type=float, default=0.5,
                         help="The selector mode's gate: the VLA when the first mark's P(yes) is below this (default 0.5)")
-    parser.add_argument("--task-source", type=str, default="rule", choices=["rule", "vlm"],
-                        help="What the planner picks up and where it puts it: the fixed rule (one pick-and-place) or "
-                             "the VLM plan (planner/vlm_plan.py: the VLM lists the pick-and-place moves; needs "
-                             "--vlm-plan-port)")
+    parser.add_argument("--task-source", type=str, default="rule", choices=["rule", "vlm", "vp"],
+                        help="What the planner picks up and where it puts it: the fixed rule (one pick-and-place), "
+                             "the VLM plan (vlm: planner/vlm_plan.py, the VLM lists the pick-and-place moves) or "
+                             "VP-VLA's VLM marks (vp: its subtasks and the object and target marked in each); vlm and "
+                             "vp need --vlm-plan-port")
     parser.add_argument("--vlm-plan-port", type=int, default=None,
-                        help="VLM server for --task-source vlm (on --vlm-host)")
+                        help="VLM server for --task-source vlm or vp (on --vlm-host)")
     parser.add_argument("--vlm-plan-min-score", type=float, default=0.0,
                         help="With --task-source vlm: a name whose chosen SAM mask scores below this counts as not "
                              "found; on the first frame that ends the planner's try (default 0: no check)")

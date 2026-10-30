@@ -77,8 +77,8 @@ controller (default `none`; in `planner_eval.sh` and `selector_eval.sh`, `same` 
 `TASK_SET=harder` runs the 5 harder scenes of `harder_scenes.py` instead of SimplerEnv's 4 tasks (their fixed
 layouts only: `LAYOUTS=paper`). `PLAN_CHECK=1` adds the VLM plan check (`plan_check.py`): in `planner_eval.sh` it
 only logs the feature `vlm_plan_yes`; in `selector_eval.sh` a "no" gives the episode to the VLA.
-`TASK_SOURCE=vlm` replaces the planner's fixed rule with the VLM plan (`vlm_plan.py`; see "VLM plan" below).
-`MISSING_DEPTH=target` takes all depth away from the place target in half of the episodes (see "Missing-depth
+`TASK_SOURCE=vlm` replaces the planner's fixed rule with the VLM plan (`vlm_plan.py`; see "VLM plan" below), and
+`TASK_SOURCE=vp` with VP-VLA's own VLM marks (see "VP-VLA's VLM marks" below). `MISSING_DEPTH=target` takes all depth away from the place target in half of the episodes (see "Missing-depth
 study"). In `selector_eval.sh`, `CONTROLLER=planner_then_vla` runs the role split instead of the ASM: the planner
 moves the hand to above the object, and then the VLA does the rest of the episode (MODELS must be `-`).
 
@@ -835,6 +835,34 @@ The records add `task_source`, `vlm_plan` (the parsed plan), `vlm_plan_text` (th
 `vlm_plan_feasible`, `steps_done`, `vlm_plan_min_score` and `vlm_plan_sam` (for each name looked up: the move, object
 or target, the name, its SAM score, whether the chosen mask covers the VLM's point, and whether the score check
 rejected it). The robot-contact check (`transit_contact`) covers the first move only.
+
+## VP-VLA's VLM marks
+
+A method (since 2026-10-30): the planner reads the same visual prompts as VP-VLA instead of its fixed rule, so that
+one language front-end serves both. Its study is planned before any eval with it runs.
+
+VP-VLA's VLM (`vlm_server_subtask_simpler.py`) splits the instruction into subtasks (when it gives none, VP-VLA
+splits the instruction at "and" and commas). For the current subtask it names the object to move and, in a placing
+subtask, the target; VP-VLA's SAM turns these names into its crosshair (the object) and its box (the target). With
+`TASK_SOURCE=vp` (`--task-source vp`) the planner asks the same VLM server the same questions on the first frame,
+one for each subtask. VP-VLA asks about the current subtask only, at the first frame and at each gripper change; the
+planner plans from its first look, so it asks about every subtask there. Its question about the first subtask is the
+one VP-VLA asks at the first frame, so with the VLA's VLM settings (`--seed-per-query`) both get the same answer.
+Each subtask that names a target ends a pick-and-place move of the object that it names (else of the last object
+named before it). Of two moves of the same object in a row only the later one is kept, because a pick subtask that
+also names a target only looks ahead to its place subtask. SAM then finds each name as with the VLM plan, and the
+planner does the moves one after another. When no subtask names a target, a planner-only episode ends, and in the
+selector mode the VLA gets the episode before the ASM decides. Unlike VP-VLA, the planner never falls back to the
+fixed rule's object when the VLM names none.
+
+Why every subtask on the first frame (exploratory, from VP-VLA's eval logs of 2026-10-30): the VLM named a target in
+only 27 of 743 first answers, which are about the pick subtask, and in 472 of 695 second answers, after the grasp.
+Asking about the current subtask only would leave the planner without a target at its first look, where the ASM's
+features need one.
+
+The records add `task_source` (`vp`), `vp_subtasks`, `vp_subtasks_from` (`vlm`, or `rule` for VP-VLA's split),
+`vp_marks` (for each subtask: the object and target that the VLM names, and its answer), `vlm_plan_feasible` (a
+move was found), `steps_done` and `vlm_plan_sam` (as with the VLM plan).
 
 ## VLM-plan study
 

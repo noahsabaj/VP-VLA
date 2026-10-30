@@ -23,7 +23,7 @@ The changes, marked "CHANGED":
    `logging_dir/episode_costs.jsonl`. In the energy runs (ENERGY_GPU set, energy.py), also the GPU's energy over the
    same window (`gpu_joules`).
 10. `demos` (`--record-demos DIR`): each episode recorded as a demonstration for the VLA (demos.py): the pictures, the
-   commands as the VLA's actions and the hand's pose. Off by default.
+   commands as the VLA's actions, the hand's pose and which object each pixel shows. Off by default.
 Everything else is unchanged, so the AI-only setup behaves exactly as with SimplerEnv's loop.
 """
 
@@ -43,7 +43,7 @@ from .. import harder_scenes
 from ..camera_noise import RGBNoise
 from ..instruction_sets import instruction_for
 from ..model_time import METER, cost_record
-from .demos import DemoRecorder
+from .demos import DemoRecorder, scene_object_map, scene_objects
 
 
 def run_maniskill2_eval_single_episode(
@@ -177,7 +177,7 @@ def run_maniskill2_eval_single_episode(
     # CHANGED: record the episode as a demonstration.
     if demos is not None:
         demos.start(episode_key, env_name=env_name, obj_episode_id=obj_episode_id, layout_seed=layout_seed,
-                    layout_per_episode=bool(layout_per_episode))
+                    layout_per_episode=bool(layout_per_episode), **scene_objects(env))
 
     timestep = 0
     success = "failure"
@@ -196,7 +196,7 @@ def run_maniskill2_eval_single_episode(
                 predicted_terminated = False
                 env.advance_to_next_subtask()
         if demos is not None:
-            demos.add(image, obs, action, task_description)
+            demos.add(image, obs, action, task_description, object_map=scene_object_map(obs, env, obs_camera_name))
 
         # step the environment
         obs, reward, done, truncated, info = env.step(

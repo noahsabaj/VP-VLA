@@ -19,7 +19,9 @@
 #   planner_eval.sh, from the VLA's VLM server (an ASM trained on records with the same TASK_SOURCE), and
 #   VLM_PLAN_MIN_SCORE and MISSING_DEPTH as in planner_eval.sh. CONTROLLER=planner_then_vla: the role split instead of
 #   the ASM (MODELS must be -): the planner moves the hand to above the object, then the VLA does the rest (with
-#   TASK_SOURCE=vlm, a plan that is not pick-and-place gives the whole episode to the VLA).
+#   TASK_SOURCE=vlm, a plan that is not pick-and-place gives the whole episode to the VLA). ENERGY=1: an energy run
+#   (K must be 1): each episode's GPU energy, the idle power and the null episodes (energy_setup and energy_baseline
+#   in common.sh), once for all levels.
 [ $# -ge 6 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 GPU=$1; PB=$2; NAME=$3; LAYOUTS=$4; MODELS=$5; K=$6
@@ -50,6 +52,7 @@ OUT=$(run_dir "$NAME")
 mkdir -p "$OUT"
 LOG=$OUT/status.log
 fast_defaults
+energy_setup "$K" || exit 1
 
 SERVER_ENV=(CUDA_VISIBLE_DEVICES=$GPU)
 trap stop_servers EXIT
@@ -59,7 +62,8 @@ start_vla_servers $PB "$OUT" &&
   start_sam_server $((PB + 3)) "$OUT/planner_sam3.log" $PLANNER_SAM3_ARGS &&
   wait_port $PB && wait_port $((PB + 1)) && wait_port $((PB + 2)) && wait_port $((PB + 3)) ||
   { log "servers did not start"; exit 1; }
-log "START K=$K MPS=${MPS:-1} CONTROLLER=$CTRL LAYOUTS=$LAYOUTS MODELS=$MODELS RGB_NOISE=${RGB_NOISE:-none}" \
+energy_baseline $GPU "$OUT" "$LAYOUTS" $(printf "%s\n" "${JOBS[@]}" | cut -d: -f2- | sort -u) || exit 1
+log "START K=$K MPS=${MPS:-1} ENERGY=${ENERGY:-0} CONTROLLER=$CTRL LAYOUTS=$LAYOUTS MODELS=$MODELS RGB_NOISE=${RGB_NOISE:-none}" \
   "MISSING_DEPTH=$MD" \
   "INSTRUCTIONS=${INSTRUCTIONS:-default} PLANNER_SEED=[$PS] PLAN_CHECK=${PLAN_CHECK:-0} PLAN_CHECK_MARKS=${PLAN_CHECK_MARKS:-tint} PLAN_CHECK_THRESHOLD=${PLAN_CHECK_THRESHOLD:-0.5} TASK_SOURCE=${TASK_SOURCE:-rule} VLM_PLAN_MIN_SCORE=${VLM_PLAN_MIN_SCORE:-0}" \
   "SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS] PLANNER_SAM3_ARGS=[$PLANNER_SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \

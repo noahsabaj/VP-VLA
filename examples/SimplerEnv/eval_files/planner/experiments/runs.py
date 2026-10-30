@@ -14,7 +14,9 @@ study adds vlmplan_{layouts}_{level} (planner-only, the VLM plan) and closed_loo
 vlmplan_model/asm_{level}.json, and the role split's closed-loop eval handoff_vlmplan_iid15 (score_vlm_plan). The
 difficulty sweep's depth levels harsh_xS (harsh's errors times S) give vlmplan_iid15_harsh_xS (score_sweep); the
 missing-depth study's evals are miss_{layouts}_none (score_missing_depth); the harder-task system study's are named
-in score_harder_system (vlmplan_* and pseed31_* of each instruction group, with harsh depth).
+in score_harder_system (vlmplan_* and pseed31_* of each instruction group, with harsh depth). The energy study's
+energy runs are named in score_energy (energy_*, each with its null episodes in energy_*_null), with the ASMs
+energy_model/asm_{level}.json.
 """
 
 import os

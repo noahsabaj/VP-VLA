@@ -140,6 +140,36 @@ sim() {
     --logging-dir "$out" ${INSTRUCTIONS:+--instruction-set "$INSTRUCTIONS"} "$@" > "$out/sim.log" 2>&1
 }
 
+# Energy runs (ENERGY=1; the experiments README's "Energy study"). energy_setup SIMS_AT_ONCE: the sims read the
+# GPU's energy counter (ENERGY_GPU, eval_files/energy.py) when each episode starts and after its last step. That is
+# the episode's own energy only with one sim at a time on a GPU that runs nothing else, so SIMS_AT_ONCE must be 1.
+# Without ENERGY=1 it does nothing.
+energy_setup() {
+  [ "${ENERGY:-0}" = 1 ] || return 0
+  [ "$1" = 1 ] || { echo "ENERGY=1 needs one sim at a time, not $1" >&2; return 1; }
+  export ENERGY_GPU=$GPU
+}
+
+# energy_baseline GPU OUT LAYOUTS TASK:START:END...: with ENERGY=1, once the eval's servers are up and before its
+# episodes: the GPU's idle power over 60 s, after 30 s to settle (OUT/idle_power.json), then the same episodes with
+# the null controller (energy.py: the simulation alone, with the same servers loaded) in OUT_null/TASK/eps_START_END,
+# outside OUT so that they are not the eval's episodes. Without ENERGY=1 it does nothing.
+energy_baseline() {
+  [ "${ENERGY:-0}" = 1 ] || return 0
+  local gpu=$1 out=$2 ls item task start end
+  ls=$(layout_args "$3") || return 1
+  shift 3
+  "$SIMPLER_PYTHON" -m examples.SimplerEnv.eval_files.energy idle --gpu "$gpu" --seconds 60 --settle 30 \
+    > "$out/idle_power.json" || { log "idle power: failed"; return 1; }
+  log "idle power: $(cat "$out/idle_power.json")"
+  for item in "$@"; do
+    IFS=: read -r task start end <<< "$item"
+    sim "$gpu" "$task" "$start" "$end" "${out}_null/$task/eps_${start}_$end" --controller null $ls --no-action-plots ||
+      { log "null episodes $item: failed"; return 1; }
+  done
+  log "null episodes done: $*"
+}
+
 # Servers. The runner sets SERVER_ENV=(CUDA_VISIBLE_DEVICES=GPU); start_mps changes it to the MPS daemon.
 SERVER_PIDS=()
 MPS_PIPE=""

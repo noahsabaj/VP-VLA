@@ -141,9 +141,10 @@ def get_args():
 
     # ===== Motion planner =====
     parser.add_argument("--controller", type=str, default="vla",
-                        choices=["vla", "planner", "planner_then_vla", "selector"],
-                        help="Who drives the arm: the VLA, a motion planner, the planner then the VLA, or "
-                             "whichever of the two the selector picks on the first frame (needs --selector)")
+                        choices=["vla", "planner", "planner_then_vla", "selector", "null"],
+                        help="Who drives the arm: the VLA, a motion planner, the planner then the VLA, "
+                             "whichever of the two the selector picks on the first frame (needs --selector), or "
+                             "nobody (null: no motion, for the simulator's own energy; energy.py)")
     parser.add_argument("--selector", type=str, default=None,
                         help="Selector model saved by planner/selector.py --save, for --controller selector")
     parser.add_argument("--planner", type=str, default="mplib", choices=["mplib", "curobo"])

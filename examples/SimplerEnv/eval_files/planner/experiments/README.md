@@ -90,7 +90,11 @@ in `dmon.txt` (power, use and memory, with timestamps). `score_costs RUN...` giv
 seconds, the requests and the GPU energy. The GPU energy is the eval's own only when the eval had the GPU to itself:
 one eval at a time (`planner_evals.sh` with AT_ONCE=1) and no other user on the GPU. The round trips are GPU time
 only with one sim at a time; when sims share the servers (K sim clients, or the planner's 4 tasks at once), they
-include the wait for the other sims' requests.
+include the wait for the other sims' requests. Since 2026-10-30 the records also have the controller's own seconds
+(`controller`: the wall-clock and CPU seconds in the model's reset and steps). `ENERGY=1` makes an energy run (see
+"Energy study"; one sim at a time): each episode's GPU energy from the GPU's own energy counter (`gpu_joules`), the
+GPU's idle power with the eval's servers loaded (`idle_power.json`), and the same episodes with a controller that
+does nothing (`RUN_null`: the simulation alone).
 
 `SAM_VERSION` picks the model of every SAM server, both the VLA's visual prompts and the planner's masks:
 `sam3.1` (the default since 2026-10-23: SAM 3.1's detector, from the sam31 env) or `sam3` (transformers'
@@ -309,6 +313,26 @@ done
 IID_EPISODES=48 TASK_SET=harder bash $E/planner_eval.sh 0 10320 pseed31_harder_iid13_harsh harsh iid13
 ```
 
+The energy study's ASMs and energy runs (see "Energy study" below), each run alone on GPU 0. The ASMs need
+`vla31_iid11` and `pseed31_iid11_harsh` (the VLM-plan study's) and are saved before any energy run:
+
+```bash
+bash $E/planner_evals.sh 0 10320 1 pseed31_iid11_none:none:iid11
+mkdir -p $RUNS_DIR/energy_model
+for level in none harsh; do
+  python -m examples.SimplerEnv.eval_files.planner.selector --rule two-model \
+      --planner-runs $RUNS_DIR/pseed31_iid11_$level --vla-runs $RUNS_DIR/vla31_iid11 \
+      --save $RUNS_DIR/energy_model/asm_$level.json > $RUNS_DIR/energy_model/train_$level.txt
+done
+# the energy runs: the first 16 episodes of each task of iid15, one sim at a time
+export ENERGY=1 IID_EPISODES=16
+bash $E/vla_eval.sh 0 10400 energy_vla_iid15 iid15 1
+TASKS_AT_ONCE=1 bash $E/planner_eval.sh 0 10320 energy_pseed31_iid15_harsh harsh iid15
+TASKS_AT_ONCE=1 bash $E/planner_eval.sh 0 10320 energy_pseed31_iid15_none none iid15
+DEPTHS="harsh none" bash $E/selector_eval.sh 0 10510 energy_closed_loop_iid15 iid15 'energy_model/asm_{}.json' 1
+unset ENERGY IID_EPISODES
+```
+
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
 `TASK:0:8 TASK:8:16 TASK:16:24` for each task and `heldout_vla_g1` the episodes 24 to 47.
 
@@ -338,7 +362,7 @@ VLM-plan study's: `score_vlm_plan` (all its tables and tests, with the role spli
 `check_closed_loop closed_loop_vlmplan_iid15 --planner 'vlmplan_iid15_{}' --models 'vlmplan_model/asm_{}.json' --vla
 vla31_iid15` (its closed-loop eval) and `score_costs vlmplan_iid15_harsh vla31_iid15 closed_loop_vlmplan_iid15
 handoff_vlmplan_iid15` (its costs). The difficulty sweep's: `score_sweep`. The missing-depth study's:
-`score_missing_depth`. The harder-task system study's: `score_harder_system`. Any eval's costs (see "Costs" above):
+`score_missing_depth`. The harder-task system study's: `score_harder_system`. The energy study's: `score_energy`. Any eval's costs (see "Costs" above):
 `score_costs RUN...`.
 
 The `dfix_*` and `seeded_*` runs and `heldout_planner_none` (the evals before the planner seed and before the
@@ -1065,3 +1089,74 @@ share of planner picks (expected); the success models' AUC, within-task AUC, log
 what makes the system better (see "VLM-plan study"); what the VLM planned in each task. The VLM plan against the
 fixed rule on the same episodes: planner-only in every group, and the fixed rule's ASM (the two-model study's
 features, trained on `pseed31_iid11_harsh` and `vla31_iid11`, so on SimplerEnv's tasks only).
+
+## Energy study
+
+The plan below was fixed on 2026-10-30, before any energy run, and `score_energy` follows it. The results do not
+change it. A result that is not in the plan is reported as exploratory.
+
+**Question.** The VLA runs its models on the GPU at every step of an episode. The planner uses the GPU only for SAM
+(to find the object and the target) and plans on the CPU. So every episode that the ASM gives to the planner should
+cost much less energy than the same episode with the VLA. How much GPU energy per episode does the ASM system use,
+against the VLA alone and the planner alone?
+
+**Systems.** On the same episodes, all with SAM 3.1:
+
+- the VLA alone (VP-VLA with the fast settings);
+- the planner alone (the fixed rule, planner seed 0, noise seed 0);
+- the ASM system: the two-model ASM in the closed-loop eval (the planner when P(planner succeeds) >= P(VLA
+  succeeds), else the VLA). An episode that goes to the VLA also pays for the planner's first look, which the ASM
+  needs in every episode.
+
+**ASMs.** One per depth level (clean and harsh), trained as in the two-model study (`selector.py --rule two-model`,
+the same features) on `iid11` with SAM 3.1: `pseed31_iid11_{none,harsh}` and `vla31_iid11`. They are saved as
+`energy_model/asm_{level}.json` before any energy run. (The two-model study's ASMs were trained with SAM 3, and a
+saved ASM runs only with the SAM model it was trained on.)
+
+**Episodes.** The first 16 episodes of each of SimplerEnv's 4 tasks in `iid15`, with the tasks' own instructions:
+64 episodes per eval. The planner and the ASM system run with harsh depth and with clean depth. The VLA does not read
+depth, so one VLA eval serves both levels.
+
+**Measurement.** Each energy run (`ENERGY=1`) runs one sim at a time, alone on GPU 0 with no other user's job. Each
+episode records the GPU's energy from the model's reset to the episode's last step, read from the GPU's own energy
+counter (NVML's total energy, `energy.py`). The counter advances about every 0.1 s, so it is read once per episode,
+not per request. Before its episodes, each run measures:
+
+1. the GPU's idle power with the run's servers loaded: 60 s, after 30 s of settling (`idle_power.json`);
+2. the same episodes with a controller that does nothing (`--controller null`: the hand stays still and the episode
+   runs to its last step), in `RUN_null`. This is the simulation's own GPU energy per step on each task, with the
+   same servers loaded.
+
+An episode's **controller energy** is its GPU energy minus its steps times its task's simulation energy per step. It
+is what the controller adds to the simulation: its models' GPU work, and the GPU's idle power while it waits for the
+CPU. This is the main measure, because a real robot has no simulator to pay for.
+
+**Planned test.** With harsh depth, the ASM system's closed-loop eval against the VLA alone, controller energy per
+episode: the exact two-sided paired sign-flip test at 0.05 (all sign patterns), with one value per episode index (the
+sum over the 4 tasks of the ASM system's energy minus the VLA's), because the 4 tasks of an index share their layout.
+Only the episode indices with all 4 tasks in both evals count. A win: significant, with the ASM system lower.
+Interval: 95% percentile bootstrap of the mean difference per episode; each draw takes the episode indices again,
+with replacement (10,000 draws). Harsh depth is the planned level because it is the conservative case: with harsh
+depth the planner fails most, so the ASM gives the most episodes to the VLA.
+
+**Secondary (reported, no claims).** For each depth level and each system: the mean controller energy per episode
+(with its interval), the saving against the VLA alone, the energy per successful episode (with its interval), and
+kWh per million episodes (the mean in other units, not a forecast). The ASM system offline (each episode's
+closed-loop choice, with the planner-only and VLA-only evals' energies) as a check of the closed-loop eval. The
+oracle after the fact (the planner when it succeeds or when the VLA fails too, else the first look and the VLA). The
+same test with clean depth. The total GPU energy (with the simulation), the energy above idle (controller energy
+minus the idle power times the controller's seconds), a CPU estimate, and the wall-clock seconds. Each run's idle
+power and simulation energy per step. The success rates of these evals: they are small (64 episodes per eval), so
+the success claims stay with the two-model and VLM-plan studies.
+
+**CPU estimate.** The server's CPU (an AMD Threadripper PRO 7975WX: 32 cores, 350 W TDP) has an energy counter
+(RAPL) that only root can read. So the CPU energy is an estimate: the controller's CPU seconds times 350 W / 32. It
+matters most for the planner, which plans on the CPU.
+
+**Limits.** GPU energy and the CPU estimate only: no motors, camera or network. One GPU model (an RTX A6000), the
+VLA's fast settings and one request at a time; a server that batches requests, or another GPU, changes the joules,
+so the main result is the ratio between the systems. The simulation's share assumes that its energy per step is the
+same with and without a controller; the GPU may run at another clock speed when the simulation runs alone, so the
+total GPU energy is reported too.
+
+**Evals.** About 3.5 GPU hours on GPU 0, and about 10 minutes for `pseed31_iid11_none`. The commands are above.

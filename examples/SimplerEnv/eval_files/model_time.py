@@ -10,21 +10,33 @@ whole eval (the runners' dmon.txt, experiments/score_costs.py) is the cost measu
 The clients' websocket connections are wrapped (time_requests), so a round trip includes the server's work and the
 transfer, but not packing the request or unpacking the answer. One meter per process (METER): a sim process runs one
 episode at a time, and the evaluator resets the meter before each episode and writes it after (cost_record).
+
+The meter also times the controller itself (controller(): the wall-clock and CPU seconds of the model's reset() and
+step(), where a planner plans), and in the energy runs (ENERGY_GPU set, energy.py) it reads the GPU's energy counter
+when the episode starts (reset()), so gpu_joules() is the GPU's energy since then.
 """
 
 import time
+from contextlib import contextmanager
 from typing import Dict, Optional
+
+from .energy import GPUEnergy, energy_from_env
 
 
 class Meter:
-    """Requests and their round-trip seconds, per kind of model."""
+    """Requests and their round-trip seconds, per kind of model; the controller's own time; and, with an energy
+    counter, the GPU's energy since reset()."""
 
-    def __init__(self) -> None:
+    def __init__(self, energy: Optional[GPUEnergy] = None) -> None:
+        self.energy = energy
         self.reset()
 
     def reset(self) -> None:
         self.calls: Dict[str, int] = {}
         self.seconds: Dict[str, float] = {}
+        self.controller_seconds = 0.0
+        self.controller_cpu_seconds = 0.0
+        self._joules0 = self.energy.joules() if self.energy is not None else None
 
     def add(self, kind: str, seconds: float) -> None:
         self.calls[kind] = self.calls.get(kind, 0) + 1
@@ -34,8 +46,22 @@ class Meter:
         """{kind: {"calls": requests, "seconds": their round trips}} so far."""
         return {k: {"calls": self.calls[k], "seconds": self.seconds[k]} for k in sorted(self.calls)}
 
+    @contextmanager
+    def controller(self):
+        """Time a call into the controller (its reset() or step()): wall-clock and CPU seconds of this process."""
+        t0, c0 = time.perf_counter(), time.process_time()
+        try:
+            yield
+        finally:
+            self.controller_seconds += time.perf_counter() - t0
+            self.controller_cpu_seconds += time.process_time() - c0
 
-METER = Meter()
+    def gpu_joules(self) -> Optional[float]:
+        """The GPU's energy since reset(); None without an energy counter."""
+        return None if self._joules0 is None else self.energy.joules() - self._joules0
+
+
+METER = Meter(energy_from_env())
 
 
 class TimedConnection:
@@ -72,6 +98,8 @@ def time_requests(client, kind: str, meter: Meter = METER):
 
 def cost_record(episode: str, success: bool, steps: int, seconds: float, meter: Meter = METER, **info) -> dict:
     """One episode's cost: its wall-clock seconds (from the model's reset to the last step: simulation and model
-    time) and its model requests (meter.snapshot()), with `info` (the task, episode and layout)."""
+    time), its model requests (meter.snapshot()) and the controller's own seconds, with `info` (the task, episode and
+    layout; in the energy runs also gpu_joules)."""
     return {**info, "episode": episode, "success": bool(success), "steps": int(steps), "seconds": float(seconds),
-            "model": meter.snapshot()}
+            "model": meter.snapshot(),
+            "controller": {"seconds": meter.controller_seconds, "cpu_seconds": meter.controller_cpu_seconds}}

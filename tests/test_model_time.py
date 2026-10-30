@@ -76,6 +76,7 @@ def test_cost_record():
         "steps": 120,
         "seconds": 33.5,
         "model": {"vla": {"calls": 1, "seconds": 2.0}},
+        "controller": {"seconds": 0.0, "cpu_seconds": 0.0},
     }
     json.dumps(r)
 

@@ -29,6 +29,8 @@
 #                  (--vlm-plan-min-score; default 0: no check).
 #   MISSING_DEPTH  none (default) | target: in each episode, with chance 1/2, the place target gives no depth, as glass
 #                  or black cloth would (planner/geometry.py MissingDepth; not in SimplerEnv's eggplant task).
+#   ENERGY         1: an energy run (TASKS_AT_ONCE must be 1): each episode's GPU energy, the idle power and the null
+#                  episodes (energy_setup and energy_baseline in common.sh). Default 0.
 # Several evals at once: planner_evals.sh.
 [ $# -eq 5 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -46,6 +48,7 @@ RGB=$(rgb_args "$RGB_LEVEL") || exit 1
 OUT=$(run_dir "$NAME")
 mkdir -p "$OUT"
 LOG=$OUT/status.log
+energy_setup "${TASKS_AT_ONCE:-4}" || exit 1
 
 SERVER_ENV=(CUDA_VISIBLE_DEVICES=$GPU)
 trap stop_servers EXIT
@@ -60,7 +63,9 @@ if [ "${PLAN_CHECK:-0}" = 1 ] || [ "$TS" = vlm ]; then
   CHECK=(--plan-check-port $((PORT + 50)) --plan-check-marks "${PLAN_CHECK_MARKS:-tint}")
   [ "$TS" = vlm ] && CHECK=(--task-source vlm --vlm-plan-port $((PORT + 50)) --vlm-plan-min-score ${VLM_PLAN_MIN_SCORE:-0})
 fi
-log "START $NAME ($LEVEL depth, $RGB_LEVEL RGB, ${TASK_SET:-simpler} tasks, $LAYOUTS layouts, ${INSTRUCTIONS:-default} instructions, SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS], PLANNER_SEED=[$PS]," \
+energy_baseline $GPU "$OUT" "$LAYOUTS" $(for t in "${TASKS[@]}"; do echo "$t:0:$(layout_episodes "$LAYOUTS" "$t")"; done) ||
+  exit 1
+log "START $NAME (ENERGY=${ENERGY:-0}, $LEVEL depth, $RGB_LEVEL RGB, ${TASK_SET:-simpler} tasks, $LAYOUTS layouts, ${INSTRUCTIONS:-default} instructions, SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS], PLANNER_SEED=[$PS]," \
   "TASKS_AT_ONCE=${TASKS_AT_ONCE:-4}, PLAN_CHECK=${PLAN_CHECK:-0} PLAN_CHECK_MARKS=${PLAN_CHECK_MARKS:-tint} TASK_SOURCE=$TS VLM_PLAN_MIN_SCORE=${VLM_PLAN_MIN_SCORE:-0} MISSING_DEPTH=$MD [$VARGS]) on GPU $GPU (commit $(git rev-parse --short HEAD))"
 nvidia-smi dmon -i $GPU -s pum -o DT -d 5 > "$OUT/dmon.txt" 2>&1 &
 DMON=$!

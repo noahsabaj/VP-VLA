@@ -65,7 +65,9 @@ def probe_other_tasks(h, y, tasks, d):
 
 
 def within_task_auc(p, y, t):
-    return float(np.nanmean([auc(p[t == k], y[t == k]) for k in sorted(set(np.asarray(t).tolist()))]))
+    """The mean AUC of the tasks that have both outcomes (nan when no task has both)."""
+    a = np.array([auc(p[t == k], y[t == k]) for k in sorted(set(np.asarray(t).tolist()))])
+    return float(a[~np.isnan(a)].mean()) if (~np.isnan(a)).any() else float("nan")
 
 
 def metrics(p, y, t, base):

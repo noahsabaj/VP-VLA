@@ -9,11 +9,13 @@ import numpy as np
 import pytest
 
 from examples.SimplerEnv.eval_files import harder_scenes as hs
+from examples.SimplerEnv.eval_files import novel_scenes as ns
 from examples.SimplerEnv.eval_files.instruction_sets import INSTRUCTION_SETS
 from examples.SimplerEnv.eval_files.planner import selector as s
 from examples.SimplerEnv.eval_files.planner.experiments import score_marriage as sm
 
 HARDER = list(hs.TASKS)
+NOVEL = list(ns.TASKS)
 SETS = list(INSTRUCTION_SETS)
 
 
@@ -76,7 +78,7 @@ def quarter(t, e):
     return e % 4 == 0
 
 
-def _write_study(root, n1=8, n2=3, n3=4):
+def _write_study(root, n1=8, n2=3, n3=4, n5=2):
     """Every eval of the planned tests: VLA-P, VLA-PL and VLA-PLT solve every test episode, VLA-0, VLA-S and every
     option without training none; on the ASMs' training sets the planner with the VLM marks fails most and VLA-PL
     succeeds most, so the married system's ASM picks VLA-PL."""
@@ -93,6 +95,10 @@ def _write_study(root, n1=8, n2=3, n3=4):
     _vla(root, sm.vla_name("vlapl", "harder", "iid17"), HARDER, n3, yes)
     _planner(root, sm.planner_name(sm.RULE, "harder", "iid17", "none"), HARDER, n3, no, layout_seed=17)
     _planner(root, sm.planner_name(sm.MARKS, "harder", "iid17", "none"), HARDER, n3, no, source="vp", layout_seed=17)
+    _vla(root, sm.vla_name(None, "novel", "iid18"), NOVEL, n5, no)
+    _vla(root, sm.vla_name("vlapl", "novel", "iid18"), NOVEL, n5, yes)
+    _planner(root, sm.planner_name(sm.RULE, "novel", "iid18", "none"), NOVEL, n5, no, layout_seed=18)
+    _planner(root, sm.planner_name(sm.MARKS, "novel", "iid18", "none"), NOVEL, n5, no, source="vp", layout_seed=18)
     for level in ("none", "harsh"):
         _planner(root, sm.planner_name(sm.RULE, "own", "iid16", level), tasks, n1, no, level=level)
         _planner(root, sm.planner_name(sm.MARKS, "own", "iid16", level), tasks, n1, no, source="vp", level=level)
@@ -111,7 +117,7 @@ def _write_study(root, n1=8, n2=3, n3=4):
 @pytest.fixture
 def small(tmp_path, monkeypatch):
     monkeypatch.setenv("RUNS_DIR", str(tmp_path))
-    monkeypatch.setattr(sm, "DESIGN", {"T1": 8, "T2": 3, "T3": 4})
+    monkeypatch.setattr(sm, "DESIGN", {"T1": 8, "T2": 3, "T3": 4, "T5": 2})
     monkeypatch.setattr(sm, "CONTROL_EPISODES", 2)
     monkeypatch.setattr(sys, "argv", ["score_marriage"])
     return tmp_path
@@ -126,6 +132,10 @@ def test_run_names():
     assert sm.vla_name("vlapl", "order", "paper") == "vlapl_words_order_paper"
     assert sm.vla_name("vlapl", "harder", "paper") == "vlapl_harder_paper"
     assert sm.vla_name("vlapl", "blank", "iid16") == "vlapl_blank_iid16"
+    assert sm.vla_name(None, "novel", "iid18") == "vla_novel_iid18"
+    assert sm.vla_name("vlapl", "novel", "iid18") == "vlapl_novel_iid18"
+    assert sm.planner_name(sm.RULE, "novel", "iid18", "none") == "pseed31_novel_iid18_none"
+    assert sm.planner_name(sm.MARKS, "novel", "iid18", "none") == "vp_novel_iid18_none"
     assert sm.planner_name(sm.RULE, "own", "iid16", "harsh") == "pseed31_iid16_harsh"
     assert sm.planner_name(sm.RULE, "order", "paper", "none") == "words_order_paper"  # the reworded study's
     assert sm.planner_name(sm.RULE, "harder", "paper", "none") == "pseed31_harder_paper_none"
@@ -138,18 +148,20 @@ def test_run_names():
 
 
 def test_units_follow_the_shared_layouts():
-    t1, t2, t3 = (sm.design(p) for p in sm.PARTS)
+    t1, t2, t3, t5 = (sm.design(p) for p in sm.PARTS)
     assert len(t1) == 100 and {len(ks) for ks in t1.values()} == {4}  # an episode index: its 4 tasks
     assert len(t2) == 96 and {len(ks) for ks in t2.values()} == {4}  # a layout: its 4 reworded sets
     assert len(t3) == 48 and {len(ks) for ks in t3.values()} == {5}  # an episode index: its 5 scenes
+    assert len(t5) == 8 * 48 and {len(ks) for ks in t5.values()} == {1}  # an episode: each task has its own layouts
     task = s.TASKS[1]
     assert sm.unit(("T2", "order", task, 3)) == sm.unit(("T2", "synonyms", task, 3)) == f"T2/{task}/3"
     assert sm.unit(("T1", "own", s.TASKS[0], 3)) == sm.unit(("T1", "own", task, 3)) == "T1/3"
     assert sm.unit(("T3", "harder", HARDER[0], 3)) == "T3/3"
+    assert sm.unit(("T5", "novel", NOVEL[0], 3)) == f"T5/{NOVEL[0]}/3" != sm.unit(("T5", "novel", NOVEL[1], 3))
 
 
 def test_complete_and_paired(monkeypatch):
-    monkeypatch.setattr(sm, "DESIGN", {"T1": 2, "T2": 2, "T3": 2})
+    monkeypatch.setattr(sm, "DESIGN", {"T1": 2, "T2": 2, "T3": 2, "T5": 2})
     keys = [k for ks in sm.design("T2").values() for k in ks]
     new = dict.fromkeys(keys, 1.0)
     base = dict.fromkeys(keys, 0.0)
@@ -182,10 +194,16 @@ def test_planned_tests_in_order(small, capsys):
     # system's methods fail every test episode
     assert "the current system (the fixed rule, VLA-0, the ASM), on T1 (harsh depth), T2 and T3: +100.0 points" in out
     assert "100 episodes, 24 units: 24 up, 0 down)" in out
-    assert "H5, does choosing where to collect help? VLA-PLT minus VLA-PL on T1 and T2: +0.0 points" in out
+    # H5: the same on T5, with the ASMs without task columns
+    h5 = "H5, does the married system beat the current one on scenes that no model trained on?"
+    assert f"{h5} The married system minus the current system, on T5: +100.0 points" in out
+    assert "16 episodes, 16 units: 16 up, 0 down), exact p = 3.1e-05: a win" in out
+    assert "H6, does choosing where to collect help? VLA-PLT minus VLA-PL on T1 and T2: +0.0 points" in out
     assert "exact p = 1: not a win" in out
     assert "- VLA-PLTD minus VLA-PLT, T1 and T2: not run (it needs vlapltd_iid16, vlapltd_words_synonyms_paper" in out
     assert "### H4's systems on T2 (clean depth; 48 episodes)" in out
+    assert "### H5's systems on T5 (clean depth; 16 episodes)" in out
+    assert "| System | Row | new object | new pair | reasoning | long | All |" in out
     assert "- VLA-0, blank: not run" in out
 
 
@@ -197,7 +215,7 @@ def test_a_test_without_its_evals_stops_the_sequence(small, capsys):
     assert "H1, does the planner teach the VLA?" in out and ": a win" in out
     h2 = "H2, is it the planner's data? VLA-PL minus VLA-S on T1 and T2"
     assert f"{h2}: not run (it needs vlas_words_order_paper)" in out
-    assert out.count(": does not count (a test before it was not a win or did not run)") == 3  # H3, H4, H5
+    assert out.count(": does not count (a test before it was not a win or did not run)") == 4  # H3 to H6
 
 
 def test_h3_needs_a_win_against_each_option(small, capsys):
@@ -209,7 +227,7 @@ def test_h3_needs_a_win_against_each_option(small, capsys):
     out = capsys.readouterr().out
     assert f"  - vs {sm.PLANNERS[sm.MARKS]}: " in out
     assert "  intersection-union: p = 1 (the largest of the four): not a win" in out
-    assert out.count(": does not count (a test before it was not a win or did not run)") == 2  # H4, H5
+    assert out.count(": does not count (a test before it was not a win or did not run)") == 3  # H4, H5, H6
 
 
 def test_systems_gate_and_train(small):
@@ -221,13 +239,33 @@ def test_systems_gate_and_train(small):
     assert trained.rates[s.TASKS[0]] == (pytest.approx(4 / 16), pytest.approx(14 / 16))
     harsh, _ = sm.train_asm(study, sm.CURRENT, "harsh")
     assert harsh.asm.planner.tasks == list(s.TASKS)
-    scored, missing = sm.score_system(study, sm.MARRIED)
+    scored, missing = sm.score_system(study, sm.MARRIED, sm.SYSTEM_TESTS["H4"])
     assert not missing
     gated = ("T1", "own", s.TASKS[0], 4)  # no target: the VLA, whatever the ASM says
     assert gated not in scored.probs and scored.rows[sm.ASM][gated] == scored.rows[sm.VLA_ONLY][gated] == 1.0
     assert all(v == 1.0 for v in scored.rows[sm.ASM].values())
-    _, missing = sm.score_system(sm.Study("iid16", "iid17", "iid14"), sm.CURRENT)
+    _, missing = sm.score_system(sm.Study("iid16", "iid17", "iid14"), sm.CURRENT, sm.SYSTEM_TESTS["H4"])
     assert "pseed31_iid14_harsh" in missing and "vla31_iid14" in missing
+
+
+def test_new_tasks_take_an_asm_without_task_columns(small):
+    _write_study(small)
+    study = sm.Study("iid16", "iid17", "iid11")
+    trained, missing = sm.train_asm(study, sm.MARRIED, "none", task_free=True)
+    assert not missing and trained.asm.planner.tasks == trained.asm.vla.tasks == [sm.ANY]
+    # all the clean-depth ASM's training episodes, as one task: 16 of 20 per task in iid11, 7 of 8 per harder scene
+    assert trained.rates == {sm.ANY: (pytest.approx(21 / 99), pytest.approx(86 / 99))}
+    model = sm.train_asm(study, sm.MARRIED, "none")[0].asm.planner  # with task columns, it cannot score T5
+    with pytest.raises(ValueError, match="no task column for"):
+        model.columns(np.zeros((1, len(model.features))), [NOVEL[0]])
+    scored, missing = sm.score_system(study, sm.MARRIED, sm.SYSTEM_TESTS["H5"])
+    assert not missing and {k[0] for k in scored.rows[sm.ASM]} == {"T5"}
+    assert all(v == 1.0 for v in scored.rows[sm.ASM].values())  # P(VLA) is the higher: VLA-PL solves them
+    _, missing = sm.score_system(study, sm.CURRENT, sm.SYSTEM_TESTS["H5"])
+    assert not missing
+    shutil.rmtree(small / "vp_novel_iid18_none")
+    _, missing = sm.score_system(sm.Study("iid16", "iid17", "iid11"), sm.MARRIED, sm.SYSTEM_TESTS["H5"])
+    assert missing == ["vp_novel_iid18_none"]
 
 
 def test_controls_and_planner_only(small, capsys):

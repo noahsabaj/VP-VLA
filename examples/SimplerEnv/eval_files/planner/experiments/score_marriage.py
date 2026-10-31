@@ -7,24 +7,27 @@ successes (VLA-S, the control). The planner reads the instruction with its fixed
 (TASK_SOURCE=vp).
 
     python -m examples.SimplerEnv.eval_files.planner.experiments.score_marriage [--t1 iid16] [--t3 iid17] \\
-        [--train iid11]
+        [--t5 iid18] [--train iid11]
 
 Test sets: T1, SimplerEnv's 4 tasks with their own instructions (--t1); T2, the 4 reworded sets on SimplerEnv's
-layouts; T3, the 5 harder scenes (--t3); T4, T1 at the 3 depth levels (planner-only). vla_name and planner_name give
-the run names; the ASMs of the planned test H4 are trained on --train and on the harder scenes' fixed layouts. Each
-test takes one value per unit (unit): an episode index of T1 or T3, whose tasks share the layout, or a layout of T2
-(one task's episode in the 4 reworded sets). Only the design's episodes count (DESIGN), and of these only the units
-that every eval of a test has in full. A test without all its evals is not run, and the evals it lacks are named.
+layouts; T3, the 5 harder scenes (--t3); T4, T1 at the 3 depth levels (planner-only); T5, the 8 new test scenes
+(--t5; added by the plan's change of 2026-10-30). vla_name and planner_name give the run names; the ASMs of the
+planned tests H4 and H5 are trained on --train and on the harder scenes' fixed layouts (on T5, whose tasks they have
+no column for, without task columns). Each test takes one value per unit (unit): an episode index of T1 or T3, whose
+tasks share the layout, a layout of T2 (one task's episode in the 4 reworded sets), or an episode of T5 (each task
+has its own layouts). Only the design's episodes count (DESIGN), and of these only the units that every eval of a
+test has in full. A test without all its evals is not run, and the evals it lacks are named.
 """
 
 import argparse
 import os
 from collections import defaultdict
-from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
 
 from examples.SimplerEnv.eval_files import harder_scenes as hs
+from examples.SimplerEnv.eval_files import novel_scenes as ns
 from examples.SimplerEnv.eval_files.instruction_sets import INSTRUCTION_SETS
 
 from .. import selector as s
@@ -42,12 +45,15 @@ PREFIXES = {**MODELS, **CURVE, SMALL: "small", SUBTASK: "vlasub"}
 RULE, MARKS = "rule", "vp"  # the planner reads the instruction with its fixed rule, or with VP-VLA's VLM marks
 PLANNERS = {RULE: "planner (fixed rule)", MARKS: "planner (VLM marks)"}
 SETS = list(INSTRUCTION_SETS)
-PARTS = ("T1", "T2", "T3")
-DESIGN = {"T1": 100, "T2": 24, "T3": 48}  # the design's episodes of each task (T2: of each task in each set)
+PARTS = ("T1", "T2", "T3", "T5")
+DESIGN = {"T1": 100, "T2": 24, "T3": 48, "T5": 48}  # the design's episodes of each task (T2: of each task in each set)
 CONTROLS, CONTROL_EPISODES = ("blank", "wrong"), 24  # the blank and wrong instructions: T1's first 24 of each task
-H4_LEVELS = {"T1": "harsh", "T2": "none", "T3": "none"}  # each test set's depth level in H4
+SYSTEM_LEVELS = {"T1": "harsh", "T2": "none", "T3": "none", "T5": "none"}  # each test set's depth level in H4 and H5
+SYSTEM_TESTS = {"H4": ("T1", "T2", "T3"), "H5": ("T5",)}  # the test sets of the systems' planned tests
+NEW_TASKS = ("T5",)  # test sets whose tasks the ASMs have no column for: there, ASMs without task columns
+ANY = "any task"  # the one task of an ASM without task columns (its column is constant, so it adds nothing)
 TASK_COLUMNS = [*s.TASKS, *hs.TASKS]
-NAMES = {**SHORT, **hs.SHORT}
+NAMES = {**SHORT, **hs.SHORT, **ns.SHORT}
 PLANNER_ONLY, VLA_ONLY, ASM, PER_TASK, ORACLE = "planner-only", "VLA-only", "ASM", "per-task choice", "oracle"
 
 Key = Tuple[str, str, str, int]  # (test set, instruction group, task, episode)
@@ -55,43 +61,45 @@ Arm = Dict[Key, float]  # each episode's success
 
 
 def groups(part: str) -> List[str]:
-    """A test set's instruction groups: own (the tasks' own instructions), the reworded sets, or harder."""
-    return {"T1": ["own"], "T2": SETS, "T3": ["harder"]}[part]
+    """A test set's instruction groups: own (the tasks' own instructions), the reworded sets, harder or novel."""
+    return {"T1": ["own"], "T2": SETS, "T3": ["harder"], "T5": ["novel"]}[part]
 
 
 def group_tasks(group: str) -> List[str]:
-    return list(hs.TASKS) if group == "harder" else list(s.TASKS)
+    return list(hs.TASKS) if group == "harder" else list(ns.TASKS) if group == "novel" else list(s.TASKS)
 
 
 def vla_name(prefix: Optional[str], group: str, layouts: str) -> str:
-    """A VLA-only eval of an instruction group (own, a reworded set, harder, blank or wrong). VLA-0 (prefix None) has
-    the earlier studies' names: vla31_{layouts}, vla_words_{set}_{layouts}, vla_harder_{layouts} and
-    vla31_{blank,wrong}_{layouts}; another model's are {prefix}_{layouts}, {prefix}_words_{set}_{layouts},
-    {prefix}_harder_{layouts} and {prefix}_{blank,wrong}_{layouts}."""
+    """A VLA-only eval of an instruction group (own, a reworded set, harder, novel, blank or wrong). VLA-0 (prefix
+    None) has the earlier studies' names: vla31_{layouts}, vla_words_{set}_{layouts}, vla_harder_{layouts},
+    vla_novel_{layouts} and vla31_{blank,wrong}_{layouts}; another model's are {prefix}_{layouts},
+    {prefix}_words_{set}_{layouts}, {prefix}_harder_{layouts}, {prefix}_novel_{layouts} and
+    {prefix}_{blank,wrong}_{layouts}."""
     if group == "own":
         return f"{prefix or 'vla31'}_{layouts}"
     if group in CONTROLS:
         return f"{prefix or 'vla31'}_{group}_{layouts}"
-    return f"{prefix or 'vla'}_{'harder' if group == 'harder' else 'words_' + group}_{layouts}"
+    return f"{prefix or 'vla'}_{group if group in ('harder', 'novel') else 'words_' + group}_{layouts}"
 
 
 def planner_name(source: str, group: str, layouts: str, level: str) -> str:
-    """A planner-only eval. The fixed rule: pseed31_{layouts}_{level}, pseed31_harder_{layouts}_{level}, and on a
-    reworded set the reworded-instruction study's words_{set}_paper (clean depth). The VLM marks: vp_{layouts}_{level},
-    vp_words_{set}_{layouts}_{level} and vp_harder_{layouts}_{level}."""
+    """A planner-only eval. The fixed rule: pseed31_{layouts}_{level}, pseed31_harder_{layouts}_{level},
+    pseed31_novel_{layouts}_{level}, and on a reworded set the reworded-instruction study's words_{set}_paper (clean
+    depth). The VLM marks: vp_{layouts}_{level}, vp_words_{set}_{layouts}_{level}, vp_harder_{layouts}_{level} and
+    vp_novel_{layouts}_{level}."""
     if source == RULE and group in SETS:
         if (layouts, level) != ("paper", "none"):
             raise ValueError("the fixed rule's reworded evals are the reworded-instruction study's: paper, clean depth")
         return f"words_{group}_paper"
-    middle = "" if group == "own" else "harder_" if group == "harder" else f"words_{group}_"
+    middle = "" if group == "own" else f"{group}_" if group in ("harder", "novel") else f"words_{group}_"
     return f"{'pseed31' if source == RULE else 'vp'}_{middle}{layouts}_{level}"
 
 
 def unit(key: Key) -> str:
-    """A key's unit: an episode index of T1 or T3 (its tasks share the layout), or a layout of T2 (one task's
-    episode, in every reworded set)."""
+    """A key's unit: an episode index of T1 or T3 (its tasks share the layout), a layout of T2 (one task's episode,
+    in every reworded set), or an episode of T5 (each task has its own layouts)."""
     part, _, task, episode = key
-    return f"{part}/{task}/{episode}" if part == "T2" else f"{part}/{episode}"
+    return f"{part}/{task}/{episode}" if part in ("T2", "T5") else f"{part}/{episode}"
 
 
 def design(part: str) -> Dict[str, List[Key]]:
@@ -129,8 +137,8 @@ def outcomes(records: Dict[Key, dict]) -> Arm:
 class Study:
     """The study's evals in $RUNS_DIR, each read once."""
 
-    def __init__(self, t1: str, t3: str, train: str):
-        self.layouts, self.train = {"T1": t1, "T2": "paper", "T3": t3}, train
+    def __init__(self, t1: str, t3: str, train: str, t5: str = "iid18"):
+        self.layouts, self.train = {"T1": t1, "T2": "paper", "T3": t3, "T5": t5}, train
         self.cache: Dict[Tuple[str, str], Optional[dict]] = {}
 
     def run(self, name: str, group: str, planner: bool) -> Optional[dict]:
@@ -229,10 +237,11 @@ CURRENT = System("current system (the fixed rule, VLA-0, the ASM)", RULE, "VLA-0
 MARRIED = System("married system (the VLM marks, VLA-PL, the ASM)", MARKS, "VLA-PL")
 
 
-def train_asm(study: Study, system: System, level: str) -> Tuple[Optional[Trained], List[str]]:
+def train_asm(study: Study, system: System, level: str, task_free: bool = False) -> Tuple[Optional[Trained], List[str]]:
     """The system's ASM at one depth level, with the two-model study's features: trained on the training set (and, at
     clean depth, on the harder scenes' fixed layouts too, for T3's task columns), without the episodes that the VLM
-    marks give to the VLA first. Each task's success rates there give the per-task choice."""
+    marks give to the VLA first. Each task's success rates there give the per-task choice. task_free: the same
+    episodes without task columns (all of them ANY), for tasks that the ASM has no column for."""
     prefix = MODELS[system.vla]
     parts = [(planner_name(system.source, "own", study.train, level), vla_name(prefix, "own", study.train), "own")]
     if level == "none":
@@ -252,8 +261,8 @@ def train_asm(study: Study, system: System, level: str) -> Tuple[Optional[Traine
                 y_plan.append(float(planner[k]["success"]))
                 y_vla.append(vla[k])
     s.merged_settings(settings)  # stops when the parts differ in more than their layouts
-    tasks, y_plan, y_vla = np.array(tasks), np.array(y_plan), np.array(y_vla)
-    columns = TASK_COLUMNS if level == "none" else list(s.TASKS)
+    tasks, y_plan, y_vla = np.array([ANY] * len(tasks) if task_free else tasks), np.array(y_plan), np.array(y_vla)
+    columns = [ANY] if task_free else TASK_COLUMNS if level == "none" else list(s.TASKS)
     asm = s.fit_two_model(records, tasks, y_plan, y_vla, task_columns=columns)
     rates = {t: (float(y_plan[tasks == t].mean()), float(y_vla[tasks == t].mean())) for t in columns
              if (tasks == t).any()}
@@ -265,29 +274,33 @@ class Scored(NamedTuple):
     probs: Dict[Key, Tuple[float, float]]  # P(planner), P(VLA) of each episode that the ASM decides
 
 
-def score_system(study: Study, system: System) -> Tuple[Optional[Scored], List[str]]:
-    """The system on H4's test sets, each at its level (H4_LEVELS), scored offline: each episode's choice from the
-    first look of its planner-only eval (the gate, then the ASM), and the chosen method's outcome."""
+def score_system(study: Study, system: System, parts: Sequence[str]) -> Tuple[Optional[Scored], List[str]]:
+    """The system on these test sets, each at its level (SYSTEM_LEVELS), scored offline: each episode's choice from
+    the first look of its planner-only eval (the gate, then the ASM; on NEW_TASKS, the ASM without task columns), and
+    the chosen method's outcome."""
     trained, missing = {}, []
-    for level in sorted(set(H4_LEVELS.values())):
-        trained[level], lacks = train_asm(study, system, level)
-        missing += lacks
-    records, lacks = study.planner(system.source, PARTS, H4_LEVELS)
-    vla, lacks_vla = study.vla(MODELS[system.vla], PARTS)
+    for part in parts:
+        how = (SYSTEM_LEVELS[part], part in NEW_TASKS)
+        if how not in trained:
+            trained[how], lacks = train_asm(study, system, *how)
+            missing += [n for n in lacks if n not in missing]
+    records, lacks = study.planner(system.source, parts, SYSTEM_LEVELS)
+    vla, lacks_vla = study.vla(MODELS[system.vla], parts)
     missing += lacks + lacks_vla
     if missing:
         return None, missing
     rows, probs = {n: {} for n in (PLANNER_ONLY, VLA_ONLY, ASM, PER_TASK, ORACLE)}, {}
-    for part in PARTS:
-        t = trained[H4_LEVELS[part]]
+    for part in parts:
+        t = trained[SYSTEM_LEVELS[part], part in NEW_TASKS]
         keys = [k for k in records if k[0] == part and k in vla]
         if not keys:
             continue
         recs = [records[k] for k in keys]
-        p_plan, p_vla = t.asm.probs(recs, [k[2] for k in keys])
-        for k, r, pp, pv in zip(keys, recs, p_plan, p_vla, strict=True):
+        tasks = [ANY if part in NEW_TASKS else k[2] for k in keys]
+        p_plan, p_vla = t.asm.probs(recs, tasks)
+        for k, task, r, pp, pv in zip(keys, tasks, recs, p_plan, p_vla, strict=True):
             y_plan, y_vla, gated = float(r["success"]), vla[k], s.vlm_plan_gate(r) is not None
-            plan_rate, vla_rate = t.rates.get(k[2], (1.0, 0.0))
+            plan_rate, vla_rate = t.rates.get(task, (1.0, 0.0))
             rows[PLANNER_ONLY][k], rows[VLA_ONLY][k], rows[ORACLE][k] = y_plan, y_vla, max(y_plan, y_vla)
             rows[ASM][k] = y_vla if gated or pp < pv else y_plan
             rows[PER_TASK][k] = y_vla if gated or plan_rate < vla_rate else y_plan
@@ -296,15 +309,24 @@ def score_system(study: Study, system: System) -> Tuple[Optional[Scored], List[s
     return Scored(rows, probs), []
 
 
-def h4(systems: Dict[System, Tuple[Optional[Scored], List[str]]]) -> Tuple[Optional[Result], List[str]]:
-    (married, m1), (current, m2) = systems[MARRIED], systems[CURRENT]
+Systems = Dict[str, Dict[System, Tuple[Optional[Scored], List[str]]]]  # by planned test (SYSTEM_TESTS)
+
+
+def score_systems(study: Study) -> Systems:
+    return {test: {system: score_system(study, system, parts) for system in (CURRENT, MARRIED)}
+            for test, parts in SYSTEM_TESTS.items()}
+
+
+def system_test(systems: Systems, test: str) -> Tuple[Optional[Result], List[str]]:
+    """The married system minus the current one on the test's test sets (H4 or H5)."""
+    (married, m1), (current, m2) = systems[test][MARRIED], systems[test][CURRENT]
     if married is None or current is None:
-        return None, m1 + m2
-    return pair_test((married.rows[ASM], []), (current.rows[ASM], []), PARTS)
+        return None, m1 + [n for n in m2 if n not in m1]
+    return pair_test((married.rows[ASM], []), (current.rows[ASM], []), SYSTEM_TESTS[test])
 
 
-def print_tests(study: Study, systems: Dict[System, Tuple[Optional[Scored], List[str]]]) -> None:
-    """H1 to H5 in their fixed order; a test counts only when every test before it was a win."""
+def print_tests(study: Study, systems: Systems) -> None:
+    """H1 to H6 in their fixed order; a test counts only when every test before it was a win."""
     tests = [
         ("H1", "does the planner teach the VLA? VLA-P minus VLA-0 on T1",
          lambda: pair_test(study.vla(MODELS["VLA-P"], ["T1"]), study.vla(None, ["T1"]), ["T1"])),
@@ -314,8 +336,10 @@ def print_tests(study: Study, systems: Dict[System, Tuple[Optional[Scored], List
         ("H3", "does the married VLA beat every option that needs no training on new language? VLA-PL minus each, "
                "on T2", lambda: h3(study)),
         ("H4", f"does the married system beat the current one? The {MARRIED.name} minus the {CURRENT.name}, on T1 "
-               "(harsh depth), T2 and T3", lambda: h4(systems)),
-        ("H5", "does choosing where to collect help? VLA-PLT minus VLA-PL on T1 and T2",
+               "(harsh depth), T2 and T3", lambda: system_test(systems, "H4")),
+        ("H5", "does the married system beat the current one on scenes that no model trained on? The married system "
+               "minus the current system, on T5", lambda: system_test(systems, "H5")),
+        ("H6", "does choosing where to collect help? VLA-PLT minus VLA-PL on T1 and T2",
          lambda: pair_test(study.vla(MODELS["VLA-PLT"], ["T1", "T2"]), study.vla(MODELS["VLA-PL"], ["T1", "T2"]),
                            ["T1", "T2"])),
     ]
@@ -347,9 +371,9 @@ def rate(arm: Arm, part: str, group: Optional[str] = None) -> str:
 
 
 def print_success(study: Study) -> None:
-    """Every eval's success rate (episodes) on T1, each reworded set, all of T2, and T3."""
+    """Every eval's success rate (episodes) on T1, each reworded set, all of T2, T3 and T5."""
     print("Success rates, % (episodes; the design's episodes that the eval ran):")
-    print("| Eval | T1 | " + " | ".join(SETS) + " | T2 | T3 |\n" + "|---" * (len(SETS) + 4) + "|")
+    print("| Eval | T1 | " + " | ".join(SETS) + " | T2 | T3 | T5 |\n" + "|---" * (len(SETS) + 5) + "|")
     rows = [(name, study.vla(prefix, PARTS)[0]) for name, prefix in PREFIXES.items()]
     for source, label in PLANNERS.items():
         for level in LEVELS:
@@ -359,14 +383,14 @@ def print_success(study: Study) -> None:
     for name, arm in rows:
         if arm:
             print(f"| {name} | {rate(arm, 'T1')} | " + " | ".join(rate(arm, "T2", g) for g in SETS)
-                  + f" | {rate(arm, 'T2')} | {rate(arm, 'T3')} |")
+                  + f" | {rate(arm, 'T2')} | {rate(arm, 'T3')} | {rate(arm, 'T5')} |")
 
 
 def print_vs_vla0(study: Study) -> None:
     base = study.vla(None, PARTS)[0]
-    cells = [("T1", "own"), *[("T2", g) for g in SETS], ("T3", "harder")]
+    cells = [("T1", "own"), *[("T2", g) for g in SETS], ("T3", "harder"), ("T5", "novel")]
     print("\nEach model against VLA-0 (exact McNemar on the design's episodes that both ran: better / worse, p):")
-    print("| Model | T1 | " + " | ".join(SETS) + " | T3 |\n" + "|---" * (len(SETS) + 3) + "|")
+    print("| Model | T1 | " + " | ".join(SETS) + " | T3 | T5 |\n" + "|---" * (len(SETS) + 4) + "|")
     for name, prefix in PREFIXES.items():
         arm = study.vla(prefix, PARTS)[0]
         if prefix is None or not arm:
@@ -399,7 +423,7 @@ def print_pairs(study: Study) -> None:
         for model in ("VLA-PL", "VLA-0"):
             print_pair(f"{model} minus the {PLANNERS[RULE]}, T1 with {runs.LEVEL_NAMES[level]} depth",
                        study.vla(MODELS[model], ["T1"]), teacher, ["T1"])
-    for part, levels in (("T1", LEVELS), ("T2", ["none"]), ("T3", ["none"])):
+    for part, levels in (("T1", LEVELS), ("T2", ["none"]), ("T3", ["none"]), ("T5", ["none"])):
         for level in levels:
             marks, rule = (study.planner(src, [part], {part: level}) for src in (MARKS, RULE))
             print_pair(f"{PLANNERS[MARKS]} minus the {PLANNERS[RULE]}, {part} with {runs.LEVEL_NAMES[level]} depth",
@@ -424,43 +448,56 @@ def print_solved(study: Study) -> None:
             print(f"- {name} solves {sum(arm[k] for k in have):.0f} of the {len(have)} that it ran")
 
 
-def print_systems(systems: Dict[System, Tuple[Optional[Scored], List[str]]]) -> None:
-    """H4's systems on each test set (secondary)."""
-    (married, _), (current, _) = systems[MARRIED], systems[CURRENT]
-    if married is None or current is None:
-        print("\nH4's systems: not scored (their evals are not all there)")
+def print_systems(systems: Systems) -> None:
+    """H4's and H5's systems on each test set (secondary)."""
+    for test, parts in SYSTEM_TESTS.items():
+        (married, _), (current, _) = systems[test][MARRIED], systems[test][CURRENT]
+        if married is None or current is None:
+            print(f"\n{test}'s systems: not scored (their evals are not all there)")
+            continue
+        for part in parts:
+            print_system_part(test, part, married, current)
+
+
+def columns(part: str) -> List[Tuple[str, Callable[[Key], bool]]]:
+    """The columns of a test set's tables: its instruction groups, or on T5 the kinds of its tasks."""
+    if part == "T5":
+        return [(kind, lambda k, kind=kind: ns.KINDS[k[2]] == kind) for kind in dict.fromkeys(ns.KINDS.values())]
+    return [(g, lambda k, g=g: k[1] == g) for g in groups(part)]
+
+
+def print_system_part(test: str, part: str, married: Scored, current: Scored) -> None:
+    keys = complete([married.rows[ASM], current.rows[ASM]], [part])
+    if not keys:
         return
     old = current.rows[ORACLE]  # the old pair's oracle: the better of the fixed rule and VLA-0 in each episode
-    for part in PARTS:
-        keys = complete([married.rows[ASM], current.rows[ASM]], [part])
-        if not keys:
-            continue
-        print(f"\n### H4's systems on {part} ({runs.LEVEL_NAMES[H4_LEVELS[part]]} depth; {len(keys)} episodes)")
-        print("| System | Row | " + " | ".join(groups(part)) + " | All |\n|---|---|" + "---|" * (len(groups(part)) + 1))
-        for system, scored in ((CURRENT, current), (MARRIED, married)):
-            for row, arm in scored.rows.items():
-                print(f"| {system.name} | {row} | " + " | ".join(
-                    f"{100 * np.mean([arm[k] for k in keys if k[1] == g]):.1f}" for g in groups(part))
-                    + f" | {100 * np.mean([arm[k] for k in keys]):.1f} |")
-        for system, scored in ((CURRENT, current), (MARRIED, married)):
-            p, v = (np.array([scored.rows[n][k] for k in keys]) for n in (PLANNER_ONLY, VLA_ONLY))
-            print(f"- {system.name}: both methods solve {int(((p == 1) & (v == 1)).sum())}, only the planner "
-                  f"{int(((p == 1) & (v == 0)).sum())}, only the VLA {int(((p == 0) & (v == 1)).sum())}, neither "
-                  f"{int(((p == 0) & (v == 0)).sum())}")
-        print(f"- the married system minus the old pair's oracle: {paired(married.rows[ASM], old, keys)[0]}")
-        if part == "T2":
-            for g in SETS:
-                ks = [k for k in keys if k[1] == g]
-                print(f"  - {g}: the married system {100 * np.mean([married.rows[ASM][k] for k in ks]):.1f}, the old "
-                      f"pair's oracle {100 * np.mean([old[k] for k in ks]):.1f}")
-        for system, scored in ((CURRENT, current), (MARRIED, married)):
-            decided = [k for k in keys if k in scored.probs]
-            if decided:
-                print(f"\n{system.name}, the {len(decided)} episodes that its ASM decides:")
-                probs = np.array([scored.probs[k] for k in decided])
-                print_models({"P(planner)": (probs[:, 0], np.array([scored.rows[PLANNER_ONLY][k] for k in decided])),
-                              "P(VLA)": (probs[:, 1], np.array([scored.rows[VLA_ONLY][k] for k in decided]))},
-                             np.array([k[2] for k in decided]), bins=False)
+    cols = columns(part)
+    print(f"\n### {test}'s systems on {part} ({runs.LEVEL_NAMES[SYSTEM_LEVELS[part]]} depth; {len(keys)} episodes)")
+    print("| System | Row | " + " | ".join(c for c, _ in cols) + " | All |\n|---|---|" + "---|" * (len(cols) + 1))
+    for system, scored in ((CURRENT, current), (MARRIED, married)):
+        for row, arm in scored.rows.items():
+            print(f"| {system.name} | {row} | " + " | ".join(
+                f"{100 * np.mean([arm[k] for k in keys if has(k)]):.1f}" for _, has in cols)
+                + f" | {100 * np.mean([arm[k] for k in keys]):.1f} |")
+    for system, scored in ((CURRENT, current), (MARRIED, married)):
+        p, v = (np.array([scored.rows[n][k] for k in keys]) for n in (PLANNER_ONLY, VLA_ONLY))
+        print(f"- {system.name}: both methods solve {int(((p == 1) & (v == 1)).sum())}, only the planner "
+              f"{int(((p == 1) & (v == 0)).sum())}, only the VLA {int(((p == 0) & (v == 1)).sum())}, neither "
+              f"{int(((p == 0) & (v == 0)).sum())}")
+    print(f"- the married system minus the old pair's oracle: {paired(married.rows[ASM], old, keys)[0]}")
+    if part in ("T2", "T5"):
+        for c, has in cols:
+            ks = [k for k in keys if has(k)]
+            print(f"  - {c}: the married system {100 * np.mean([married.rows[ASM][k] for k in ks]):.1f}, the old "
+                  f"pair's oracle {100 * np.mean([old[k] for k in ks]):.1f}")
+    for system, scored in ((CURRENT, current), (MARRIED, married)):
+        decided = [k for k in keys if k in scored.probs]
+        if decided:
+            print(f"\n{system.name}, the {len(decided)} episodes that its ASM decides:")
+            probs = np.array([scored.probs[k] for k in decided])
+            print_models({"P(planner)": (probs[:, 0], np.array([scored.rows[PLANNER_ONLY][k] for k in decided])),
+                          "P(VLA)": (probs[:, 1], np.array([scored.rows[VLA_ONLY][k] for k in decided]))},
+                         np.array([k[2] for k in decided]), bins=False)
 
 
 def print_controls(study: Study) -> None:
@@ -486,13 +523,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--t1", default="iid16", help="T1's layouts (SimplerEnv's tasks with their own instructions)")
     ap.add_argument("--t3", default="iid17", help="T3's layouts (the harder scenes)")
-    ap.add_argument("--train", default="iid11", help="the training set of H4's ASMs")
+    ap.add_argument("--t5", default="iid18", help="T5's layouts (the new test scenes)")
+    ap.add_argument("--train", default="iid11", help="the training set of H4's and H5's ASMs")
     a = ap.parse_args()
-    study = Study(a.t1, a.t3, a.train)
-    print(f"# Marriage study: T1 {a.t1}, T2 the reworded sets on paper, T3 the harder scenes on {a.t3}; H4's ASMs "
-          f"trained on {a.train} and the harder scenes' fixed layouts\n")
+    study = Study(a.t1, a.t3, a.train, a.t5)
+    print(f"# Marriage study: T1 {a.t1}, T2 the reworded sets on paper, T3 the harder scenes on {a.t3}, T5 the new "
+          f"test scenes on {a.t5}; H4's and H5's ASMs trained on {a.train} and the harder scenes' fixed layouts\n")
     print_success(study)
-    systems = {system: score_system(study, system) for system in (CURRENT, MARRIED)}
+    systems = score_systems(study)
     print_tests(study, systems)
     print("\n## Secondary (reported, no claims)")
     print_vs_vla0(study)

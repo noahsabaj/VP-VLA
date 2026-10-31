@@ -446,6 +446,25 @@ export CKPT=$RUN_ROOT/vlaplt/checkpoints/steps_${STEPS}_pytorch_model.pt
 CONTROLLER=vla_then_planner TAKEOVER_STEPS="10 40" RECORD_DEMOS=1 DEPTHS=none \
     bash $E/selector_eval.sh 0 10510 demos_corrections_iid101 iid101 - 6
 unset CKPT
+# the change of 2026-10-30: the harder scenes' demonstrations (the planner reading the VLM's marks; VLA-0, then 100
+# more episodes at a time, as explicit chunks, up to 600 of a scene)
+IID_EPISODES=700 RECORD_DEMOS=1 TASK_SET=harder TASK_SOURCE=vp \
+    bash $E/planner_eval.sh 0 10320 demos_vp_harder_iid100 none iid100
+IID_EPISODES=400 RECORD_DEMOS=1 TASK_SET=harder bash $E/vla_eval.sh 0 10400 demos_vla_harder_iid100 iid100 4
+# T5's smoke tests (not part of the results): the planner reading the VLM's marks, and reading the simulator's
+# positions on the one-goal tasks
+IID_EPISODES=8 TASK_SET=novel TASK_SOURCE=vp bash $E/planner_eval.sh 0 10320 smoke_vp_novel_iid98 none iid98
+for t in NovelSpongeOnPlate-v0 NovelCanOnTowel-v0 NovelEggplantOnPlate-v0 NovelCarrotInBasket-v0 \
+    NovelNotOrangeOnTowel-v0 NovelCarrotByTowelOnPlate-v0; do
+  bash $E/sim_task.sh 0 $t 0 8 smoke_sim_novel_iid98/$t --controller planner --planner mplib --target-source sim \
+      --robot-mask joints --noise-seed 0 --layout-seed 98 --layout-per-episode
+done
+# T5
+IID_EPISODES=48 TASK_SET=novel bash $E/planner_eval.sh 0 10320 pseed31_novel_iid18_none none iid18
+IID_EPISODES=48 TASK_SET=novel TASK_SOURCE=vp bash $E/planner_eval.sh 0 10320 vp_novel_iid18_none none iid18
+IID_EPISODES=48 TASK_SET=novel bash $E/vla_eval.sh 0 10400 vla_novel_iid18 iid18 4
+CKPT=$RUN_ROOT/vlapl/checkpoints/steps_${STEPS}_pytorch_model.pt IID_EPISODES=48 TASK_SET=novel \
+    bash $E/vla_eval.sh 0 10400 vlapl_novel_iid18 iid18 4
 ```
 
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
@@ -1464,3 +1483,63 @@ runs about 45 (the smoke tests measure the speed), the VLA-only evals about 50 a
 
 **Built before their first run**, each with its code and tests: the selection of each model's demonstrations as
 above, VLA-PLTD's mixture, VLA-0 reading the subtask, the blank and wrong instructions, and the small policy.
+
+**Change of 2026-10-30, before any of the study's demonstrations, training runs or evals.** Noah decided that the
+harder scenes are training data too, and that a new test set of harder and more varied scenes takes their place as
+the scenes that no model trains on. The plan above stays as it is except for the points below, and `score_marriage`
+follows them.
+
+- **The harder scenes in training.** The 5 harder scenes join the training with 250 demonstrations each, as
+  SimplerEnv's 4 tasks, so each model's set has 2,250 (9 tasks).
+  - The fixed rule cannot read the two-step and two-plate instructions, so the planner reading the VLM's marks
+    (`TASK_SOURCE=vp`, clean depth) collects them, on the pool's episodes 0 to 699 of each harder scene
+    (`demos_vp_harder_iid100`), then 300 more at a time for a scene with fewer than 250 successes, up to 2,000
+    episodes of a scene. Only successful episodes are kept: the first 250 of each scene, in episode order. A scene
+    that still has fewer keeps what it has, and the report says so.
+  - The visual-prompt labels take each goal of a scene in turn (the two-step task's two). The harder scenes' own
+    instructions are training instructions now, and each scene gets 8 training rewordings in each of the four
+    families, written after the exclusion list's change of this date (`train_files/rewordings.py`).
+  - VLA-P, VLA-PL, VLA-PLT and VLA-PLTD take these demonstrations (with `--reword`, except VLA-P). VLA-PLT targets
+    SimplerEnv's 4 tasks only, as before (its ASM has no column for a harder scene), and takes VLA-PL's harder-scene
+    demonstrations. VLA-PLTD's corrections stay on SimplerEnv's 4 tasks, as the corrections use the fixed rule.
+  - VLA-S: VLA-0 on the harder scenes' pool (`demos_vla_harder_iid100`), episodes 0 to 399 of each scene and then
+    100 more at a time until it has 250 successes, at most 600 episodes of a scene. A scene with fewer than 250
+    successes after 600 episodes leaves a gap. VLA-0's next successful pool episodes of SimplerEnv's 4 tasks fill it,
+    an equal share from each (the first tasks in their order take the remainder), so VLA-S has as many
+    demonstrations as VLA-PL.
+  - The learning curve takes the first 50 and 125 demonstrations of each of the 9 tasks (450 and 1,125 in all).
+  - T3 now tests the harder scenes on new layouts (`iid17`); they are no longer scenes that no model trained on.
+    H4 does not change.
+- **T5, the new test scenes.** 8 tasks that no model trains on, two of each kind (`eval_files/novel_scenes.py`):
+  new objects (a sponge and a soda can, from SimplerEnv's Google-robot objects), new pairs (the eggplant on the
+  plate, and the carrot into the basket of the eggplant task's sink scene), reasoning in clutter (the vegetable that
+  is not orange, and the one of two carrots that is closer to the towel) and long tasks (a stack built on the plate,
+  and three pick-and-places in one instruction). T5 is `iid18`: layout seed 18, a random layout for each episode, 48
+  episodes per task (384 episodes). Each task has layouts of its own, so each episode is its own unit. T5's
+  instructions and concept words are in the rewordings' exclusion list since its change of this date. The evals
+  (with the settings of the evals above, `TASK_SET=novel`): `vla_novel_iid18`, `vlapl_novel_iid18`,
+  `pseed31_novel_iid18_none` and `vp_novel_iid18_none`.
+- **Planned tests.** A new H5, and the H5 above becomes H6. The order and the rule (a test counts only when every
+  test before it was a win) stay.
+
+  | # | Question | Comparison | Test sets |
+  |---|---|---|---|
+  | H5 | Does the married system beat the current system on scenes that no model trained on? | the married system vs. the current system (H4's) | T5 (384 episodes) |
+  | H6 | Does choosing where to collect help? | VLA-PLT vs. VLA-PL | T1 and T2 (784) |
+
+  The systems are H4's, scored the same way, at clean depth. T5's tasks have no column in the ASMs, so on T5 each
+  system takes an ASM without task columns (one P(planner) and one P(VLA) for every task), trained on the same
+  episodes as its clean-depth ASM. Its per-task choice on T5 is the method with the higher success rate on all of
+  those episodes.
+- **Smoke tests of T5's scenes** (before any T5 eval, not part of the results, and not on `iid18`): the first 8
+  episodes of each task on `iid98`. Their first frames, checked by eye: every object in place and in view, and the
+  can upright after settling. The planner reading the VLM's marks on all 8 tasks, and the planner reading the
+  simulator's positions (`sim_task.sh` with `--target-source sim`, which takes the first goal) on the 6 one-goal
+  tasks: the success check works, and the objects can be picked up and placed. If the planner with the simulator's
+  positions cannot pick up and place a task's object in any of the 8 episodes, the task changes in a dated note
+  before any T5 eval (for the can: SimplerEnv's opened Red Bull can, which is narrower).
+- **GPU hours.** About 160 in all: the harder-scene demonstrations about 25 more (most of it VLA-0's pool episodes,
+  for VLA-S), T5's smoke tests and evals about 12, and the training runs about 45 as before (the same number of
+  steps for the larger sets).
+- **Built before their first run**, as well: the visual-prompt labels of a scene with several goals, the harder
+  scenes' training rewordings, and the harder scenes' part of each model's demonstrations.

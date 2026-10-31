@@ -39,7 +39,7 @@ from .stats import cluster_bootstrap_interval, mcnemar, sign_flip, unit_sums
 # The models and the prefixes of their VLA-only evals (vla_name); VLA-0's evals have the earlier studies' names.
 MODELS = {"VLA-0": None, "VLA-P": "vlap", "VLA-PL": "vlapl", "VLA-PLT": "vlaplt", "VLA-PLTD": "vlapltd",
           "VLA-S": "vlas"}
-CURVE = {"VLA-P, 200 demonstrations": "vlap200", "VLA-P, 500 demonstrations": "vlap500"}  # the learning curve
+CURVE = {"VLA-P, 450 demonstrations": "vlap450", "VLA-P, 1,125 demonstrations": "vlap1125"}  # the learning curve
 SMALL, SUBTASK = "small policy", "VLA-0 reading the subtask"
 PREFIXES = {**MODELS, **CURVE, SMALL: "small", SUBTASK: "vlasub"}
 RULE, MARKS = "rule", "vp"  # the planner reads the instruction with its fixed rule, or with VP-VLA's VLM marks
@@ -430,7 +430,7 @@ def print_pairs(study: Study) -> None:
                        (outcomes(marks[0]), marks[1]), (outcomes(rule[0]), rule[1]), [part])
     print_pair(f"VLA-P minus the {SMALL} (the same demonstrations), T1", study.vla(MODELS["VLA-P"], ["T1"]),
                study.vla(PREFIXES[SMALL], ["T1"]), ["T1"])
-    for name in [*CURVE, "VLA-P"]:  # the learning curve: 200, 500 and 1,000 demonstrations
+    for name in [*CURVE, "VLA-P"]:  # the learning curve: 450, 1,125 and 2,250 demonstrations
         print_pair(f"{name} minus VLA-0, T1", study.vla(PREFIXES[name], ["T1"]), study.vla(None, ["T1"]), ["T1"])
 
 

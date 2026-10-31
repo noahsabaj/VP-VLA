@@ -1,10 +1,13 @@
 #!/bin/bash
 # Planner-only eval of one layout set at one depth-noise level, with the first-frame selector features in each
 # task's planner_stats.jsonl. The 4 tasks run at the same time on one SAM3 server.
-# Usage: planner_eval.sh GPU PORT NAME LEVEL LAYOUTS
+# Usage: planner_eval.sh GPU PORT NAME LEVEL LAYOUTS [CHUNK...]
 #   NAME: the run folder ($RUNS_DIR/NAME/TASK). LEVEL: none | realistic | harsh, or harsh_xS for the difficulty sweep
 #   (harsh's errors times S: harsh_x0.25, harsh_x0.5, harsh_x0.75, harsh_x1.5, harsh_x2; planner/geometry.py).
 #   LAYOUTS: paper | heldout | seedN | iidN (layout_args in common.sh).
+#   CHUNK: TASK:START:END, only episodes START to END - 1 of TASK, into $RUNS_DIR/NAME/TASK/eps_START_END (more
+#   episodes for a pool of demonstrations: train_files/select_demos.py names them). Default: every episode of each
+#   task. A run of a whole task replaces its folder, chunks and all.
 # Environment:
 #   SAM_VERSION    sam3.1 (default) | sam3: the SAM server's model (common.sh).
 #   SAM3_ARGS      SAM server options (default: none, as in every planner-only eval; the fast SAM3 settings
@@ -34,9 +37,20 @@
 #   ENERGY         1: an energy run (TASKS_AT_ONCE must be 1): each episode's GPU energy, the idle power and the null
 #                  episodes (energy_setup and energy_baseline in common.sh). Default 0.
 # Several evals at once: planner_evals.sh.
-[ $# -eq 5 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
+[ $# -ge 5 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 GPU=$1; PORT=$2; NAME=$3; LEVEL=$4; LAYOUTS=$5
+shift 5
+for job in "$@"; do
+  [[ $job =~ ^([^:]+):[0-9]+:[0-9]+$ && " ${TASKS[*]} " == *" ${BASH_REMATCH[1]} "* ]] ||
+    { echo "a chunk is TASK:START:END with a task of TASK_SET=${TASK_SET:-simpler}, not '$job'" >&2; exit 1; }
+done
+JOBS=("$@")
+[ ${#JOBS[@]} -gt 0 ] || JOBS=("${TASKS[@]}")
+RANGES=()  # TASK:START:END of each job
+for job in "${JOBS[@]}"; do
+  case $job in *:*) RANGES+=("$job") ;; *) RANGES+=("$job:0:$(layout_episodes "$LAYOUTS" "$job")") ;; esac
+done
 LS=$(layout_args "$LAYOUTS") || exit 1
 PS=${PLANNER_SEED-0}
 TS=${TASK_SOURCE:-rule}
@@ -66,23 +80,27 @@ if [ "${PLAN_CHECK:-0}" = 1 ] || [ "$TS" != rule ]; then
   [ "$TS" = vlm ] && CHECK=(--task-source vlm --vlm-plan-port $((PORT + 50)) --vlm-plan-min-score ${VLM_PLAN_MIN_SCORE:-0})
   [ "$TS" = vp ] && CHECK=(--task-source vp --vlm-plan-port $((PORT + 50)))
 fi
-energy_baseline $GPU "$OUT" "$LAYOUTS" $(for t in "${TASKS[@]}"; do echo "$t:0:$(layout_episodes "$LAYOUTS" "$t")"; done) ||
-  exit 1
+energy_baseline $GPU "$OUT" "$LAYOUTS" "${RANGES[@]}" || exit 1
 log "START $NAME (ENERGY=${ENERGY:-0}, $LEVEL depth, $RGB_LEVEL RGB, ${TASK_SET:-simpler} tasks, $LAYOUTS layouts, ${INSTRUCTIONS:-default} instructions, SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS], PLANNER_SEED=[$PS]," \
-  "TASKS_AT_ONCE=${TASKS_AT_ONCE:-4}, PLAN_CHECK=${PLAN_CHECK:-0} PLAN_CHECK_MARKS=${PLAN_CHECK_MARKS:-tint} TASK_SOURCE=$TS VLM_PLAN_MIN_SCORE=${VLM_PLAN_MIN_SCORE:-0} MISSING_DEPTH=$MD [$VARGS]) on GPU $GPU (commit $(git rev-parse --short HEAD))"
+  "TASKS_AT_ONCE=${TASKS_AT_ONCE:-4}, PLAN_CHECK=${PLAN_CHECK:-0} PLAN_CHECK_MARKS=${PLAN_CHECK_MARKS:-tint} TASK_SOURCE=$TS VLM_PLAN_MIN_SCORE=${VLM_PLAN_MIN_SCORE:-0} MISSING_DEPTH=$MD [$VARGS]) on GPU $GPU (commit $(git rev-parse --short HEAD)): ${RANGES[*]}"
 nvidia-smi dmon -i $GPU -s pum -o DT -d 5 > "$OUT/dmon.txt" 2>&1 &
 DMON=$!
 
+# task JOB: all of a task's episodes (JOB = TASK) into $OUT/TASK, or a chunk (TASK:START:END) into
+# $OUT/TASK/eps_START_END
 task() {
-  local out=$OUT/$1 t0=$SECONDS rc
-  sim $GPU $1 0 "$(layout_episodes "$LAYOUTS" "$1")" "$out" --controller planner --planner mplib \
+  local t s e out t0=$SECONDS rc
+  IFS=: read -r t s e <<< "$1"
+  out=$OUT/$t
+  if [ -n "$s" ]; then out=$out/eps_${s}_$e; else s=0 e=$(layout_episodes "$LAYOUTS" "$t"); fi
+  sim $GPU $t $s $e "$out" --controller planner --planner mplib \
     --target-source camera --depth-noise $LEVEL --robot-mask joints --noise-seed 0 ${PS:+--planner-seed $PS} $LS $RGB \
     --sam3-port $PORT --missing-depth $MD "${CHECK[@]}"
   rc=$?
   log "$NAME $1 exit=$rc episodes=$(grep -c "" "$out/planner_stats.jsonl" 2>/dev/null)" \
     "$(grep "Average success" "$out/sim.log" | tail -1 | xargs) ($(( (SECONDS - t0) / 60 )) min)"
 }
-run_pool ${TASKS_AT_ONCE:-4} 2 task "${TASKS[@]}"
+run_pool ${TASKS_AT_ONCE:-4} 2 task "${JOBS[@]}"
 kill $DMON 2>/dev/null
 stop_servers
 log "DONE $NAME"

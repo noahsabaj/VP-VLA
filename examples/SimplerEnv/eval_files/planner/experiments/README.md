@@ -111,7 +111,8 @@ test sets' four families (`train_files/rewordings.py`, 8 per task and family, fo
 harder scenes). Their exclusion list of every test instruction (the four reworded sets and the harder scenes; since
 its change of 2026-10-30, the new test scenes instead of the harder scenes) and of the words that carry each test
 family's concepts was fixed on 2026-10-30 before any rewording was written; the tests check every rewording against
-it.
+it. `train_files/select_demos.py` picks the marriage study's episodes for each model from its pools and writes the
+model's set (see "Marriage study").
 
 **Fine-tuning** (since 2026-10-30). `DATA_ROOT=... VP_DIR=... bash examples/SimplerEnv/train_files/run_finetune_1gpu.sh
 RUN_ID DATA_MIX` fine-tunes the released VP-VLA checkpoint on one 48 GB GPU with VP-VLA's own training code. The
@@ -398,10 +399,11 @@ DEPTHS="harsh none" bash $E/selector_eval.sh 0 10510 energy_closed_loop_iid15 ii
 unset ENERGY IID_EPISODES
 ```
 
-The marriage study's runs (see "Marriage study" below). The selection of each model's demonstrations, VLA-0
-reading the subtask, the blank and wrong instructions and the small policy are built before their first run, and
-their commands come with their code. `RUN_ROOT` is the fine-tuning runs' folder and `STEPS` their steps (fixed after
-the smoke tests); `CHECKPOINT_RUN` is the released checkpoint's run folder:
+The marriage study's runs (see "Marriage study" below). VLA-0 reading the subtask, the blank and wrong instructions
+and the small policy are built before their first run, and their commands come with their code. `RUN_ROOT` is the
+fine-tuning runs' folder and `STEPS` their steps (fixed after the smoke tests); `CHECKPOINT_RUN` is the released
+checkpoint's run folder, and `DATA_ROOT` and `VP_DIR` are the folders of the training sets and of their visual
+prompts:
 
 ```bash
 # the smoke tests (not part of the results): the pool's first 20 episodes of each task, converted, then a short
@@ -455,6 +457,27 @@ unset CKPT
 IID_EPISODES=700 RECORD_DEMOS=1 TASK_SET=harder TASK_SOURCE=vp \
     bash $E/planner_eval.sh 0 10320 demos_vp_harder_iid100 none iid100
 IID_EPISODES=400 RECORD_DEMOS=1 TASK_SET=harder bash $E/vla_eval.sh 0 10400 demos_vla_harder_iid100 iid100 4
+# the selection report (train_files/select_demos.py): each pool's episodes, what each task needs, and the chunks still
+# to run as the runners' arguments (planner_eval.sh, vla_eval.sh and selector_eval.sh take chunks after their other
+# arguments), e.g. 300 more episodes of a harder scene for the planner
+python -m examples.SimplerEnv.train_files.select_demos --runs $RUNS_DIR
+RECORD_DEMOS=1 TASK_SET=harder TASK_SOURCE=vp \
+    bash $E/planner_eval.sh 0 10320 demos_vp_harder_iid100 none iid100 TwoStepSpoonAndCarrot-v0:700:1000
+# each training set once the report says that its pools are done, and its model (before the models' evals above);
+# VLA-PLTD's set needs the corrections above. The learning curve's models have the T1 evals only.
+SD="python -m examples.SimplerEnv.train_files.select_demos --runs $RUNS_DIR --data-root $DATA_ROOT \
+    --visual-prompts $VP_DIR --stats $CHECKPOINT_RUN/dataset_statistics.json"
+for job in vlap:vla_p:planner_demos vlapl:vla_pl:planner_demos_reworded vlaplt:vla_plt:targeted_demos_reworded \
+    vlas:vla_s:vla_successes_reworded vlap450:vla_p450:planner_demos_450 vlap1125:vla_p1125:planner_demos_1125; do
+  IFS=: read -r M MIX SET <<< "$job"
+  $SD --write $SET && DATA_ROOT=$DATA_ROOT VP_DIR=$VP_DIR MAX_STEPS=$STEPS \
+      bash examples/SimplerEnv/train_files/run_finetune_1gpu.sh $M $MIX
+done
+$SD --write targeted_corrections_reworded && DATA_ROOT=$DATA_ROOT VP_DIR=$VP_DIR MAX_STEPS=$STEPS \
+    bash examples/SimplerEnv/train_files/run_finetune_1gpu.sh vlapltd vla_pltd
+for M in vlap450 vlap1125; do
+  CKPT=$RUN_ROOT/$M/checkpoints/steps_${STEPS}_pytorch_model.pt bash $E/vla_eval.sh 0 10400 ${M}_iid16 iid16 4
+done
 # T5's smoke tests (not part of the results): the planner reading the VLM's marks, and reading the simulator's
 # positions on the one-goal tasks
 IID_EPISODES=8 TASK_SET=novel TASK_SOURCE=vp bash $E/planner_eval.sh 0 10320 smoke_vp_novel_iid98 none iid98
@@ -1547,3 +1570,21 @@ follows them.
   steps for the larger sets).
 - **Built before their first run**, as well: the visual-prompt labels of a scene with several goals, the harder
   scenes' training rewordings, and the harder scenes' part of each model's demonstrations.
+
+**Built on 2026-10-30, before any of the study's runs: the selection of each model's demonstrations**
+(`train_files/select_demos.py`, with its tests). It reads the five pools (the planner's two, VLA-0's two and the
+corrections), each a run folder recorded with `RECORD_DEMOS=1`, and follows the rules above. Each task's episodes must
+all be there from episode 0 on, each once and with its pool's layouts. The report gives each task's episodes and
+successes, what it needs and the chunks still to run; a set is written only when all of its pools are done.
+`planner_eval.sh` now takes chunks (`TASK:START:END`), for the harder scenes' pool, which grows 300 episodes at a time.
+Four points that the plan left open are fixed here:
+
+- A task of SimplerEnv with fewer than 250 of the planner's successes in its 700 episodes keeps what it has, as a
+  harder scene does, and the report says so. VLA-S takes as many of each task as VLA-PL has of it, so that the two
+  sets stay the same size, and the harder scenes' gap is counted against VLA-PL's numbers.
+- VLA-PLT's random draw: each task has its own draw with seed 0, from the task's other successes in episode order.
+- VLA-PLTD's two sets are written as one set (`targeted_corrections_reworded`, mixture `vla_pltd`). The training draws
+  each set of a mixture equally often, whatever its size, so a mixture of the two would give the 1,000 corrections
+  half of the draws; one set gives every step the same chance, as DAgger's aggregated data does.
+- The learning curve's models are `vlap450` and `vlap1125` (mixtures `vla_p450` and `vla_p1125`), and their evals
+  `vlap450_iid16` and `vlap1125_iid16` replace `vlap200_iid16` and `vlap500_iid16`.

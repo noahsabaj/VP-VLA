@@ -58,6 +58,8 @@ if __name__ == "__main__":
             perturb_k=args.vla_perturb,
         )
 
+    if (args.controller == "vla_then_planner") != (args.takeover_steps is not None):
+        raise SystemExit("--controller vla_then_planner needs --takeover-steps LO HI; no other controller takes them")
     if args.controller == "vla":
         model = make_vla()
     elif args.controller == "null":
@@ -72,7 +74,7 @@ if __name__ == "__main__":
             raise SystemExit("--controller selector needs --selector <model.json>")
         model = PlannerClient(
             planner=args.planner,
-            vla=make_vla() if args.controller in ("planner_then_vla", "selector") else None,
+            vla=make_vla() if args.controller in ("planner_then_vla", "vla_then_planner", "selector") else None,
             selector=load_asm(args.selector) if args.controller == "selector" else None,
             sam3_host=args.sam3_host,
             sam3_port=args.sam3_port if args.planner_sam3_port is None else args.planner_sam3_port,
@@ -93,6 +95,7 @@ if __name__ == "__main__":
             plan_check_marks=args.plan_check_marks,
             plan_check_threshold=args.plan_check_threshold,
             missing_depth=args.missing_depth,
+            takeover_steps=args.takeover_steps,
         )
 
     success_arr = maniskill2_evaluator(model, args)

@@ -2,7 +2,9 @@
 
 The changes, marked "CHANGED":
 1. `model.step()` also gets the full observation and the simulator (`obs=obs, env=env`),
-   so a planner can see depth, camera settings and joint angles. ModelClientVP ignores them.
+   so a planner can see depth, camera settings and joint angles, and the simulator's info after the last step
+   (`info`, None at the first step), so the VLA-then-planner mode can see whether the task is already done.
+   ModelClientVP ignores them.
 2. After each episode, `model.finish_episode(success, info)` is called if the model has it.
 3. `layout_seed` (optional): swap the task's 24 fixed layouts for new random ones, so results
    can be checked on layouts nothing was tuned on. Off by default. With `layout_per_episode`, each
@@ -23,7 +25,8 @@ The changes, marked "CHANGED":
    `logging_dir/episode_costs.jsonl`. In the energy runs (ENERGY_GPU set, energy.py), also the GPU's energy over the
    same window (`gpu_joules`).
 10. `demos` (`--record-demos DIR`): each episode recorded as a demonstration for the VLA (demos.py): the pictures, the
-   commands as the VLA's actions, the hand's pose and which object each pixel shows. Off by default.
+   commands as the VLA's actions, the hand's pose and which object each pixel shows; with the VLA then the planner,
+   only the planner's part (the model's demo_info()). Off by default.
 Everything else is unchanged, so the AI-only setup behaves exactly as with SimplerEnv's loop.
 """
 
@@ -164,6 +167,7 @@ def run_maniskill2_eval_single_episode(
     images = [image]
     predicted_actions = []
     predicted_terminated, done, truncated = False, False, False
+    info = None  # CHANGED: the simulator's info after the last step, for the model
 
     # CHANGED: time the episode and its model requests from here (model_time.py); reset can already ask a server.
     METER.reset()
@@ -185,9 +189,9 @@ def run_maniskill2_eval_single_episode(
     # Step the environment
     while not (predicted_terminated or truncated):
         # step the model; "raw_action" is raw model action output; "action" is the processed action to be sent into maniskill env
-        # CHANGED: also pass the full observation and the simulator.
+        # CHANGED: also pass the full observation, the simulator and its info after the last step.
         with METER.controller():
-            raw_action, action = model.step(image, task_description, obs=obs, env=env)
+            raw_action, action = model.step(image, task_description, obs=obs, env=env, info=info)
         predicted_actions.append(raw_action)
         predicted_terminated = bool(action["terminate_episode"][0] > 0)
         if predicted_terminated:
@@ -238,7 +242,8 @@ def run_maniskill2_eval_single_episode(
                                        layout_per_episode=bool(layout_per_episode), **energy)) + "\n")
     if demos is not None:
         demos.finish(success == "success", episode_stats={k: bool(v) if isinstance(v, (bool, np.bool_)) else v
-                                                          for k, v in episode_stats.items()})
+                                                          for k, v in episode_stats.items()},
+                     **(model.demo_info() if hasattr(model, "demo_info") else {}))
 
     # save video
     env_save_name = env_name

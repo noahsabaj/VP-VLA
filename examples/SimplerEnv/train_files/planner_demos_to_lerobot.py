@@ -6,12 +6,13 @@
         --stats CHECKPOINT_RUN/dataset_statistics.json [--visual-prompts VP_DIR] [--reword] DEMOS_DIR...
 
 DEMOS_DIR: a folder with recorded episodes at any depth (each one a folder with meta.json), e.g. a run folder. The
-script takes every successful episode (--all: every episode), in the order of their folders, and writes into NAME:
+script takes every successful episode (--all: every episode), in the order of their folders, and writes into NAME
+(a recording with no steps is left out: a VLA-then-planner episode in which the planner did not take over, demos.py):
 - data/chunk-000/episode_000000.parquet, ...: for each step the state (observation.state, 8 numbers), the action (7),
   timestamp, frame_index, episode_index, index and task_index;
 - videos/chunk-000/observation.images.image_0/episode_000000.mp4, ...: the recorded pictures;
 - meta/info.json, modality.json, episodes.jsonl, tasks.jsonl and stats_gr00t.json, and meta/sources.jsonl (the
-  recorded episode of each episode).
+  recorded episode of each episode, and its first step in the recording).
 
 stats_gr00t.json scales the actions and states in training. With --stats FILE it is the checkpoint's own Bridge
 statistics (oxe_bridge in its dataset_statistics.json), so a fine-tuned action head keeps the pretrained head's scale
@@ -162,8 +163,9 @@ def vlm_entries(instruction: str, actions: np.ndarray, object_name: str, place_n
     step and at each change of the gripper (open: the action's last number above 0.5). The subtasks are the
     instruction's parts (the data preparation's split at commas and "and"). A part that names a place ("... on the
     plate") puts something down and also names the place, as the VLM's prompt asks. Each grasp ends a pick part and
-    each release a place part (a failed grasp too), and the next entry has the next part. Training reads only each
-    entry's frame and subtask and whether it names an object and a place."""
+    each release a place part (a failed grasp too), and the next entry has the next part. A recording that starts with
+    the gripper closed (the planner's part after a takeover, with the object in the hand) starts after the pick part.
+    Training reads only each entry's frame and subtask and whether it names an object and a place."""
     parts = [p.strip() for p in re.split(SUBTASK_SPLIT, instruction.lower()) if p.strip()] or [instruction]
     entries, gripper_before, part = [], None, 0
     names = {"target_object": None, "target_location": None}
@@ -173,8 +175,9 @@ def vlm_entries(instruction: str, actions: np.ndarray, object_name: str, place_n
             continue
         changed = gripper_before is not None
         decision = "continue"
-        if changed and is_placing(parts[part]) == (gripper == "OPEN") and part + 1 < len(parts):
-            part, decision = part + 1, "proceed"
+        ends_part = is_placing(parts[part]) == (gripper == "OPEN")
+        if (changed or gripper == "CLOSED") and ends_part and part + 1 < len(parts):
+            part, decision = part + 1, "proceed" if changed else "continue"
         names["target_object"] = object_name
         if is_placing(parts[part]):
             names["target_location"] = place_name
@@ -295,7 +298,7 @@ def write_dataset(out: str, folders: List[str], stats: str, visual_prompts: Opti
             shown[meta.get("env_name", "?")] += [steps, vp["target_scores"].sum(), vp["location_scores"].sum()]
         episodes.append({"episode_index": episode, "tasks": list(dict.fromkeys(instructions)), "length": steps})
         sources.append({"episode_index": episode, "source": folder, "episode_key": meta.get("episode_key"),
-                        "success": meta["success"], "rewording": family})
+                        "first_step": meta.get("first_step", 0), "success": meta["success"], "rewording": family})
         all_actions.append(actions)
         all_states.append(states)
         frames += steps

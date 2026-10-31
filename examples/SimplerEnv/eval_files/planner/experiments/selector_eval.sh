@@ -19,7 +19,11 @@
 #   planner_eval.sh, from the VLA's VLM server (an ASM trained on records with the same TASK_SOURCE), and
 #   VLM_PLAN_MIN_SCORE and MISSING_DEPTH as in planner_eval.sh. CONTROLLER=planner_then_vla: the role split instead of
 #   the ASM (MODELS must be -): the planner moves the hand to above the object, then the VLA does the rest (with
-#   TASK_SOURCE=vlm or vp, no pick-and-place move found gives the whole episode to the VLA). ENERGY=1: an energy run
+#   TASK_SOURCE=vlm or vp, no pick-and-place move found gives the whole episode to the VLA).
+#   CONTROLLER=vla_then_planner: the planner's corrections of the VLA (MODELS must be -; the fixed rule only, no
+#   TASK_SOURCE or PLAN_CHECK): the VLA drives for a number of steps drawn per episode from TAKEOVER_STEPS="LO HI"
+#   (required), then the planner takes over; with RECORD_DEMOS=1 each recording is the planner's part only (the
+#   experiments README's "Corrections"). ENERGY=1: an energy run
 #   (K must be 1): each episode's GPU energy, the idle power and the null episodes (energy_setup and energy_baseline
 #   in common.sh), once for all levels.
 [ $# -ge 6 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }
@@ -30,7 +34,15 @@ CTRL=${CONTROLLER:-selector}
 case $CTRL in
   selector) MODELS=$(run_dir "$MODELS"); case $MODELS in *"{}"*) ;; *) MODELS=$MODELS/sel_v3_{}.json ;; esac ;;
   planner_then_vla) [ "$MODELS" = - ] || { echo "CONTROLLER=planner_then_vla uses no ASM: MODELS must be -" >&2; exit 1; } ;;
-  *) echo "CONTROLLER must be selector or planner_then_vla, not '$CTRL'" >&2; exit 1 ;;
+  vla_then_planner)
+    [ "$MODELS" = - ] || { echo "CONTROLLER=vla_then_planner uses no ASM: MODELS must be -" >&2; exit 1; }
+    [[ ${TAKEOVER_STEPS:-} =~ ^[0-9]+\ [0-9]+$ ]] ||
+      { echo "CONTROLLER=vla_then_planner needs TAKEOVER_STEPS=\"LO HI\"" >&2; exit 1; }
+    [ "${TASK_SOURCE:-rule}" = rule ] && [ "${PLAN_CHECK:-0}" = 0 ] || {
+      echo "CONTROLLER=vla_then_planner takes the fixed rule's pick-and-place: no TASK_SOURCE or PLAN_CHECK" >&2
+      exit 1
+    } ;;
+  *) echo "CONTROLLER must be selector, planner_then_vla or vla_then_planner, not '$CTRL'" >&2; exit 1 ;;
 esac
 MD=${MISSING_DEPTH:-none}
 case $MD in none | target) ;; *) echo "MISSING_DEPTH must be none or target" >&2; exit 1 ;; esac
@@ -64,7 +76,7 @@ start_vla_servers $PB "$OUT" &&
   wait_port $PB && wait_port $((PB + 1)) && wait_port $((PB + 2)) && wait_port $((PB + 3)) ||
   { log "servers did not start"; exit 1; }
 energy_baseline $GPU "$OUT" "$LAYOUTS" $(printf "%s\n" "${JOBS[@]}" | cut -d: -f2- | sort -u) || exit 1
-log "START K=$K MPS=${MPS:-1} ENERGY=${ENERGY:-0} CONTROLLER=$CTRL LAYOUTS=$LAYOUTS MODELS=$MODELS RGB_NOISE=${RGB_NOISE:-none}" \
+log "START K=$K MPS=${MPS:-1} ENERGY=${ENERGY:-0} CONTROLLER=$CTRL TAKEOVER_STEPS=[${TAKEOVER_STEPS:-}] LAYOUTS=$LAYOUTS MODELS=$MODELS RGB_NOISE=${RGB_NOISE:-none}" \
   "MISSING_DEPTH=$MD" \
   "INSTRUCTIONS=${INSTRUCTIONS:-default} PLANNER_SEED=[$PS] PLAN_CHECK=${PLAN_CHECK:-0} PLAN_CHECK_MARKS=${PLAN_CHECK_MARKS:-tint} PLAN_CHECK_THRESHOLD=${PLAN_CHECK_THRESHOLD:-0.5} TASK_SOURCE=${TASK_SOURCE:-rule} VLM_PLAN_MIN_SCORE=${VLM_PLAN_MIN_SCORE:-0}" \
   "SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS] PLANNER_SAM3_ARGS=[$PLANNER_SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \
@@ -89,6 +101,7 @@ job() {
   stats=$out/planner_stats.jsonl
   ctrl=(--controller selector --selector "${MODELS//\{\}/$level}")
   [ "$CTRL" = planner_then_vla ] && ctrl=(--controller planner_then_vla)
+  [ "$CTRL" = vla_then_planner ] && ctrl=(--controller vla_then_planner --takeover-steps $TAKEOVER_STEPS)
   sim $GPU $task $start $end "$out" "${ctrl[@]}" --planner mplib --missing-depth $MD \
     --target-source camera --depth-noise $level --robot-mask joints --noise-seed 0 ${PS:+--planner-seed $PS} \
     --port $PB --sam3-port $((PB + 1)) --vlm-port $((PB + 2)) --planner-sam3-port $((PB + 3)) $LS $rgb \
@@ -96,6 +109,7 @@ job() {
   rc=$?
   log "job $1 exit=$rc tries=$(grep -c "" "$stats" 2>/dev/null)" \
     "vla_picks=$(grep -c '"selector_choice": "vla"' "$stats" 2>/dev/null)" \
+    "takeovers=$(grep -cE '"takeover": "(holding|grasp)"' "$stats" 2>/dev/null)" \
     "$(grep "Average success" "$out/sim.log" | tail -1 | xargs) ($((SECONDS - t0)) s)"
 }
 run_pool $K 2 job "${JOBS[@]}"

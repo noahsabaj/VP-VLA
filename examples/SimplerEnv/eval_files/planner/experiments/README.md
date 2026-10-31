@@ -65,7 +65,7 @@ harder-task system study's are `vlmplan_harder_paper_harsh`, `vlmplan_{own,words
 | `planner_eval.sh GPU PORT NAME LEVEL LAYOUTS` | one planner-only eval (one SAM server; the 4 tasks at the same time) |
 | `planner_evals.sh GPU PORT_BASE AT_ONCE NAME:LEVEL:LAYOUTS...` | several planner-only evals at the same time |
 | `vla_eval.sh GPU PORT_BASE NAME LAYOUTS K [TASK:START:END...]` | one VLA-only eval (one server set, K sim clients) |
-| `selector_eval.sh GPU PORT_BASE NAME LAYOUTS MODELS K [LEVEL:TASK:START:END...]` | the closed-loop ASM eval (`CONTROLLER=planner_then_vla`: the role split) |
+| `selector_eval.sh GPU PORT_BASE NAME LAYOUTS MODELS K [LEVEL:TASK:START:END...]` | the closed-loop ASM eval (`CONTROLLER=planner_then_vla`: the role split; `vla_then_planner`: the planner's corrections) |
 | `sim_task.sh GPU TASK START END OUT [ARGS...]` | one sim run (smoke tests; the servers must already run) |
 
 Each script's header lists its options. The VLA runners use the fast settings by default (`FAST=1`, see
@@ -81,6 +81,7 @@ only logs the feature `vlm_plan_yes`; in `selector_eval.sh` a "no" gives the epi
 `TASK_SOURCE=vp` with VP-VLA's own VLM marks (see "VP-VLA's VLM marks" below). `MISSING_DEPTH=target` takes all depth away from the place target in half of the episodes (see "Missing-depth
 study"). In `selector_eval.sh`, `CONTROLLER=planner_then_vla` runs the role split instead of the ASM: the planner
 moves the hand to above the object, and then the VLA does the rest of the episode (MODELS must be `-`).
+`CONTROLLER=vla_then_planner` records the planner's corrections of the VLA (see "Corrections" below).
 
 **Demonstrations** (since 2026-10-30). `RECORD_DEMOS=1` records every episode of any runner as a demonstration for
 the VLA, in each sim's folder (`.../demos`; `demos.py`): the camera pictures, each step's command as the VLA's 7
@@ -116,6 +117,23 @@ the evals read (`CKPT=RUN_ROOT/RUN_ID/checkpoints/steps_N_pytorch_model.pt`). `D
 the command. The steps, the batch, the learning rates and the frozen layers are settings (MAX_STEPS, BATCH, LR_ACTION,
 LR_VLM, FROZEN_LAYERS): a GPU smoke test measures the memory and the speed first, and the study's plan then fixes them
 for every model.
+
+**Corrections** (since 2026-10-30). `CONTROLLER=vla_then_planner TAKEOVER_STEPS="LO HI" RECORD_DEMOS=1 DEPTHS=none
+bash examples/SimplerEnv/eval_files/planner/experiments/selector_eval.sh GPU PORT_BASE NAME LAYOUTS - K` records the
+planner's corrections of the VLA, the study's DAgger data (`planner_client.py`, "VLA then planner"). In each episode
+the VLA drives first, for a number of steps drawn from LO to HI (per episode, from the planner seed and the episode
+key, so a rerun takes over at the same step), and then the planner takes over from wherever the VLA left the arm. If
+the fingers hold the object (the VLA's last command closed them, and they did not close on nothing), the planner lifts
+the object and places it, as after its own grasp; otherwise it opens the hand and does the whole pick-and-place, as in
+the planner-only mode. If the simulator already counts the task as done at the takeover step, the planner does not
+take over and the VLA goes on. Each recording keeps only the planner's part (`first_step` in its `meta.json` is the
+takeover step), so the training set learns only the planner's actions, from the states that the VLA reached; an
+episode without a takeover is recorded with no steps, and `planner_demos_to_lerobot.py` leaves it out. A recording
+that starts with the object in the hand starts its subtasks after the pick part. Each episode's planner record has
+`takeover_step`, `takeover` (`holding`, `grasp`, `skipped`, or null when the episode ended first) and `takeover_grip`
+(the finger opening at the takeover). The planner's part must fit in the episode's 120 steps, so HI should leave it
+about 80 steps; the study's plan fixes LO and HI. The corrections take the fixed rule's one pick-and-place only (no
+TASK_SOURCE or PLAN_CHECK).
 
 **Costs** (since 2026-10-23). Each sim writes `episode_costs.jsonl` (`model_time.py`): for each episode, its
 wall-clock seconds from the model's reset to the last step, and its model requests, the count and the round-trip

@@ -170,4 +170,19 @@ DATASET_NAMED_MIXTURES = {
         ("LEROBOT_LIBERO_DATA/libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
         # ("OXE_LEROBOT_DATASET/bridge_orig_1.0.0_lerobot", 1.0, "oxe_bridge"),
     ],
+
+    # The planner-VLA training study (examples/SimplerEnv/eval_files/planner/experiments/README.md, "Fine-tuning"):
+    # one set per model, written by examples/SimplerEnv/train_files/planner_demos_to_lerobot.py --out DATA_ROOT/<set>.
+    "vla_p": [  # planner demonstrations on random training layouts, with SimplerEnv's own instructions
+        ("planner_demos", 1.0, "oxe_bridge"),
+    ],
+    "vla_pl": [  # the same demonstrations, also with the training rewordings (--reword)
+        ("planner_demos_reworded", 1.0, "oxe_bridge"),
+    ],
+    "vla_plt": [  # planner demonstrations on layouts chosen by the competence models, with rewordings
+        ("targeted_demos_reworded", 1.0, "oxe_bridge"),
+    ],
+    "vla_s": [  # the VLA's own successful episodes, as many as vla_pl's and with rewordings (the control)
+        ("vla_successes_reworded", 1.0, "oxe_bridge"),
+    ],
 }

@@ -100,6 +100,23 @@ test sets' four families (`train_files/rewordings.py`, 8 per task and family). T
 instruction (the four reworded sets and the harder scenes) and of the words that carry each test family's concepts
 was fixed on 2026-10-30 before any rewording was written; the tests check every rewording against it.
 
+**Fine-tuning** (since 2026-10-30). `DATA_ROOT=... VP_DIR=... bash examples/SimplerEnv/train_files/run_finetune_1gpu.sh
+RUN_ID DATA_MIX` fine-tunes the released VP-VLA checkpoint on one 48 GB GPU with VP-VLA's own training code. The
+study's mixtures (`starVLA/dataloader/gr00t_lerobot/mixtures.py`) have one set per model: `vla_p` (`planner_demos`),
+`vla_pl` (`planner_demos_reworded`), `vla_plt` (`targeted_demos_reworded`) and `vla_s` (`vla_successes_reworded`),
+each written by `planner_demos_to_lerobot.py --out DATA_ROOT/SET --visual-prompts VP_DIR`. Every setting that the
+script does not name is the released run's (its `config.yaml`): the model, which is Qwen3-VL-4B with a small MLP
+action head that reads the VLM's 16 action tokens (not a DiT), both camera pictures (with and without the visual
+prompts), the learning rates and their schedule, and the visual-prompt co-training loss. Changed for one GPU: the
+vision encoder, the word embeddings and the lowest 24 of the 36 language-model layers stay frozen, so 1.28 of the
+4.50 billion weights train; one process takes 16 samples per step, against 8 GPUs with 32 each; and the co-training
+examples come from the training batch, as the recorded sets have no extracted frames. The checkpoint loads module by
+module with strict key checks, so a model that does not match it stops the run. The run folder has the layout that
+the evals read (`CKPT=RUN_ROOT/RUN_ID/checkpoints/steps_N_pytorch_model.pt`). `DRY_RUN=1` checks the files and prints
+the command. The steps, the batch, the learning rates and the frozen layers are settings (MAX_STEPS, BATCH, LR_ACTION,
+LR_VLM, FROZEN_LAYERS): a GPU smoke test measures the memory and the speed first, and the study's plan then fixes them
+for every model.
+
 **Costs** (since 2026-10-23). Each sim writes `episode_costs.jsonl` (`model_time.py`): for each episode, its
 wall-clock seconds from the model's reset to the last step, and its model requests, the count and the round-trip
 seconds for each model (`vla`, `vlm`, `sam`). The planner records add what the first look cost (`first_look_seconds`,

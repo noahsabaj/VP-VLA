@@ -57,7 +57,8 @@ WORDS = {"bridge_carrot_generated_modified": "carrot", "bridge_plate_objaverse_l
          "green_cube_3cm": "green block", "yellow_cube_3cm": "yellow block", "baked_green_cube_3cm": "green block",
          "baked_yellow_cube_3cm": "yellow block", "eggplant": "eggplant", "dummy_sink_target_plane": "yellow basket"}
 SUBTASK_SPLIT = r",\s*and\s*|,\s*|\s+and\s+"  # the data preparation's parse_explicit_task
-PLACE_WORDS = (" on ", " onto ", " in ", " into ")  # a subtask with one of these puts something down
+# A subtask with one of these puts something down (" to ": "transfer the carrot to the platter").
+PLACE_WORDS = (" on ", " onto ", " upon ", " in ", " into ", " to ")
 LABEL_NOTE = "from the recorded episode, not a VLM"
 
 

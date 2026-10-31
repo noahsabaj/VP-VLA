@@ -91,7 +91,9 @@ CHECKPOINT_RUN/dataset_statistics.json RUN...` makes a VP-VLA training set (star
 Bridge data config's keys) of the successful ones, and prints how many actions training would clip. With
 `--visual-prompts VP_DIR` it also writes the visual prompts that VP-VLA's training draws (a crosshair on the object to
 move, a box around its place) from the simulator's masks instead of SAM's, with the subtasks taken from the
-recording instead of a VLM, and prints how often each task's steps show them. The eggplant's basket is part of the
+recording instead of a VLM (a subtask with "on", "onto", "upon", "in", "into" or "to" puts something down and so
+names the place; the tests check that every training rewording gets its box), and prints how often each task's
+steps show them. The eggplant's basket is part of the
 background picture, so its box is around SimplerEnv's invisible target plane in the basket: check it in the first
 recorded demonstrations. With `--reword` each episode is also written once with a training rewording of each of the
 test sets' four families (`train_files/rewordings.py`, 8 per task and family). Their exclusion list of every test

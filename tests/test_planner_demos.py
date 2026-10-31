@@ -11,7 +11,7 @@ import pytest
 
 from examples.SimplerEnv.eval_files.planner import demos
 from examples.SimplerEnv.train_files import planner_demos_to_lerobot as tl
-from examples.SimplerEnv.train_files.rewordings import FAMILIES, rewording
+from examples.SimplerEnv.train_files.rewordings import FAMILIES, REWORDINGS, rewording
 
 SPOON = "PutSpoonOnTableClothInScene-v0"
 CARROT = "PutCarrotOnPlateInScene-v0"
@@ -171,6 +171,14 @@ def test_the_subtasks_follow_the_gripper():
     ]
     assert tl.object_word("bridge_plate_objaverse_larger_2") == "plate"  # a scene's second plate
     assert tl.object_word("baked_green_cube_3cm") == "green block" and tl.object_word("new_model") == "new_model"
+
+
+def test_every_training_rewording_names_the_place():
+    for task, families in REWORDINGS.items():
+        for family, options in families.items():
+            for option in options:
+                entries = tl.vlm_entries(option, _grippers(1, 1, 0, 0, 1, 1), "object", "place")
+                assert entries[-1]["target_location"] == "place", (task, family, option)
 
 
 def test_the_training_set(tmp_path):

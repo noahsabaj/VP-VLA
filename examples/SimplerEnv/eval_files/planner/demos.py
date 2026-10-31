@@ -12,9 +12,10 @@ the same command.
 Each episode becomes a folder DIR/EPISODE_KEY (the evaluator's key: TASK/LAYOUTS/EPISODE) with:
 - frames.mp4: the camera picture of each step, before the step's command (the picture that the controller saw), at
   the eval's 5 steps per second;
-- episode.npz: `actions` (the labels, steps x 7), `states` (steps x 8: Bridge's state, see state_from_obs) and
+- episode.npz: `actions` (the labels, steps x 7), `states` (steps x 8: Bridge's state, see state_from_obs),
   `object_map` (steps x height x width: which of the episode's objects each pixel shows, from the simulator's own
-  segmentation; see scene_object_map);
+  segmentation; see scene_object_map) and `object_xyz` (steps x objects x 3: where each object is; see
+  scene_object_xyz);
 - meta.json, written last: the instruction of each step, the success, the steps, the episode's objects and goals
   (scene_objects) and its settings.
 A demonstration can be the end of its episode only (`first_step`): with the VLA then the planner (planner_client.py),
@@ -148,6 +149,11 @@ def scene_object_map(obs: dict, env, camera: Optional[str] = None) -> np.ndarray
     return out
 
 
+def scene_object_xyz(env) -> np.ndarray:
+    """Where each of the episode's objects is (m, in the simulator's frame), in the order of scene_objects."""
+    return np.array([obj.pose.p for obj in env.unwrapped.episode_objs], np.float32).reshape(-1, 3)
+
+
 def _write_mp4(path: str, frames, fps: int) -> None:
     import mediapy  # the simulator environment's video writer (as SimplerEnv's write_video)
 
@@ -166,12 +172,13 @@ class DemoRecorder:
     def start(self, episode_key: str, **info) -> None:
         """A new episode; `info` (the task, the layouts, the episode) goes into its meta.json."""
         self._episode = {"key": episode_key, "info": info, "frames": [], "actions": [], "states": [],
-                         "instructions": [], "object_maps": []}
+                         "instructions": [], "object_maps": [], "object_xyz": []}
         self._open = 1.0  # the WidowX starts with its gripper open
 
-    def add(self, image, obs: dict, action: dict, instruction: str, object_map=None) -> None:
+    def add(self, image, obs: dict, action: dict, instruction: str, object_map=None, object_xyz=None) -> None:
         """One step: the picture that the controller saw, the observation before the command, the command, the
-        instruction at this step and, if given, the picture's object map (scene_object_map)."""
+        instruction at this step and, if given, the picture's object map (scene_object_map) and the objects'
+        positions (scene_object_xyz)."""
         e = self._episode
         e["frames"].append(np.asarray(image, np.uint8))
         e["states"].append(state_from_obs(obs, self._open))
@@ -179,6 +186,8 @@ class DemoRecorder:
         e["instructions"].append(instruction)
         if object_map is not None:
             e["object_maps"].append(np.asarray(object_map, np.uint8))
+        if object_xyz is not None:
+            e["object_xyz"].append(np.asarray(object_xyz, np.float32))
         self._open = float(e["actions"][-1][6])
 
     def finish(self, success: bool, first_step: Optional[int] = 0, **info) -> str:
@@ -188,8 +197,9 @@ class DemoRecorder:
         out = os.path.join(self.root, e["key"])
         os.makedirs(out, exist_ok=True)
         total = len(e["actions"])
-        if e["object_maps"] and len(e["object_maps"]) != total:
-            raise ValueError(f"{e['key']}: {len(e['object_maps'])} object maps for {total} steps")
+        for name in ("object_maps", "object_xyz"):
+            if e[name] and len(e[name]) != total:
+                raise ValueError(f"{e['key']}: {len(e[name])} {name.replace('_', ' ')} for {total} steps")
         start = total if first_step is None else first_step
         if not 0 <= start <= total:
             raise ValueError(f"{e['key']}: first step {first_step} of {total} steps")
@@ -198,6 +208,8 @@ class DemoRecorder:
                   "states": np.array(e["states"][start:], np.float32).reshape(steps, 8)}
         if object_maps:
             arrays["object_map"] = np.stack(object_maps)
+        if e["object_xyz"][start:]:
+            arrays["object_xyz"] = np.stack(e["object_xyz"][start:])
         np.savez_compressed(os.path.join(out, "episode.npz"), **arrays)
         height, width = frames[0].shape[:2] if steps else (0, 0)
         if steps:

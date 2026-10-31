@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import sys
 from types import SimpleNamespace
 
@@ -15,7 +16,18 @@ from examples.SimplerEnv.train_files.rewordings import FAMILIES, REWORDINGS, rew
 
 SPOON = "PutSpoonOnTableClothInScene-v0"
 CARROT = "PutCarrotOnPlateInScene-v0"
+TWO_STEP = "TwoStepSpoonAndCarrot-v0"
 SCENE = {"objects": ["bridge_carrot_generated_modified", "bridge_plate_objaverse_larger"], "goals": [[0, 1]]}
+# The two-step task's scene: the spoon goes on the towel, then the carrot on the plate.
+KITCHEN = {
+    "objects": [
+        "bridge_spoon_generated_modified",
+        "table_cloth_generated_shorter",
+        "bridge_carrot_generated_modified",
+        "bridge_plate_objaverse_larger",
+    ],
+    "goals": [[0, 1], [2, 3]],
+}
 
 
 def _label(rng):
@@ -69,12 +81,12 @@ def test_the_state_is_the_hand_in_the_base_frame():
 
 
 class _Actor:
-    def __init__(self, actor_id, name):
-        self.id, self.name = actor_id, name
+    def __init__(self, actor_id, name, xyz=(0.0, 0.0, 0.0)):
+        self.id, self.name, self.pose = actor_id, name, SimpleNamespace(p=np.array(xyz))
 
 
 def test_the_scene_objects_and_their_map():
-    carrot, plate = _Actor(7, SCENE["objects"][0]), _Actor(9, SCENE["objects"][1])
+    carrot, plate = _Actor(7, SCENE["objects"][0], (-0.1, 0.05, 0.9)), _Actor(9, SCENE["objects"][1])
     u = SimpleNamespace(episode_objs=[carrot, plate], episode_source_obj=carrot, episode_target_obj=plate)
     env = SimpleNamespace(unwrapped=u)
     assert demos.scene_objects(env) == SCENE
@@ -82,6 +94,9 @@ def test_the_scene_objects_and_their_map():
     seg[..., 1] = [[7, 7, 9], [3, 9, 0]]  # 3: a robot link
     obs = {"image": {"3rd_view_camera": {"Segmentation": seg}}}
     assert demos.scene_object_map(obs, env).tolist() == [[1, 1, 2], [0, 2, 0]]
+    xyz = demos.scene_object_xyz(env)
+    assert xyz.dtype == np.float32 and xyz.shape == (2, 3)
+    np.testing.assert_allclose(xyz, [[-0.1, 0.05, 0.9], [0.0, 0.0, 0.0]], atol=1e-6)
     u.task = SimpleNamespace(goals=((0, 1, False), (1, 0, True)))  # a harder scene: its task's goals, in order
     assert demos.scene_objects(env)["goals"] == [[0, 1], [1, 0]]
 
@@ -95,7 +110,16 @@ def _object_map(t, hidden=()):
 
 
 def _record(
-    root, key, steps, success, rng, instruction="put the spoon on the towel", scene=None, maps=None, grippers=None
+    root,
+    key,
+    steps,
+    success,
+    rng,
+    instruction="put the spoon on the towel",
+    scene=None,
+    maps=None,
+    grippers=None,
+    xyz=None,
 ):
     written = {}
 
@@ -117,6 +141,7 @@ def _record(
             demos.action_from_label(label),
             instruction,
             object_map=None if maps is None else maps(t),
+            object_xyz=None if xyz is None else xyz(t),
         )
     return r.finish(success, episode_stats={"moved": True}), labels, written
 
@@ -136,24 +161,37 @@ def test_the_recorder_writes_an_episode(tmp_path):
     assert meta["instructions"] == ["put the spoon on the towel"] * 5
 
 
-def test_the_recorder_keeps_the_object_maps(tmp_path):
+def test_the_recorder_keeps_the_object_maps_and_positions(tmp_path):
     rng = np.random.default_rng(5)
-    folder, _, _ = _record(tmp_path, f"{CARROT}/iid15/0", 4, True, rng, scene=SCENE, maps=_object_map)
+
+    def xyz(t):
+        return [[0.01 * t, 0.0, 0.9], [0.2, 0.1, 0.88]]
+
+    folder, _, _ = _record(tmp_path, f"{CARROT}/iid15/0", 4, True, rng, scene=SCENE, maps=_object_map, xyz=xyz)
     with np.load(os.path.join(folder, "episode.npz")) as z:
         assert z["object_map"].dtype == np.uint8 and z["object_map"].shape == (4, 48, 64)
         np.testing.assert_array_equal(z["object_map"][3], _object_map(3))
+        assert z["object_xyz"].dtype == np.float32 and z["object_xyz"].shape == (4, 2, 3)
+        np.testing.assert_allclose(z["object_xyz"][3], xyz(3), atol=1e-6)
     meta = json.loads(open(os.path.join(folder, "meta.json")).read())
     assert (meta["objects"], meta["goals"]) == (SCENE["objects"], [[0, 1]])
     with pytest.raises(ValueError, match="1 object maps for 2 steps"):
         _record(tmp_path, f"{CARROT}/iid15/1", 2, True, rng, maps=lambda t: _object_map(t) if t == 0 else None)
+    with pytest.raises(ValueError, match="1 object xyz for 2 steps"):
+        _record(tmp_path, f"{CARROT}/iid15/2", 2, True, rng, xyz=lambda t: xyz(t) if t == 1 else None)
 
 
 def _grippers(*opens):
     return np.array([[0, 0, 0, 0, 0, 0, g] for g in opens], float)
 
 
+def _entries(instruction, actions, names=("carrot", "plate")):
+    parts = tl.instruction_parts(instruction)
+    return tl.vlm_entries(parts, actions, [names] * len(parts))
+
+
 def test_the_subtasks_follow_the_gripper():
-    one = tl.vlm_entries("put carrot on plate", _grippers(1, 1, 0, 0, 1, 1), "carrot", "plate")
+    one = _entries("put carrot on plate", _grippers(1, 1, 0, 0, 1, 1))
     assert [(e["frame"], e["decision"], e["gripper_state_changed"]) for e in one] == [
         (0, "continue", False),
         (2, "continue", True),
@@ -163,7 +201,7 @@ def test_the_subtasks_follow_the_gripper():
         ("put carrot on plate", "carrot", "plate")
     }
     # a pick ends at the grasp, and only the place part names the place
-    two = tl.vlm_entries("Pick up the carrot and put it on the plate", _grippers(1, 1, 0, 0, 1), "carrot", "plate")
+    two = _entries("Pick up the carrot and put it on the plate", _grippers(1, 1, 0, 0, 1))
     assert [(e["frame"], e["subtask_idx"], e["subtask"], e["decision"], e["target_location"]) for e in two] == [
         (0, 0, "pick up the carrot", "continue", None),
         (2, 1, "put it on the plate", "proceed", "plate"),
@@ -177,8 +215,119 @@ def test_every_training_rewording_names_the_place():
     for task, families in REWORDINGS.items():
         for family, options in families.items():
             for option in options:
-                entries = tl.vlm_entries(option, _grippers(1, 1, 0, 0, 1, 1), "object", "place")
+                entries = _entries(option, _grippers(1, 1, 0, 0, 1, 1), ("object", "place"))
                 assert entries[-1]["target_location"] == "place", (task, family, option)
+
+
+def test_the_two_step_rewordings_have_one_part_per_goal_in_order():
+    for option in [o for options in REWORDINGS[TWO_STEP].values() for o in options]:
+        parts = tl.instruction_parts(option)
+        assert len(parts) == 2 and all(map(tl.is_placing, parts)), option
+        carrot = [re.search(r"\b(carrot|root)\b", p) is not None for p in parts]
+        assert carrot == [False, True], option  # the spoon's goal first, as the task's goals
+
+
+def _kitchen_map(t):
+    m = np.zeros((48, 64), np.uint8)
+    for k, (row, col) in enumerate([(2, 2), (2, 20), (30, 2), (30, 20)]):  # spoon, towel, carrot, plate
+        m[row : row + 4, col : col + 4] = k + 1
+    return m
+
+
+def _moves(steps, *carried):
+    """object_xyz for the kitchen's 4 objects: object k moves 0.2 m in x during steps [a, b) for each (k, a, b)."""
+
+    def xyz(t):
+        out = np.zeros((4, 3))
+        out[:, 2] = 0.9
+        for k, a, b in carried:
+            out[k, 0] = 0.2 * min(max(t - a + 1, 0), b - a) / (b - a)
+        return out
+
+    assert all(b <= steps for _, _, b in carried)
+    return xyz
+
+
+def _two_step_prompts(tmp_path, grippers, xyz, instruction="put the spoon on the towel and the carrot on the plate"):
+    runs, vp = tmp_path / "run", tmp_path / "vp"
+    steps = len(grippers)
+    _record(
+        runs,
+        f"{TWO_STEP}/iid100/0",
+        steps,
+        True,
+        np.random.default_rng(10),
+        instruction,
+        KITCHEN,
+        _kitchen_map,
+        grippers,
+        xyz,
+    )
+    tl.write_dataset(str(tmp_path / "data" / "harder_demos"), tl.find_episodes([str(runs)]), "data", str(vp))
+    with np.load(vp / "harder_demos" / "chunk-000" / "episode_000000.npz") as z:
+        return json.loads(str(z["vlm_results"])), {k: z[k] for k in ("target_masks", "location_masks")}
+
+
+def _marked(masks):
+    """The object number that each step's mask marks (0: none)."""
+    return [int(np.max(m * _kitchen_map(0))) for m in masks]
+
+
+def test_the_visual_prompts_of_two_goals(tmp_path):
+    pytest.importorskip("pyarrow")
+    # grasp the spoon at 2, put it on the towel at 5; grasp the carrot at 7, put it on the plate at 10
+    grippers = [1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1]
+    entries, masks = _two_step_prompts(tmp_path / "a", grippers, _moves(12, (0, 2, 5), (2, 7, 10)))
+    assert [(e["frame"], e["subtask_idx"], e["decision"]) for e in entries] == [
+        (0, 0, "continue"),
+        (2, 0, "continue"),
+        (5, 1, "proceed"),
+        (7, 1, "continue"),
+        (10, 1, "continue"),
+    ]
+    assert [(e["subtask"], e["target_object"], e["target_location"]) for e in entries[1:3]] == [
+        ("put the spoon on the towel", "spoon", "towel"),
+        ("the carrot on the plate", "carrot", "plate"),
+    ]
+    assert _marked(masks["target_masks"]) == [1] * 5 + [3] * 7  # the spoon until it is on the towel, then the carrot
+    assert _marked(masks["location_masks"]) == [2] * 5 + [4] * 7
+    # done the other way round: the carrot's part and prompts first
+    entries, masks = _two_step_prompts(tmp_path / "b", grippers, _moves(12, (2, 2, 5), (0, 7, 10)))
+    assert [e["subtask"] for e in entries] == ["the carrot on the plate"] * 2 + ["put the spoon on the towel"] * 3
+    assert _marked(masks["target_masks"]) == [3] * 5 + [1] * 7 and _marked(masks["location_masks"]) == [4] * 5 + [2] * 7
+
+
+def test_a_failed_grasp_does_not_end_its_goal(tmp_path):
+    pytest.importorskip("pyarrow")
+    # the spoon slips at 4 (grasped at 2), is grasped again at 8 and put on the towel at 15; the carrot at 18 and 25
+    grippers = [1, 1, 0, 0, 1, 1, 1, 1] + [0] * 7 + [1, 1, 1] + [0] * 7 + [1] * 5
+    entries, masks = _two_step_prompts(tmp_path, grippers, _moves(30, (0, 9, 15), (2, 19, 25)))
+    assert [(e["frame"], e["subtask_idx"]) for e in entries] == [
+        (0, 0),
+        (2, 0),
+        (4, 0),
+        (8, 0),
+        (15, 1),
+        (18, 1),
+        (25, 1),
+    ]
+    assert _marked(masks["target_masks"]) == [1] * 15 + [3] * 15
+
+
+def test_the_visual_prompts_need_object_maps_and_a_part_per_goal(tmp_path):
+    pytest.importorskip("pyarrow")
+    rng = np.random.default_rng(7)
+    _record(tmp_path / "a", f"{CARROT}/iid15/0", 3, True, rng, scene=SCENE)
+    with pytest.raises(SystemExit, match="without object maps"):
+        tl.write_dataset(str(tmp_path / "set_a"), tl.find_episodes([str(tmp_path / "a")]), "data", str(tmp_path / "v"))
+    moves = _moves(4, (0, 0, 1), (2, 2, 3))
+    _record(tmp_path / "b", f"{TWO_STEP}/iid100/0", 4, True, rng, scene=KITCHEN, maps=_kitchen_map, xyz=moves)
+    with pytest.raises(SystemExit, match='2 goals; "put the spoon on the towel" needs one part for each'):
+        tl.write_dataset(str(tmp_path / "set_b"), tl.find_episodes([str(tmp_path / "b")]), "data", str(tmp_path / "w"))
+    two_parts = "put the spoon on the towel and the carrot on the plate"
+    _record(tmp_path / "c", f"{TWO_STEP}/iid100/0", 4, True, rng, two_parts, KITCHEN, _kitchen_map)
+    with pytest.raises(SystemExit, match="2 goals, recorded without the objects' positions"):
+        tl.write_dataset(str(tmp_path / "set_c"), tl.find_episodes([str(tmp_path / "c")]), "data", str(tmp_path / "x"))
 
 
 def test_the_training_set(tmp_path):
@@ -265,18 +414,6 @@ def test_the_visual_prompts(tmp_path):
         tl.write_dataset(str(tmp_path / "other" / "planner_demos"), tl.find_episodes([str(runs)]), "data", str(vp))
 
 
-def test_the_visual_prompts_need_object_maps_and_one_goal(tmp_path):
-    pytest.importorskip("pyarrow")
-    rng = np.random.default_rng(7)
-    _record(tmp_path / "a", f"{CARROT}/iid15/0", 3, True, rng, scene=SCENE)
-    with pytest.raises(SystemExit, match="without object maps"):
-        tl.write_dataset(str(tmp_path / "set_a"), tl.find_episodes([str(tmp_path / "a")]), "data", str(tmp_path / "v"))
-    two_goals = {**SCENE, "goals": [[0, 1], [1, 0]]}
-    _record(tmp_path / "b", f"{CARROT}/iid15/0", 3, True, rng, scene=two_goals, maps=_object_map)
-    with pytest.raises(SystemExit, match="2 goals"):
-        tl.write_dataset(str(tmp_path / "set_b"), tl.find_episodes([str(tmp_path / "b")]), "data", str(tmp_path / "w"))
-
-
 def test_the_rewordings(tmp_path):
     pytest.importorskip("pyarrow")
     runs = tmp_path / "run"
@@ -305,10 +442,10 @@ def test_the_rewordings(tmp_path):
             entries = json.loads(str(z["vlm_results"]))
             assert str(z["task_description"]) == instruction
             assert entries[-1]["target_object"] == "carrot" and entries[-1]["target_location"] == "plate"
-    # a task without training rewordings
-    _record(tmp_path / "harder", "ClutteredCarrotOnPlate-v0/iid15/0", 2, True, np.random.default_rng(9))
-    with pytest.raises(SystemExit, match="no training rewordings for ClutteredCarrotOnPlate-v0"):
-        tl.write_dataset(str(tmp_path / "set_h"), tl.find_episodes([str(tmp_path / "harder")]), "data", reword=True)
+    # a task without training rewordings: a new test scene (T5)
+    _record(tmp_path / "novel", "NovelSpongeOnPlate-v0/iid15/0", 2, True, np.random.default_rng(9))
+    with pytest.raises(SystemExit, match="no training rewordings for NovelSpongeOnPlate-v0"):
+        tl.write_dataset(str(tmp_path / "set_n"), tl.find_episodes([str(tmp_path / "novel")]), "data", reword=True)
 
 
 def test_main(tmp_path, monkeypatch, capsys):

@@ -218,19 +218,23 @@ def test_a_recording_that_starts_holding_the_object_starts_after_the_pick_part()
     def actions(*grippers):
         return np.array([[0.0] * 6 + [g] for g in grippers])
 
+    def entries_of(instruction, acts):
+        parts = tl.instruction_parts(instruction)
+        return tl.vlm_entries(parts, acts, [("carrot", "plate")] * len(parts))
+
     two_parts = "pick up the carrot and put it on the plate"
-    entries = tl.vlm_entries(two_parts, actions(0, 0, 0, 1, 1), "carrot", "plate")
+    entries = entries_of(two_parts, actions(0, 0, 0, 1, 1))
     assert [(e["frame"], e["subtask"]) for e in entries] == [(0, "put it on the plate"), (3, "put it on the plate")]
     assert entries[0]["target_location"] == "plate" and entries[0]["decision"] == "continue"
     # An open start is as before: the pick part first.
-    entries = tl.vlm_entries(two_parts, actions(1, 1, 0, 0, 1), "carrot", "plate")
+    entries = entries_of(two_parts, actions(1, 1, 0, 0, 1))
     assert [(e["frame"], e["subtask"]) for e in entries] == [
         (0, "pick up the carrot"),
         (2, "put it on the plate"),
         (4, "put it on the plate"),
     ]
     # One part that names the place stays that part.
-    entries = tl.vlm_entries("put the carrot on the plate", actions(0, 0, 1), "carrot", "plate")
+    entries = entries_of("put the carrot on the plate", actions(0, 0, 1))
     assert [e["subtask"] for e in entries] == ["put the carrot on the plate"] * 2
 
 

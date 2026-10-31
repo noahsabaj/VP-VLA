@@ -25,7 +25,8 @@ def test_each_test_family_is_caught_by_its_own_words():
 
 
 def test_every_training_rewording_passes_the_exclusion_list():
-    assert set(rw.REWORDINGS) == set(TASKS)
+    assert set(rw.REWORDINGS) == set(TASKS) | set(HARDER_TASKS)  # the harder scenes since the change of 2026-10-30
+    own = {rw.normalize(i) for i in [*rw.OWN.values(), *(t.instruction for t in HARDER_TASKS.values())]}
     seen = set()
     for task, families in rw.REWORDINGS.items():
         assert tuple(families) == rw.FAMILIES
@@ -33,9 +34,9 @@ def test_every_training_rewording_passes_the_exclusion_list():
             assert len(options) == 8, (task, family)
             for option in options:
                 assert rw.exclusions(option) == [], (task, family, option)
-                assert rw.normalize(option) not in {rw.normalize(i) for i in rw.OWN.values()}
-                assert option not in seen
-                seen.add(option)
+                assert rw.normalize(option) not in own
+                assert rw.normalize(option) not in seen, option
+                seen.add(rw.normalize(option))
 
 
 def test_each_episode_keeps_its_rewordings():

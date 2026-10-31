@@ -25,12 +25,15 @@ picture (starVLA/dataloader/visual_prompt_datasets.py: a crosshair on the object
 VP_DIR/NAME/chunk-000/episode_000000.npz, ..., in the format of the data preparation
 (data_preparation/SimplerEnv/process_dataset_parallel_oxe.py), so the training config's visual_prompt_dir is VP_DIR.
 The masks are the simulator's own (the recorded object maps), not SAM's, and the subtasks and names that the data
-preparation asks a VLM for come from the recording (vlm_entries). One pick-and-place per episode. The script prints,
-for each task, the share of steps with the crosshair and with the box (a step has none when its object is hidden).
+preparation asks a VLM for come from the recording (vlm_entries). A scene with several pick-and-places (the harder
+scenes' two-step task) needs an instruction with one part for each goal, in the order of the goals, each naming its
+place; its visual prompts take the goals in the order they were done, each until the release that put its object in
+place (goal_steps and part_starts, from the objects' recorded positions). The script prints, for each task, the share
+of steps with the crosshair and with the box (a step has none when its object is hidden).
 
 With --reword each recorded episode is written once with its own instruction and once with one training rewording of
-each family (rewordings.py; the 4 WidowX tasks only), the same pictures and actions with another instruction. The
-visual prompts of every copy mark the objects of the episode's own task.
+each family (rewordings.py: SimplerEnv's 4 WidowX tasks and the 5 harder scenes), the same pictures and actions with
+another instruction. The visual prompts of every copy mark the objects of the episode's own task.
 """
 
 import argparse
@@ -61,6 +64,8 @@ SUBTASK_SPLIT = r",\s*and\s*|,\s*|\s+and\s+"  # the data preparation's parse_exp
 # A subtask with one of these puts something down (" to ": "transfer the carrot to the platter").
 PLACE_WORDS = (" on ", " onto ", " upon ", " in ", " into ", " to ")
 LABEL_NOTE = "from the recorded episode, not a VLM"
+SETTLED = 0.03  # m: an object this close to where it ends is there (the harder scenes' "moved" check is 3 cm too)
+LEAD = 5  # steps (1 s): how long before its object is there a goal's release may come (part_starts)
 
 
 def load_meta(folder: str) -> dict:
@@ -158,30 +163,59 @@ def is_placing(subtask: str) -> bool:
     return any(word in f" {subtask} " for word in PLACE_WORDS)
 
 
-def vlm_entries(instruction: str, actions: np.ndarray, object_name: str, place_name: str) -> List[dict]:
+def instruction_parts(instruction: str) -> List[str]:
+    """The instruction's subtasks: its parts at commas and "and" (the data preparation's parse_explicit_task)."""
+    return [p.strip() for p in re.split(SUBTASK_SPLIT, instruction.lower()) if p.strip()] or [instruction]
+
+
+def goal_steps(object_xyz: np.ndarray, goals: List[List[int]]) -> List[int]:
+    """For each goal, the step at which its object reached where it ends: the step after the last one at which it was
+    more than SETTLED from there (object_xyz: steps x objects x 3)."""
+    away = np.linalg.norm(object_xyz - object_xyz[-1], axis=-1) > SETTLED
+    return [int(np.flatnonzero(away[:, g[0]])[-1]) + 1 if away[:, g[0]].any() else 0 for g in goals]
+
+
+def part_starts(actions: np.ndarray, reached: List[int]) -> List[int]:
+    """The first step of each goal's part, the goals in the order they were done (`reached`: the steps at which their
+    objects reached their places, in that order): the first opening of the gripper from LEAD steps before the previous
+    goal's object reached its place (the release that put it there, not an earlier failed grasp), or that step if the
+    gripper does not open then."""
+    opens = [t for t in range(1, len(actions)) if actions[t, 6] > 0.5 >= actions[t - 1, 6]]
+    starts = [0]
+    for step in reached[:-1]:
+        starts.append(next((t for t in opens if t >= step - LEAD and t > starts[-1]), max(step, starts[-1] + 1)))
+    return starts
+
+
+def vlm_entries(parts: List[str], actions: np.ndarray, names: List[Tuple[str, str]],
+                starts: Optional[List[int]] = None) -> List[dict]:
     """The data preparation's VLM answers (vlm_results), from the recording instead of a VLM: an entry at the first
-    step and at each change of the gripper (open: the action's last number above 0.5). The subtasks are the
-    instruction's parts (the data preparation's split at commas and "and"). A part that names a place ("... on the
-    plate") puts something down and also names the place, as the VLM's prompt asks. Each grasp ends a pick part and
-    each release a place part (a failed grasp too), and the next entry has the next part. A recording that starts with
-    the gripper closed (the planner's part after a takeover, with the object in the hand) starts after the pick part.
-    Training reads only each entry's frame and subtask and whether it names an object and a place."""
-    parts = [p.strip() for p in re.split(SUBTASK_SPLIT, instruction.lower()) if p.strip()] or [instruction]
+    step and at each change of the gripper (open: the action's last number above 0.5). The subtasks are `parts`
+    (instruction_parts, in the order they are done), and `names` has each one's object to move and its place. A part
+    that names a place ("... on the plate") puts something down and also names the place, as the VLM's prompt asks.
+    Each grasp ends a pick part and each release a place part (a failed grasp too), and the next entry has the next
+    part. A recording that starts with the gripper closed (the planner's part after a takeover, with the object in the
+    hand) starts after the pick part. With `starts` (a scene with several goals, one part each: part_starts) the parts
+    change at those steps instead. Training reads only each entry's frame and subtask and whether it names an object
+    and a place."""
     entries, gripper_before, part = [], None, 0
-    names = {"target_object": None, "target_location": None}
+    named = {"target_object": None, "target_location": None}
     for t, action in enumerate(actions):
         gripper = "OPEN" if action[6] > 0.5 else "CLOSED"
-        if gripper == gripper_before:
+        next_part = starts is not None and part + 1 < len(parts) and t >= starts[part + 1]
+        if gripper == gripper_before and not next_part:
             continue
-        changed = gripper_before is not None
+        changed = gripper_before is not None and gripper != gripper_before
         decision = "continue"
-        ends_part = is_placing(parts[part]) == (gripper == "OPEN")
-        if (changed or gripper == "CLOSED") and ends_part and part + 1 < len(parts):
-            part, decision = part + 1, "proceed" if changed else "continue"
-        names["target_object"] = object_name
+        if next_part:
+            part, decision = part + 1, "proceed"
+        elif starts is None and is_placing(parts[part]) == (gripper == "OPEN"):  # this change ends the part
+            if (changed or gripper == "CLOSED") and part + 1 < len(parts):
+                part, decision = part + 1, "proceed" if changed else "continue"
+        named["target_object"] = names[part][0]
         if is_placing(parts[part]):
-            names["target_location"] = place_name
-        entries.append({"frame": t, "subtask": parts[part], "subtask_idx": part, "decision": decision, **names,
+            named["target_location"] = names[part][1]
+        entries.append({"frame": t, "subtask": parts[part], "subtask_idx": part, "decision": decision, **named,
                         "reasoning": LABEL_NOTE, "gripper_state_changed": changed})
         gripper_before = gripper
     return entries
@@ -197,38 +231,50 @@ def mask_boxes(masks: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return boxes, masks.any((1, 2)).astype(np.float32)
 
 
-def prompt_masks(object_map: np.ndarray, entries: List[dict], goal: List[int]) -> Dict[str, np.ndarray]:
+def prompt_masks(object_map: np.ndarray, entries: List[dict], goals: List[List[int]]) -> Dict[str, np.ndarray]:
     """The masks, boxes and scores of the object to move (target_*) and of its place (location_*) at each step: the
-    object map's pixels of the goal's object and place, from the entry on that names them."""
+    object map's pixels of the object and the place of the entry's subtask's goal (`goals`: one per subtask), from the
+    entry on that names them."""
     steps = len(object_map)
-    named = {key: np.zeros(steps, bool) for key in ("target_object", "target_location")}
+    marked = {key: np.zeros(steps, np.int64) for key in ("target_object", "target_location")}  # object number + 1
     ends = [e["frame"] for e in entries[1:]] + [steps]
     for entry, end in zip(entries, ends, strict=True):
-        for key, on in named.items():
-            on[entry["frame"]:end] = entry[key] is not None
+        goal = goals[entry["subtask_idx"]]
+        for index, (key, number) in zip(goal, marked.items(), strict=True):
+            number[entry["frame"]:end] = index + 1 if entry[key] is not None else 0
     out = {}
-    for prefix, key, index in (("target", "target_object", goal[0]), ("location", "target_location", goal[1])):
-        masks = ((object_map == index + 1) & named[key][:, None, None]).astype(np.uint8)
+    for prefix, key in (("target", "target_object"), ("location", "target_location")):
+        number = marked[key][:, None, None]
+        masks = ((object_map == number) & (number > 0)).astype(np.uint8)
         out[f"{prefix}_masks"] = masks
         out[f"{prefix}_boxes"], out[f"{prefix}_scores"] = mask_boxes(masks)
     return out
 
 
 def episode_visual_prompts(folder: str, meta: dict, actions: np.ndarray, object_map: Optional[np.ndarray],
-                           instruction: str, episode: int) -> Dict[str, np.ndarray]:
+                           object_xyz: Optional[np.ndarray], instruction: str, episode: int) -> Dict[str, np.ndarray]:
     """One episode's visual-prompt file (the data preparation's npz)."""
     if object_map is None:
         raise SystemExit(f"{folder}: recorded without object maps")
-    if len(meta["goals"]) != 1:
-        raise SystemExit(f"{folder}: {len(meta['goals'])} goals; the visual prompts take one pick-and-place")
-    goal = meta["goals"][0]
-    entries = vlm_entries(instruction, actions, object_word(meta["objects"][goal[0]]),
-                          object_word(meta["objects"][goal[1]]))
+    goals, parts, starts = meta["goals"], instruction_parts(instruction), None
+    if len(goals) == 1:
+        part_goals = goals * len(parts)
+    elif len(parts) != len(goals) or not all(map(is_placing, parts)):
+        raise SystemExit(f'{folder}: {len(goals)} goals; "{instruction}" needs one part for each, naming its place')
+    elif object_xyz is None:
+        raise SystemExit(f"{folder}: {len(goals)} goals, recorded without the objects' positions")
+    else:  # the goals and their parts in the order they were done
+        reached = goal_steps(object_xyz, goals)
+        order = sorted(range(len(goals)), key=lambda i: (reached[i], i))
+        parts, part_goals = [parts[i] for i in order], [goals[i] for i in order]
+        starts = part_starts(actions, [reached[i] for i in order])
+    names = [(object_word(meta["objects"][o]), object_word(meta["objects"][p])) for o, p in part_goals]
+    entries = vlm_entries(parts, actions, names, starts)
     return {"episode_index": np.array(episode), "task_description": np.array(instruction),
             "num_frames": np.array(len(actions)), "fps": np.array(float(FPS)),
             "target_object": np.array(entries[-1]["target_object"] or ""),
             "target_location": np.array(entries[-1]["target_location"] or ""),
-            **prompt_masks(object_map, entries, goal), "vlm_results": np.array(json.dumps(entries))}
+            **prompt_masks(object_map, entries, part_goals), "vlm_results": np.array(json.dumps(entries))}
 
 
 def write_parquet(path: str, states: np.ndarray, actions: np.ndarray, episode: int, first_index: int,
@@ -273,6 +319,7 @@ def write_dataset(out: str, folders: List[str], stats: str, visual_prompts: Opti
         with np.load(os.path.join(folder, "episode.npz")) as z:
             actions, states = z["actions"], z["states"]
             object_map = z["object_map"] if vp_out is not None and "object_map" in z.files else None
+            object_xyz = z["object_xyz"] if vp_out is not None and "object_xyz" in z.files else None
         steps = len(actions)
         instructions = episode_instructions(meta, family)
         if len(instructions) != steps or len(states) != steps or meta["steps"] != steps:
@@ -291,7 +338,10 @@ def write_dataset(out: str, folders: List[str], stats: str, visual_prompts: Opti
         if vp_out is not None:
             if object_map is not None and object_map.shape != (steps, *size):
                 raise SystemExit(f"{folder}: object maps of {object_map.shape}, not {(steps, *size)}")
-            vp = episode_visual_prompts(folder, meta, actions, object_map, instructions[0], episode)
+            if object_xyz is not None and object_xyz.shape != (steps, len(meta["objects"]), 3):
+                raise SystemExit(f"{folder}: object positions of {object_xyz.shape}, not "
+                                 f"{(steps, len(meta['objects']), 3)}")
+            vp = episode_visual_prompts(folder, meta, actions, object_map, object_xyz, instructions[0], episode)
             path = os.path.join(vp_out, f"chunk-{chunk:03d}", f"episode_{episode:06d}.npz")
             os.makedirs(os.path.dirname(path), exist_ok=True)
             np.savez_compressed(path, **vp)

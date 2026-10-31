@@ -2,7 +2,7 @@
 
 `PlannerClient` has the same reset()/step()/visualize_epoch() as ModelClientVP, but it
 also reads the full observation (`obs`) and the simulator (`env`), which our copy of the
-test loop passes in. Three modes:
+test loop passes in. Four modes:
 
 * planner then VLA (`vla` given): plan from the camera to a pre-grasp spot above the
   object, move there, then hand every later step to the VLA.
@@ -11,6 +11,11 @@ test loop passes in. Three modes:
 * selector (`vla` and `selector` given): after the planner's first look, the selector (the ASM)
   gives the whole try either to the planner (as in planner only) or to the VLA. With the VLM plan
   check (`plan_check_port`, plan_check.py), a "no" from the VLM gives it to the VLA first.
+* VLA then planner (`vla` and `takeover_steps` given): the planner's corrections of the VLA, as training data for
+  the VLA (DAgger). The VLA drives for a number of steps drawn per episode from `takeover_steps`, and then the planner
+  takes over from wherever the VLA left the arm: with the object in the hand it lifts it and places it, and otherwise
+  it opens the hand and does the whole pick-and-place as in planner only. The demonstration is the planner's part only
+  (demo_info). If the VLA has already done the task by then, the planner does not take over.
 
 What to pick up and where to put it comes from the instruction: by default from one fixed rule (one
 pick-and-place); with `task_source="vlm"` from the VLM plan (vlm_plan.py: the VLM lists the pick-and-place moves,
@@ -156,6 +161,7 @@ class PlannerClient:
         plan_check_marks: Sequence[str] = ("tint",),
         plan_check_threshold: float = plan_check.THRESHOLD,
         missing_depth: str = "none",
+        takeover_steps: Optional[Sequence[int]] = None,
     ) -> None:
         self.planner = make_planner(planner)
         self.planner_name = planner
@@ -176,7 +182,19 @@ class PlannerClient:
                 if trained.get(name, old) not in (None, value):
                     raise ValueError(f"the selector was trained with {name}={trained.get(name, old)}, but this run "
                                      f"uses {value}")
-        self.mode = "selector" if selector is not None else "planner_then_vla" if vla is not None else "planner"
+        # VLA then planner: the VLA's steps before the planner takes over are drawn per episode from LO to HI.
+        if takeover_steps is not None:
+            if len(takeover_steps) != 2 or not 1 <= takeover_steps[0] <= takeover_steps[1]:
+                raise ValueError(f"takeover_steps must be (LO, HI) with 1 <= LO <= HI, not {takeover_steps}")
+            if vla is None or selector is not None:
+                raise ValueError("the VLA-then-planner mode needs a VLA and no selector")
+            if task_source != "rule" or plan_check_port is not None:
+                raise ValueError("the VLA-then-planner mode takes the fixed rule's one pick-and-place: no VLM plan, "
+                                 "VLM marks or plan check")
+            takeover_steps = (int(takeover_steps[0]), int(takeover_steps[1]))
+        self.takeover_steps = takeover_steps
+        self.mode = ("selector" if selector is not None else "vla_then_planner" if takeover_steps is not None
+                     else "planner_then_vla" if vla is not None else "planner")
         # Planner then VLA: the VLA takes over above the object. In the selector mode the planner
         # works exactly as in planner only, because that is what the selector was trained on.
         self.hand_off = self.mode == "planner_then_vla"
@@ -268,9 +286,12 @@ class PlannerClient:
 
     def _clear(self, task_description: str) -> None:
         self.task_description = task_description
-        self.phase = "start"
+        # VLA then planner: the VLA drives first (phase "vla_first"), then the planner's part starts as in the others.
+        self.phase = "vla_first" if self.mode == "vla_then_planner" else "start"
         self.queue: List[np.ndarray] = []
         self.gripper = GRIPPER_OPEN
+        self.vla_gripper = GRIPPER_OPEN  # the VLA's last gripper command (VLA then planner)
+        self.home_orientation = None  # the hand's orientation at the episode's first step
         self.hold_steps = 0
         self.step_count = 0
         self.noise.new_episode(self.episode_key)
@@ -287,6 +308,14 @@ class PlannerClient:
                       "target_depth_missing": self.target_depth_missing}
         if self.plan_check is not None:
             self.stats.update(plan_check_marks=self.plan_check_marks, plan_check_threshold=self.plan_check_threshold)
+        if self.takeover_steps is not None:
+            # The planner's first step (0-based: the VLA drives the steps before it), drawn per episode like the
+            # planner seed. "takeover" says what happened at it: "holding" (the object in the hand: lift and place),
+            # "grasp" (no object in the hand: the whole pick-and-place), "skipped" (the task was already done: the VLA
+            # goes on), or None (the episode ended first).
+            lo, hi = self.takeover_steps
+            draw = zlib.crc32(f"takeover/{self.planner_seed}/{self.episode_key}".encode())
+            self.stats.update(takeover_step=lo + draw % (hi - lo + 1), takeover=None)
         # The VLM plan's pick-and-place moves (vlm_plan.parse) and the one being done; None with the fixed rule.
         self.steps = None
         self.step_index = 0
@@ -307,13 +336,24 @@ class PlannerClient:
         with open(self.log_path, "a") as f:
             f.write(json.dumps(record, default=float) + "\n")
 
+    def demo_info(self) -> dict:
+        """For the episode's demonstration (demos.DemoRecorder.finish, called by planner_evaluator): with the VLA then
+        the planner, only the planner's part is one, from first_step on (None: the planner did not take over)."""
+        if self.mode != "vla_then_planner":
+            return {}
+        took_over = self.stats["takeover"] in ("holding", "grasp")
+        return {"controller": self.mode, "takeover": self.stats["takeover"],
+                "first_step": self.stats["takeover_step"] if took_over else None}
+
     def visualize_epoch(self, predicted_raw_actions, images, save_path: str) -> None:
         if self.vla is not None:
             self.vla.visualize_epoch(predicted_raw_actions, images, save_path)
 
     # --------------------------------------------------------------------- step
 
-    def step(self, image: np.ndarray, task_description: Optional[str] = None, obs=None, env=None, **kwargs):
+    def step(self, image: np.ndarray, task_description: Optional[str] = None, obs=None, env=None, info=None,
+             **kwargs):
+        """`info`: the simulator's info after the last step (None at the first step); planner_evaluator passes it."""
         if obs is None or env is None:
             raise ValueError("PlannerClient needs obs and env; run it with planner_evaluator")
         if task_description is not None and task_description != self.task_description:
@@ -321,6 +361,8 @@ class PlannerClient:
         self.step_count += 1
         if self.phase == "vla":
             return self.vla.step(image, task_description)
+        if self.phase == "vla_first" and (out := self._vla_first(image, task_description, obs, info)) is not None:
+            return out
 
         qpos = np.asarray(obs["agent"]["qpos"], dtype=np.float64)
         target = np.asarray(obs["agent"]["controller"]["arm"]["target_pose"], dtype=np.float64)
@@ -371,12 +413,53 @@ class PlannerClient:
 
     # ------------------------------------------------------------------- phases
 
+    def _vla_first(self, image, task_description, obs, info):
+        """VLA then planner: the VLA's action up to the takeover step. At it None, and the planner's part starts
+        (phase "start"), unless the simulator says that the task is already done: then the VLA goes on."""
+        if self.home_orientation is None:  # the hand's orientation at the start, as in the other modes
+            self.home_orientation = np.asarray(obs["agent"]["controller"]["arm"]["target_pose"], np.float64)[3:].copy()
+        if self.step_count <= self.stats["takeover_step"]:
+            raw_action, action = self.vla.step(image, task_description)
+            self.vla_gripper = float(np.asarray(action["gripper"]).reshape(-1)[0])
+            return raw_action, action
+        if info is not None and info.get("success"):
+            self.stats["takeover"], self.phase = "skipped", "vla"
+            return self.vla.step(image, task_description)
+        self.phase = "start"
+        return None
+
     def _start(self, image, obs, env, qpos, target) -> None:
-        self.home_orientation = target[3:].copy()
+        if self.home_orientation is None:  # VLA then planner: set at the VLA's first step
+            self.home_orientation = target[3:].copy()
         self.robot_ids = [link.id for link in env.unwrapped.agent.robot.get_links()]
         if self.target_depth_missing:
             self.no_depth_ids = [env.unwrapped.episode_target_obj.id]
-        self._approach(image, obs, env, qpos, target)
+        if self.mode == "vla_then_planner":
+            self._take_over(image, obs, env, qpos, target)
+        else:
+            self._approach(image, obs, env, qpos, target)
+
+    def _take_over(self, image, obs, env, qpos, target) -> None:
+        """VLA then planner, at the takeover step. With the object in the hand (the VLA's last command closed the
+        fingers, and they did not close on nothing), lift it and place it as after the planner's own grasp; else open
+        the hand and do the whole pick-and-place as in planner only."""
+        grip = float(np.mean(qpos[6:8]))
+        holding = self.vla_gripper < 0 and grip >= self.min_grip
+        self.stats.update(takeover="holding" if holding else "grasp", takeover_grip=grip)
+        if not holding:
+            self.gripper = GRIPPER_OPEN
+            self._approach(image, obs, env, qpos, target)
+            return
+        self.first_look, self.gripper = False, GRIPPER_CLOSED  # the first-look features are for a grasp
+        self.view = self._obstacle_view(obs, qpos)
+        held = self._locate(image, obs, env, which="grasp", view=self.view)  # partly hidden by the fingers
+        if held is None:
+            self.stats["failure"] = "held object not found"
+            self._give_up()
+            return
+        self.grasp = held
+        self.hold_offset = ee_pose_from_obs(obs)[2] - held["bottom"]  # hand height above the held object's bottom
+        self._straight_to(target, np.r_[target[:2], target[2] + 0.08, target[3:]], "lift")
 
     def _choose(self) -> None:
         """Selector mode: from the first look's features and first plan, give the whole try to the

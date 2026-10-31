@@ -17,6 +17,9 @@ Each episode becomes a folder DIR/EPISODE_KEY (the evaluator's key: TASK/LAYOUTS
   segmentation; see scene_object_map);
 - meta.json, written last: the instruction of each step, the success, the steps, the episode's objects and goals
   (scene_objects) and its settings.
+A demonstration can be the end of its episode only (`first_step`): with the VLA then the planner (planner_client.py),
+the planner's part after it takes over. meta.json then also has the episode's first step in the demonstration and the
+episode's steps.
 examples/SimplerEnv/train_files/planner_demos_to_lerobot.py makes a VP-VLA training set of these folders, and from
 the object maps the visual prompts that VP-VLA's training draws (its crosshair on the object, its box on the place).
 """
@@ -178,24 +181,30 @@ class DemoRecorder:
             e["object_maps"].append(np.asarray(object_map, np.uint8))
         self._open = float(e["actions"][-1][6])
 
-    def finish(self, success: bool, **info) -> str:
-        """Writes the episode's folder (meta.json last) and returns it."""
+    def finish(self, success: bool, first_step: Optional[int] = 0, **info) -> str:
+        """Writes the episode's folder (meta.json last) and returns it. The demonstration is the episode from
+        `first_step` on (None: no step of it; the training set leaves such a folder out)."""
         e, self._episode = self._episode, None
         out = os.path.join(self.root, e["key"])
         os.makedirs(out, exist_ok=True)
-        steps = len(e["actions"])
-        arrays = {"actions": np.array(e["actions"], np.float32).reshape(steps, 7),
-                  "states": np.array(e["states"], np.float32).reshape(steps, 8)}
-        if e["object_maps"]:
-            if len(e["object_maps"]) != steps:
-                raise ValueError(f"{e['key']}: {len(e['object_maps'])} object maps for {steps} steps")
-            arrays["object_map"] = np.stack(e["object_maps"])
+        total = len(e["actions"])
+        if e["object_maps"] and len(e["object_maps"]) != total:
+            raise ValueError(f"{e['key']}: {len(e['object_maps'])} object maps for {total} steps")
+        start = total if first_step is None else first_step
+        if not 0 <= start <= total:
+            raise ValueError(f"{e['key']}: first step {first_step} of {total} steps")
+        frames, object_maps, steps = e["frames"][start:], e["object_maps"][start:], total - start
+        arrays = {"actions": np.array(e["actions"][start:], np.float32).reshape(steps, 7),
+                  "states": np.array(e["states"][start:], np.float32).reshape(steps, 8)}
+        if object_maps:
+            arrays["object_map"] = np.stack(object_maps)
         np.savez_compressed(os.path.join(out, "episode.npz"), **arrays)
-        height, width = e["frames"][0].shape[:2] if steps else (0, 0)
+        height, width = frames[0].shape[:2] if steps else (0, 0)
         if steps:
-            self._write_video(os.path.join(out, "frames.mp4"), e["frames"], FPS)
-        meta = {**e["info"], **info, "episode_key": e["key"], "success": bool(success), "steps": steps, "fps": FPS,
-                "height": int(height), "width": int(width), "instructions": e["instructions"]}
+            self._write_video(os.path.join(out, "frames.mp4"), frames, FPS)
+        meta = {**e["info"], **info, "episode_key": e["key"], "success": bool(success), "steps": steps,
+                "first_step": first_step, "episode_steps": total, "fps": FPS, "height": int(height),
+                "width": int(width), "instructions": e["instructions"][start:]}
         with open(os.path.join(out, "meta.json"), "w") as fh:
             json.dump(meta, fh, indent=1)
         return out

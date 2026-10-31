@@ -32,6 +32,10 @@ python -m examples.SimplerEnv.eval_files.planner.experiments.SCORER ...
 | plan-check v2 study: test set | `--layout-seed 13 --layout-per-episode` | `iid13` | 96 (24 per task); harder scenes 240 (48 per task) |
 | learned-features data: second training set | `--layout-seed 14 --layout-per-episode` | `iid14` | 400 (100 per task) |
 | VLM-plan study: test set | `--layout-seed 15 --layout-per-episode` | `iid15` | 400 (100 per task) |
+| marriage study: T1 | `--layout-seed 16 --layout-per-episode` | `iid16` | 400 (100 per task) |
+| marriage study: T3 | `--layout-seed 17 --layout-per-episode` | `iid17` | harder scenes 240 (48 per task) |
+| marriage study: the demonstrations' pool | `--layout-seed 100 --layout-per-episode` | `iid100` | planner 2,800 (700 per task); VLA-0 until 250 successes per task |
+| marriage study: the corrections | `--layout-seed 101 --layout-per-episode` | `iid101` | until 250 successful corrections per task |
 
 In the first three sets, a task's episodes share a few turns of the object: SimplerEnv's layouts have 1 to 3
 turns per task, and a `--layout-seed` set has 12 placements per task, each with the same 4 turns. In the `iidN`
@@ -56,7 +60,10 @@ closed-loop eval `closed_loop_vlmplan_iid15`, with the ASMs `vlmplan_model/asm_{
 closed-loop eval `handoff_vlmplan_iid15` (see "VLM-plan study"). The difficulty sweep adds `vlmplan_iid15_harsh_xS`
 (see "Difficulty sweep"), and the missing-depth study `miss_{iid11,iid15}_none` (see "Missing-depth study"). The
 harder-task system study's are `vlmplan_harder_paper_harsh`, `vlmplan_{own,words_SET,harder}_iid13_harsh` and
-`pseed31_{own,words_SET,harder}_iid13_harsh` (see "Harder-task system study").
+`pseed31_{own,words_SET,harder}_iid13_harsh` (see "Harder-task system study"). The marriage study's are named in
+its plan (see "Marriage study"): the demonstrations `demos_*`, the trained models' VLA-only evals `{vlap, vlapl,
+vlaplt, vlapltd, vlas}_*`, VLA-0's new ones `vla31_iid16` and `vla_harder_iid17`, and the planner-only evals
+`pseed31_*` (the fixed rule) and `vp_*` (VP-VLA's VLM marks).
 
 ## Evals (GPU)
 
@@ -386,6 +393,60 @@ DEPTHS="harsh none" bash $E/selector_eval.sh 0 10510 energy_closed_loop_iid15 ii
 unset ENERGY IID_EPISODES
 ```
 
+The marriage study's runs (see "Marriage study" below). The selection of each model's demonstrations, VLA-0
+reading the subtask, the blank and wrong instructions and the small policy are built before their first run, and
+their commands come with their code. `RUN_ROOT` is the fine-tuning runs' folder and `STEPS` their steps (fixed after
+the smoke tests); `CHECKPOINT_RUN` is the released checkpoint's run folder:
+
+```bash
+# the smoke tests (not part of the results): the pool's first 20 episodes of each task, converted, then a short
+# training run on them
+IID_EPISODES=20 RECORD_DEMOS=1 bash $E/planner_eval.sh 0 10320 smoke_demos_iid100 none iid100
+python -m examples.SimplerEnv.train_files.planner_demos_to_lerobot --out $SMOKE_ROOT/planner_demos \
+    --stats $CHECKPOINT_RUN/dataset_statistics.json --visual-prompts $SMOKE_VP $RUNS_DIR/smoke_demos_iid100
+DATA_ROOT=$SMOKE_ROOT VP_DIR=$SMOKE_VP MAX_STEPS=200 WARMUP=20 \
+    bash examples/SimplerEnv/train_files/run_finetune_1gpu.sh smoke_vla_p vla_p
+# the demonstrations: the planner on the pool's episodes 0 to 699 of each task, VLA-0 on 0 to 399 (then 100 more at
+# a time, as explicit chunks, for a task with fewer than 250 successes)
+IID_EPISODES=700 RECORD_DEMOS=1 bash $E/planner_eval.sh 0 10320 demos_planner_iid100 none iid100
+IID_EPISODES=400 RECORD_DEMOS=1 bash $E/vla_eval.sh 0 10400 demos_vla_iid100 iid100 4
+# the planner-only evals of the test sets and of the ASMs' training sets
+bash $E/planner_evals.sh 0 10320 1 pseed31_iid16_none:none:iid16 pseed31_iid16_realistic:realistic:iid16 \
+    pseed31_iid16_harsh:harsh:iid16
+IID_EPISODES=48 TASK_SET=harder bash $E/planner_eval.sh 0 10320 pseed31_harder_iid17_none none iid17
+TASK_SET=harder bash $E/planner_eval.sh 0 10320 pseed31_harder_paper_none none paper
+export TASK_SOURCE=vp
+bash $E/planner_evals.sh 0 10320 1 vp_iid16_none:none:iid16 vp_iid16_realistic:realistic:iid16 \
+    vp_iid16_harsh:harsh:iid16 vp_iid11_none:none:iid11 vp_iid11_harsh:harsh:iid11
+for set in synonyms attributes order reasoning; do
+  INSTRUCTIONS=$set bash $E/planner_eval.sh 0 10320 vp_words_${set}_paper_none none paper
+done
+IID_EPISODES=48 TASK_SET=harder bash $E/planner_eval.sh 0 10320 vp_harder_iid17_none none iid17
+TASK_SET=harder bash $E/planner_eval.sh 0 10320 vp_harder_paper_none none paper
+unset TASK_SOURCE
+# VLA-0 on T1 and T3 (its T2 evals are the reworded-instruction study's)
+bash $E/vla_eval.sh 0 10400 vla31_iid16 iid16 4
+IID_EPISODES=48 TASK_SET=harder bash $E/vla_eval.sh 0 10400 vla_harder_iid17 iid17 4
+# each trained model on T1 and T2; VLA-PL also on T3 and on the ASMs' training sets
+for M in vlap vlapl vlaplt vlapltd vlas; do
+  export CKPT=$RUN_ROOT/$M/checkpoints/steps_${STEPS}_pytorch_model.pt
+  bash $E/vla_eval.sh 0 10400 ${M}_iid16 iid16 4
+  for set in synonyms attributes order reasoning; do
+    INSTRUCTIONS=$set bash $E/vla_eval.sh 0 10400 ${M}_words_${set}_paper paper 4
+  done
+done
+export CKPT=$RUN_ROOT/vlapl/checkpoints/steps_${STEPS}_pytorch_model.pt
+IID_EPISODES=48 TASK_SET=harder bash $E/vla_eval.sh 0 10400 vlapl_harder_iid17 iid17 4
+bash $E/vla_eval.sh 0 10400 vlapl_iid11 iid11 4
+TASK_SET=harder bash $E/vla_eval.sh 0 10400 vlapl_harder_paper paper 4
+# the corrections: VLA-PLT drives, then the planner takes over (then 100 more episodes at a time, as explicit
+# chunks, for a task with fewer than 250 successful corrections)
+export CKPT=$RUN_ROOT/vlaplt/checkpoints/steps_${STEPS}_pytorch_model.pt
+CONTROLLER=vla_then_planner TAKEOVER_STEPS="10 40" RECORD_DEMOS=1 DEPTHS=none \
+    bash $E/selector_eval.sh 0 10510 demos_corrections_iid101 iid101 - 6
+unset CKPT
+```
+
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
 `TASK:0:8 TASK:8:16 TASK:16:24` for each task and `heldout_vla_g1` the episodes 24 to 47.
 
@@ -415,7 +476,8 @@ VLM-plan study's: `score_vlm_plan` (all its tables and tests, with the role spli
 `check_closed_loop closed_loop_vlmplan_iid15 --planner 'vlmplan_iid15_{}' --models 'vlmplan_model/asm_{}.json' --vla
 vla31_iid15` (its closed-loop eval) and `score_costs vlmplan_iid15_harsh vla31_iid15 closed_loop_vlmplan_iid15
 handoff_vlmplan_iid15` (its costs). The difficulty sweep's: `score_sweep`. The missing-depth study's:
-`score_missing_depth`. The harder-task system study's: `score_harder_system`. The energy study's: `score_energy`. Any eval's costs (see "Costs" above):
+`score_missing_depth`. The harder-task system study's: `score_harder_system`. The energy study's: `score_energy`.
+The marriage study's: `score_marriage` (all its tables and tests). Any eval's costs (see "Costs" above):
 `score_costs RUN...`.
 
 The `dfix_*` and `seeded_*` runs and `heldout_planner_none` (the evals before the planner seed and before the
@@ -1241,3 +1303,163 @@ same with and without a controller; the GPU may run at another clock speed when 
 total GPU energy is reported too.
 
 **Evals.** About 3.5 GPU hours on GPU 0, and about 10 minutes for `pseed31_iid11_none`. The commands are above.
+
+## Marriage study
+
+The plan below was fixed on 2026-10-30, before any of the study's demonstrations, training runs or evals, and
+`score_marriage` follows it. The results do not change it. A result that is not in the plan is reported as
+exploratory.
+
+**Question.** The studies above choose the planner or the VLA for each episode, so they can never beat the oracle
+of the two. Here each one trains the other: the planner's successful episodes, also with reworded instructions,
+become training data for VP-VLA, and VP-VLA's VLM tells the planner what to move (`TASK_SOURCE=vp`, see "VP-VLA's
+VLM marks"). Does the VLA learn from the planner (H1, H2), does it then beat every option that needs no training on
+instructions it never saw (H3), and does the married system beat the current one (H4)? Does choosing where to
+collect help (H5)?
+
+**Tasks.** Training uses SimplerEnv's 4 tasks with their own instructions only. The harder scenes are in no
+training set: the fixed rule, which collects the demonstrations, cannot read their two-plate and two-step
+instructions, and the visual-prompt labels take one goal. So T3 tests scenes that no model was trained on.
+
+**Layout sets.** None of them ran before this plan.
+
+| Set | Layouts | Use |
+|---|---|---|
+| `iid100` | layout seed 100, a random layout for each episode | the demonstrations' pool (training) |
+| `iid101` | layout seed 101 | the planner's corrections (training) |
+| `iid16` | layout seed 16, 100 per task | T1: SimplerEnv's 4 tasks with their own instructions (400 episodes) |
+| `paper` | SimplerEnv's 24 layouts per task | T2: the 4 reworded sets of `instruction_sets.py` (384 episodes) |
+| `iid17` | layout seed 17, 48 per task | T3: the 5 harder scenes of `harder_scenes.py` (240 episodes) |
+
+T4 is T1 with the planner at the 3 depth levels (clean, realistic and harsh); the VLA does not read depth. The ASMs
+of H4 are trained on `iid11` (the two-model study's training set) and on the harder scenes' fixed layouts (`paper`),
+as in the harder-task system study; the trained VLAs never saw these layouts. No training rewording is a test
+instruction or uses a test family's concept words: their exclusion list was fixed before any rewording was written
+(see "Demonstrations" under "Evals (GPU)").
+
+**Demonstrations.** All with SAM 3.1, clean depth and camera, noise seed 0 and planner seed 0, recorded with
+`RECORD_DEMOS=1` and converted by `planner_demos_to_lerobot.py --visual-prompts` (the visual prompts from the
+simulator's masks); `--reword` adds a training rewording of each of the four families to every episode, so each
+episode is written 5 times. Each model gets 250 demonstrations of each task (1,000 in all):
+
+- **VLA-P**: the planner (fixed rule) on the pool's episodes 0 to 699 of each task (`demos_planner_iid100`, 2,800
+  episodes); the first 250 successful episodes of each task, in episode order, so at random layouts.
+- **VLA-PL**: the same 1,000 episodes, with `--reword`.
+- **VLA-S** (the control): VLA-0 on the same pool (`demos_vla_iid100`; fast settings, VLM seed offset 0), episodes
+  0 to 399 of each task and then 100 more at a time for a task until it has 250 successes; the first 250 successful
+  episodes of each task, in episode order, with `--reword`. VLA-S has VLA-PL's numbers and rewordings, from the same
+  pool of layouts, with the VLA's own actions instead of the planner's.
+- **VLA-PLT**: 250 successful episodes of each task from the same planner pool, chosen from each episode's first
+  look. The score is P(planner succeeds) x (1 - P(VLA succeeds)) of the energy study's clean-depth ASM
+  (`energy_model/asm_none.json`, trained on `pseed31_iid11_none` and `vla31_iid11`). Of each task, 188 are the
+  successful episodes with the highest scores (the lower episode index on a tie), and 62 are drawn at random
+  (seed 0) from the task's other successful episodes, for coverage. With `--reword`.
+- **VLA-PLTD**: VLA-PLT's set and one round of the planner's corrections (see "Corrections" above): VLA-PLT on
+  `iid101` with `CONTROLLER=vla_then_planner TAKEOVER_STEPS="10 40"`, clean depth (`demos_corrections_iid101`),
+  episodes 0 to 99 of each task and then 100 more at a time until a task has 250 successful corrections (the planner
+  took over, holding or to grasp, and the episode succeeded); the first 250 of each task, with `--reword`.
+
+**Models.** VLA-0 is the released VP-VLA. The other 5 are fine-tuned from it with `run_finetune_1gpu.sh`, each on its
+own set (VLA-PLTD's mixture has both of its sets), all with the same settings and the same number of steps. The
+settings (the steps, the batch, the learning rates and the frozen layers) are fixed after the smoke tests, in a dated
+note in this section, before the first model of the study is trained.
+
+**Smoke tests first** (not part of the results). The pool's first 20 episodes of each task, recorded and
+converted: the clip report, and the eggplant's box on rendered frames. If more than 1% of any action number lies
+outside the checkpoint's range (training clips it there), the planner's steps in demonstrations get a limit that
+keeps them inside the range, fixed in a dated note before the demonstrations run. Then a short training run on these
+demonstrations measures the memory and the speed. No smoke test evaluates a model.
+
+**Baselines without training** (for H3). **VLA-0 reading the subtask**: VLA-0 whose action head gets the current
+subtask that VP-VLA's VLM writes (the text that the visual prompts come from) instead of the raw instruction, or the
+raw instruction when the VLM gives none. **The planner reading the VLM's marks**: `TASK_SOURCE=vp`, clean depth.
+
+**Evals.** All with SAM 3.1, noise seed 0 and planner seed 0; the VLAs with the fast settings and VLM seed offset 0.
+The VLA-only evals, where `M` is a trained model's prefix (`vlap`, `vlapl`, `vlaplt`, `vlapltd`, `vlas`) and `S` a
+reworded set:
+
+| | T1 | T2 | T3 | the ASMs' training sets |
+|---|---|---|---|---|
+| VLA-0 | `vla31_iid16` | `vla_words_S_paper` (the reworded-instruction study's) | `vla_harder_iid17` | `vla31_iid11`, `vla_harder_paper` |
+| each model `M` | `M_iid16` | `M_words_S_paper` | VLA-PL: `vlapl_harder_iid17` | VLA-PL: `vlapl_iid11`, `vlapl_harder_paper` |
+| VLA-0 reading the subtask | | `vlasub_words_S_paper` | | |
+
+The planner-only evals with the fixed rule: `pseed31_iid16_{none,realistic,harsh}` (T1 and T4), `words_S_paper`
+(T2: the reworded-instruction study's, clean depth), `pseed31_harder_iid17_none` (T3), and `pseed31_iid11_{none,harsh}`
+and `pseed31_harder_paper_none` (the ASMs' training sets). With the VLM's marks (`TASK_SOURCE=vp`):
+`vp_iid16_{none,realistic,harsh}`, `vp_words_S_paper_none`, `vp_harder_iid17_none`, `vp_iid11_{none,harsh}` and
+`vp_harder_paper_none`. The commands are above.
+
+**Planned tests.** In this fixed order, each the exact two-sided paired sign-flip test at 0.05, and each counting only
+when every test before it was a win (significant, with the first one higher):
+
+| # | Question | Comparison | Test sets |
+|---|---|---|---|
+| H1 | Does the planner teach the VLA? | VLA-P vs. VLA-0 | T1 (400 episodes) |
+| H2 | Is it the planner's data, not just more data from the simulator? | VLA-PL vs. VLA-S | T1 and T2 (784) |
+| H3 | Does the married VLA beat every option that needs no training on new language? | VLA-PL vs. each of the planner (fixed rule), VLA-0, VLA-0 reading the subtask and the planner reading the VLM's marks | T2 (384) |
+| H4 | Does the married system beat the current system? | the married system vs. the current system (below) | T1 with harsh depth, T2 and T3 (1,024) |
+| H5 | Does choosing where to collect help? | VLA-PLT vs. VLA-PL | T1 and T2 (784) |
+
+H3 is an intersection-union test: it is a win when VLA-PL is significantly higher than each of the four, each by the
+same test at 0.05, so it needs no correction; its p is the largest of the four.
+
+Each test takes one value per unit, the sum of its episodes' differences in success, because episodes that share a
+layout are not independent: an episode index of T1 (its 4 tasks share the layout), a layout of T2 (one task's
+episode in the 4 reworded sets) or an episode index of T3 (its 5 scenes share it). Only the design's episodes count
+(T1: 0 to 99 of each task; T2: 0 to 23 of each task in each set; T3: 0 to 47 of each scene), and of these only the
+units that every eval of the test has in full. Intervals: 95% percentile bootstrap of the mean difference per
+episode; each draw takes the units again, with replacement (10,000 draws).
+
+**The systems of H4.** Both are scored offline, as in the studies above: each episode's choice from the first look
+of its planner-only eval, and the outcome of the chosen method's eval of that episode.
+
+- The current system: the planner with its fixed rule, VLA-0 and the two-model ASM, with the two-model study's
+  features (P(planner) from `plan_ok` and `plan_path_ratio`, P(VLA) from `grasp_turn_rad` and `grasp_reach_m`, and
+  one column per task in each).
+- The married system: the planner reading the VLM's marks, VLA-PL, and the same ASM trained on their outcomes. An
+  episode where the VLM marks no target goes to the VLA first (`selector.vlm_plan_gate`), and such episodes are not
+  training data. VLA-PL is fixed here, so that no test result picks the married system's VLA.
+
+Each system has one ASM per depth level. Harsh (T1): trained on `iid11` with harsh depth. Clean (T2 and T3): trained
+on `iid11` with clean depth and on the harder scenes' fixed layouts together, with a column for each of the 9 tasks
+(as `selector.train_pooled`); a reworded instruction keeps its task's column. The current system's are trained on
+`pseed31_iid11_{harsh,none}` with `vla31_iid11` and on `pseed31_harder_paper_none` with `vla_harder_paper`; the
+married system's on `vp_iid11_{harsh,none}` with `vlapl_iid11` and on `vp_harder_paper_none` with
+`vlapl_harder_paper`.
+
+**Secondary (reported, no claims).**
+
+- Every eval's success rate on T1, on each reworded set of T2 and on T3; each model against VLA-0 on each (exact
+  McNemar).
+- VLA-PLTD vs. VLA-PLT on T1 and T2. This comparison and those below use the planned tests' test, except where
+  McNemar is named.
+- The student against its teacher (T4): VLA-PL and VLA-0 vs. the planner with its fixed rule on T1, at each depth
+  level.
+- The planner reading the VLM's marks vs. its fixed rule, planner-only: on T1 at each depth level, on T2 and on T3.
+- H4 on each test set: each system's planner-only, VLA-only, ASM, per-task choice (for each task the method with the
+  higher success rate on the ASM's training episodes; the planner on a tie) and oracle; how many episodes both
+  methods solve, only one, or neither; the married system against the old pair's oracle (after the fact, the better
+  of the fixed rule and VLA-0 in each episode), on each test set and each reworded set; the success models' AUC,
+  within-task AUC, log-loss, Brier score and calibration.
+- Of the T1 episodes that the planner (fixed rule, clean depth) solves and VLA-0 does not, the share that each
+  trained model solves.
+- What the VLA adds beyond the demonstrations: a small policy trained from scratch on VLA-P's demonstrations against
+  VLA-P on T1 (`small_iid16`). One policy per task, a ResNet-18 image encoder (ImageNet weights) and an MLP
+  that gives the next 16 steps' 7 action numbers, as VP-VLA's head does, with an L1 loss; its training settings are
+  fixed in a dated note before it is trained. It has no language input, so T2 does not test it.
+- Does a VLA read the instruction: VLA-0 and VLA-PL on T1's first 24 episodes of each task with an empty instruction
+  and with a wrong one (another task's: the spoon and carrot tasks swap theirs, and so do the stack and eggplant
+  tasks), against their own instructions on the same episodes (exact McNemar): `vla31_{blank,wrong}_iid16` and
+  `vlapl_{blank,wrong}_iid16`. A VLA that ignores the instruction succeeds as often as with its own.
+- A learning curve: VLA-P trained on the first 50 and 125 of its demonstrations of each task (200 and 500 in all),
+  with the same settings, on T1 (`vlap200_iid16`, `vlap500_iid16`), each against VLA-0.
+- The demonstrations: the pool's success rate of each method and task, the clip report, the targeting scores of the
+  chosen and the randomly drawn episodes, and the corrections' takeovers.
+- Each eval's cost per episode (`score_costs`).
+
+**GPU hours.** About 120: the demonstrations about 23 (most of it VLA-0's pool episodes, for VLA-S), the 7 training
+runs about 45 (the smoke tests measure the speed), the VLA-only evals about 50 and the planner-only evals about 4.
+
+**Built before their first run**, each with its code and tests: the selection of each model's demonstrations as
+above, VLA-PLTD's mixture, VLA-0 reading the subtask, the blank and wrong instructions, and the small policy.

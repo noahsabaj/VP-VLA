@@ -372,6 +372,12 @@ def write_dataset(out: str, folders: List[str], stats: str, visual_prompts: Opti
             "clip": clip_report(actions, stat), "visual_prompts": prompts}
 
 
+def summary_lines(out: str, summary: Dict[str, object]) -> List[str]:
+    """What the script prints about a written set (write_dataset's summary)."""
+    return [f"{out}: {summary['episodes']} episodes of {summary['recorded']} recorded, {summary['frames']} steps, "
+            f"{summary['tasks']} instructions", *summary["clip"], *summary["visual_prompts"]]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("demos", nargs="+", help="folders with recorded episodes")
@@ -382,9 +388,7 @@ def main() -> None:
     ap.add_argument("--reword", action="store_true", help="also each episode with a rewording of each family")
     a = ap.parse_args()
     summary = write_dataset(a.out, find_episodes(a.demos, a.all), a.stats, a.visual_prompts, a.reword)
-    print(f"{a.out}: {summary['episodes']} episodes of {summary['recorded']} recorded, {summary['frames']} steps, "
-          f"{summary['tasks']} instructions")
-    print("\n".join(summary["clip"] + summary["visual_prompts"]))
+    print("\n".join(summary_lines(a.out, summary)))
 
 
 if __name__ == "__main__":

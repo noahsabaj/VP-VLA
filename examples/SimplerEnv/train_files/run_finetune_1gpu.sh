@@ -5,10 +5,11 @@
 #
 #   DATA_ROOT=... VP_DIR=... [GPU=0] bash examples/SimplerEnv/train_files/run_finetune_1gpu.sh RUN_ID DATA_MIX
 #
-# DATA_MIX: a mixture in starVLA/dataloader/gr00t_lerobot/mixtures.py (the study's: vla_p, vla_pl, vla_plt, vla_s).
-# Its sets are in DATA_ROOT and their visual prompts in VP_DIR (planner_demos_to_lerobot.py --out DATA_ROOT/SET
-# --visual-prompts VP_DIR). The run goes to RUN_ROOT/RUN_ID in the layout that the evals read: config.yaml,
-# dataset_statistics.json and checkpoints/steps_N_pytorch_model.pt (the evals' CKPT).
+# DATA_MIX: a mixture in starVLA/dataloader/gr00t_lerobot/mixtures.py (the study's: vla_p, vla_pl, vla_plt, vla_pltd,
+# vla_s, and the learning curve's vla_p450 and vla_p1125). Its sets are in DATA_ROOT and their visual prompts in VP_DIR
+# (select_demos.py --write SET --data-root DATA_ROOT --visual-prompts VP_DIR, or planner_demos_to_lerobot.py --out
+# DATA_ROOT/SET --visual-prompts VP_DIR). The run goes to RUN_ROOT/RUN_ID in the layout that the evals read:
+# config.yaml, dataset_statistics.json and checkpoints/steps_N_pytorch_model.pt (the evals' CKPT).
 #
 # The model and every training setting not named here are the released run's (CONFIG: the config.yaml of CKPT's
 # run): QwenOFT (Qwen3-VL-4B and an MLP action head on the VLM's action tokens), the camera picture with and without

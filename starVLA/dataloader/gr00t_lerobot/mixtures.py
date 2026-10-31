@@ -172,8 +172,8 @@ DATASET_NAMED_MIXTURES = {
     ],
 
     # The planner-VLA training study (examples/SimplerEnv/eval_files/planner/experiments/README.md, "Fine-tuning"):
-    # one set per model, written by examples/SimplerEnv/train_files/planner_demos_to_lerobot.py --out DATA_ROOT/<set>.
-    "vla_p": [  # planner demonstrations on random training layouts, with SimplerEnv's own instructions
+    # one set per model, written by examples/SimplerEnv/train_files/select_demos.py --write <set> into DATA_ROOT/<set>.
+    "vla_p": [  # planner demonstrations on random training layouts, with the tasks' own instructions
         ("planner_demos", 1.0, "oxe_bridge"),
     ],
     "vla_pl": [  # the same demonstrations, also with the training rewordings (--reword)
@@ -182,7 +182,16 @@ DATASET_NAMED_MIXTURES = {
     "vla_plt": [  # planner demonstrations on layouts chosen by the competence models, with rewordings
         ("targeted_demos_reworded", 1.0, "oxe_bridge"),
     ],
+    "vla_pltd": [  # vla_plt's demonstrations and the planner's corrections of VLA-PLT, in one set (so that every
+        ("targeted_corrections_reworded", 1.0, "oxe_bridge"),  # step has the same chance), with rewordings
+    ],
     "vla_s": [  # the VLA's own successful episodes, as many as vla_pl's and with rewordings (the control)
         ("vla_successes_reworded", 1.0, "oxe_bridge"),
+    ],
+    "vla_p450": [  # the learning curve: vla_p's first 50 demonstrations of each task
+        ("planner_demos_450", 1.0, "oxe_bridge"),
+    ],
+    "vla_p1125": [  # and its first 125 of each task
+        ("planner_demos_1125", 1.0, "oxe_bridge"),
     ],
 }

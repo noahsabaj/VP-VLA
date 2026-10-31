@@ -2,22 +2,26 @@
 
 from examples.SimplerEnv.eval_files.harder_scenes import TASKS as HARDER_TASKS
 from examples.SimplerEnv.eval_files.instruction_sets import INSTRUCTION_SETS, TASKS
+from examples.SimplerEnv.eval_files.novel_scenes import KINDS
+from examples.SimplerEnv.eval_files.novel_scenes import TASKS as NOVEL_TASKS
 from examples.SimplerEnv.train_files import rewordings as rw
 
 
 def test_every_test_instruction_is_excluded():
-    assert len(rw.TEST_INSTRUCTIONS) == 16 + 3  # T2's four sets, and T3's instructions that are not SimplerEnv's own
+    assert len(rw.TEST_INSTRUCTIONS) == 16 + 8  # T2's four sets and T5's instructions
     for instruction in rw.TEST_INSTRUCTIONS:
         assert rw.exclusions(instruction)[0] == f"test instruction: {instruction}"
-    assert rw.exclusions("Put the carrot on the plate that is closer to the camera!")[0].startswith("test instruction")
+    assert rw.exclusions("Put the eggplant on the plate!")[0].startswith("test instruction")
 
 
 def test_each_test_family_is_caught_by_its_own_words():
     for family, instructions in INSTRUCTION_SETS.items():
         for instruction in instructions:
             assert any(f.startswith(f"{family}: ") for f in rw.exclusions(instruction)), instruction
-    for name in ("CarrotOnNearPlate-v0", "CarrotOnFarPlate-v0"):
-        assert "harder scenes: camera" in rw.exclusions(HARDER_TASKS[name].instruction)
+    for name, kind in KINDS.items():  # T5's new objects and reasoning; its new pairs and long tasks have no own words
+        if kind in ("new object", "reasoning"):
+            assert any(f.startswith("new scenes: ") for f in rw.exclusions(NOVEL_TASKS[name].instruction)), name
+    assert "new scenes: closer to the towel" in rw.exclusions(NOVEL_TASKS["NovelCarrotByTowelOnPlate-v0"].instruction)
 
 
 def test_every_training_rewording_passes_the_exclusion_list():
@@ -49,4 +53,8 @@ def test_simplerenvs_own_instructions_are_allowed():
         assert rw.exclusions(instruction) == []
     assert rw.exclusions("Lay the spoon down on the napkin.") == []
     assert rw.exclusions("Put the spoon on the Table-Cloth") == ["synonyms: cloth"]
-    assert rw.exclusions("close the gripper around the carrot") == ["harder scenes: close"]
+    # the harder scenes are in the training since the change of 2026-10-30: their words are allowed
+    for instruction in (t.instruction for t in HARDER_TASKS.values()):
+        assert rw.exclusions(instruction) == [], instruction
+    assert rw.exclusions("put the spoon that is next to the towel on the plate") == ["new scenes: next to the towel"]
+    assert rw.exclusions("don't put the can down") == ["new scenes: can", "new scenes: don t"]

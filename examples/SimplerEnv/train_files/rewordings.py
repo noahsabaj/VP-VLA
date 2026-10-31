@@ -11,25 +11,30 @@ written. A training rewording may not be a test instruction (compared in lower c
 contain an excluded word or phrase (whole words). The test sets are:
 - T2, the four reworded sets of the language study (eval_files/instruction_sets.py): synonyms, attributes, other word
   orders and reasoning;
-- T3, the harder scenes (eval_files/harder_scenes.py): a plate named by where it is, and two pick-and-places in one
-  instruction.
+- T5, the new test scenes (eval_files/novel_scenes.py): new objects, an object and a target that no training task
+  pairs, an object named by what it is not or by the object next to it, and long tasks (a stack built on the plate,
+  three pick-and-places in one instruction).
 EXCLUDED holds, for each test family, the words that carry its concepts (its new names, verbs, structures and facts)
 with their close variants. SimplerEnv's own names of the objects stay allowed, as the training keeps its own
 instructions too.
+
+Change of 2026-10-30, before any rewording of the harder scenes was written: the harder scenes (T3,
+eval_files/harder_scenes.py) are now in the training (the marriage study's change of that date), so their
+instructions and their family's words ("camera", "closer", "farther" ...) left the list, and T5 came in.
 """
 
 import re
 import zlib
 from typing import List
 
-from examples.SimplerEnv.eval_files.harder_scenes import TASKS as HARDER_TASKS
 from examples.SimplerEnv.eval_files.instruction_sets import INSTRUCTION_SETS, TASKS
+from examples.SimplerEnv.eval_files.novel_scenes import TASKS as NOVEL_TASKS
 
 # SimplerEnv's own instruction of each of the 4 WidowX tasks (their get_language_instruction).
 OWN = dict(zip(TASKS, ("put the spoon on the towel", "put carrot on plate", "stack the green block on the yellow block",
                        "put eggplant into yellow basket"), strict=True))
 TEST_INSTRUCTIONS = tuple(i for s in INSTRUCTION_SETS.values() for i in s) + tuple(
-    t.instruction for t in HARDER_TASKS.values() if t.instruction not in OWN.values())
+    t.instruction for t in NOVEL_TASKS.values())
 # Regular expressions, each matched as whole words in the lower-case instruction without punctuation.
 EXCLUDED = {
     # T2 synonyms: "place the spoon on the cloth", "set the carrot on the dish", "put the green cube on top of the
@@ -50,8 +55,12 @@ EXCLUDED = {
     "reasoning": (r"eat(s|ing|en)?", r"soups?", r"broth", r"stews?", r"rabbits?", r"bunn(y|ies)", r"hares?",
                   r"lov(e|es|ed)", r"grass(y|es)?", r"lawns?", r"turf", r"colou?r of", r"(an)?other", r"baba",
                   r"gh?anou(sh|j)", r"mutabb?al", r"made (from|of)"),
-    # T3: "the plate that is closer to (farther from) the camera".
-    "harder scenes": (r"camera", r"clos(e|er|est)", r"near(er|est|by)?", r"far(ther|thest)?", r"furthe(r|st)"),
+    # T5: the new objects ("the sponge", "the soda can"), and an object named by what it is not ("the vegetable that
+    # is not orange") or by the object next to it ("the carrot that is closer to the towel"). Its new pairs and long
+    # tasks have no words of their own: their instructions are excluded as test instructions.
+    "new scenes": (r"sponges?", r"soda", r"cans?", r"coke", r"cola", r"drinks?", r"beverages?", r"tins?", r"not",
+                   r"\w+n t", r"except", r"excluding", r"rather than", r"instead of", r"apart from",
+                   r"(next to|beside|by|near(er|est)?|clos(e|er|est) to) the (?!camera\b)\w+"),
 }
 
 

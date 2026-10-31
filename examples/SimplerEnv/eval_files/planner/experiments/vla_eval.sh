@@ -18,7 +18,8 @@
 #     visual prompts (common.sh).
 #   RGB_NOISE=none (default) | realistic | harsh: a real color camera's errors in the picture (camera_noise.py).
 #   INSTRUCTIONS=NAME: reworded instructions (instruction_sets.py; default: the task's own).
-#   TASK_SET=simpler (default: SimplerEnv's 4 tasks) | harder (the harder scenes; LAYOUTS=paper or iidN).
+#   TASK_SET=simpler (default: SimplerEnv's 4 tasks) | harder (the harder scenes; LAYOUTS=paper or iidN) | novel (the
+#     new test scenes; LAYOUTS=iidN).
 #   ENERGY=1: an energy run (K must be 1): each episode's GPU energy, the idle power and the null episodes (energy_setup
 #     and energy_baseline in common.sh).
 [ $# -ge 5 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }

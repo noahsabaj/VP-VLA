@@ -1,10 +1,11 @@
 """Training rewordings of the instructions of the planner's demonstrations, and the exclusion list that keeps the test
 sets' phrasings and concepts out of them.
 
-REWORDINGS gives each of the 4 WidowX tasks 8 rewordings in each of the test sets' four families: other words
-(synonyms), the objects named by what they look like (attributes), other sentence forms (order) and the objects named
-by what they are used for or known for (reasoning). planner_demos_to_lerobot.py --reword pairs each demonstration with
-one rewording of each family (rewording). The visual prompts keep the objects of SimplerEnv's own instruction.
+REWORDINGS gives each of SimplerEnv's 4 WidowX tasks and each of the 5 harder scenes 8 rewordings in each of the test
+sets' four families: other words (synonyms), the objects named by what they look like (attributes), other sentence
+forms (order) and the objects named by what they are used for or known for (reasoning).
+planner_demos_to_lerobot.py --reword pairs each demonstration with one rewording of each family (rewording). The visual
+prompts keep the objects of the task's own instruction.
 
 The exclusion list (TEST_INSTRUCTIONS and EXCLUDED) was fixed on 2026-10-30, before any training rewording was
 written. A training rewording may not be a test instruction (compared in lower case, without punctuation) and may not
@@ -250,6 +251,220 @@ REWORDINGS = {
             "put the one known as brinjal in India into the yellow basket",
             "put the one that is the star of imam bayildi into the yellow basket",
             "put what is layered with cheese and tomato in parmigiana into the yellow basket",
+        ),
+    },
+    # The harder scenes (harder_scenes.py), written after the list's change of 2026-10-30. Their tables hold the
+    # spoon, the towel, the carrot and the plate, or the carrot and two plates, so each rewording fits one of them
+    # only, and those of the two-plate tasks keep the plate's place (nearer to or farther from the camera).
+    "ClutteredSpoonOnTowel-v0": {
+        "synonyms": (
+            "move the spoon onto the towel",
+            "lay the teaspoon on the hand towel",
+            "rest the spoon upon the towel",
+            "put the tablespoon on the towel",
+            "bring the spoon to the towel",
+            "lower the spoon onto the napkin",
+            "transfer the teaspoon onto the towel",
+            "lay the spoon down on the rag",
+        ),
+        "attributes": (
+            "put the shiny one with a handle on the towel",
+            "put the metal one on the soft square",
+            "put the silver one with a small bowl at its end on the towel",
+            "move the steel one onto the towel",
+            "lay the gleaming metal one on the towel",
+            "put the long thin metal one on the towel",
+            "put the reflective one on the fabric square",
+            "put the slender silver one onto the soft towel",
+        ),
+        "order": (
+            "on the towel, lay the spoon",
+            "the spoon must sit on the towel",
+            "have the spoon resting on the towel",
+            "the spoon is to be put on the towel",
+            "leave the spoon lying on the towel",
+            "grab the spoon and lay it on the towel",
+            "it is the spoon that belongs on the towel",
+            "the towel needs the spoon on it",
+        ),
+        "reasoning": (
+            "put what you would stir a mug of tea with on the towel",
+            "put the one used to scoop sugar into coffee on the towel",
+            "put what you would use to scoop baking powder on the towel",
+            "put the one you would dip into a jar of honey on the towel",
+            "put what you would use to stir milk into coffee on the towel",
+            "put the spoon on what you would dry your hands with",
+            "put the spoon on what you would wipe a wet counter with",
+            "put the one used to scoop flour into a bowl on the towel",
+        ),
+    },
+    "ClutteredCarrotOnPlate-v0": {
+        "synonyms": (
+            "move the carrot onto the plate",
+            "lay the carrot upon the platter",
+            "rest the carrot on the serving plate",
+            "bring the carrot to the platter",
+            "put the carrot onto the saucer",
+            "transfer the carrot onto the plate",
+            "lower the carrot onto the saucer",
+            "lay the carrot down on the plate",
+        ),
+        "attributes": (
+            "put the tapered root on the plate",
+            "put the pointed root on the round plate",
+            "put the thin root onto the plate",
+            "lay the cone-shaped one on the round plate",
+            "put the skinny root on the plate",
+            "put the root with a pointed tip on the flat round plate",
+            "move the slim tapering root onto the plate",
+            "put the bright root on the round plate",
+        ),
+        "order": (
+            "on the plate, lay the carrot",
+            "the carrot must sit on the plate",
+            "have the carrot resting on the plate",
+            "the carrot is to be put on the plate",
+            "leave the carrot lying on the plate",
+            "grab the carrot and lay it on the plate",
+            "it is the carrot that belongs on the plate",
+            "the plate needs the carrot on it",
+        ),
+        "reasoning": (
+            "put the root that is often roasted with honey on the plate",
+            "put the root you would cut into sticks for dipping in hummus on the plate",
+            "put the root often shredded into a salad on the plate",
+            "put the root pickled for a banh mi sandwich on the plate",
+            "put the root that grows underground with feathery green leaves on the plate",
+            "put the root that gajar halwa is cooked from on the plate",
+            "put the root sold as baby sticks in snack bags on the plate",
+            "put the carrot on what you would serve a slice of cake on",
+        ),
+    },
+    # One part for each goal, the spoon's first (planner_demos_to_lerobot.py takes part N for goal N).
+    "TwoStepSpoonAndCarrot-v0": {
+        "synonyms": (
+            "lay the spoon on the towel and the carrot on the platter",
+            "move the spoon onto the napkin and the carrot onto the plate",
+            "rest the teaspoon on the towel, then the carrot on the plate",
+            "transfer the spoon to the towel and the carrot to the platter",
+            "lower the spoon onto the rag and the carrot onto the saucer",
+            "bring the spoon to the hand towel and the carrot to the plate",
+            "lay the spoon upon the towel and the carrot upon the plate",
+            "shift the spoon onto the towel, and the carrot onto the serving plate",
+        ),
+        "attributes": (
+            "put the metal one on the towel and the tapered root on the plate",
+            "put the shiny one on the soft square and the pointed root on the round plate",
+            "put the long silver one on the towel and the thin root on the plate",
+            "lay the steel one on the towel and the cone-shaped root on the plate",
+            "put the gleaming one on the fabric square and the slender root on the plate",
+            "put the one with a handle on the towel and the crunchy root on the plate",
+            "move the polished one onto the towel and the skinny root onto the plate",
+            "put the reflective one on the towel and the bright root on the round plate",
+        ),
+        "order": (
+            "the spoon must sit on the towel and the carrot on the plate",
+            "first the spoon onto the towel, then the carrot onto the plate",
+            "have the spoon resting on the towel and the carrot resting on the plate",
+            "the spoon is to be put on the towel and the carrot on the plate",
+            "leave the spoon on the towel, then leave the carrot on the plate",
+            "the spoon belongs on the towel and the carrot belongs on the plate",
+            "I want the spoon lying on the towel and the carrot lying on the plate",
+            "make sure the spoon rests on the towel and the carrot rests on the plate",
+        ),
+        "reasoning": (
+            "put what you would stir coffee with on the towel and the root often roasted with honey on the plate",
+            "put the one used to scoop sugar on the towel and the root a snowman wears as a nose on the plate",
+            "put what you would measure salt with on the towel and the root shredded into coleslaw on the plate",
+            "put what you stir cocoa with on the towel and the root rich in beta-carotene on the plate",
+            "put the spoon on what you dry your hands with and the carrot on what you serve cake on",
+            "put what you would dip into honey on the towel and the root you cut into sticks for hummus on the plate",
+            "put the one used to stir a latte on the towel and the root pickled for banh mi on the plate",
+            "put what you would scoop flour with on the towel and the root that grows underground on the plate",
+        ),
+    },
+    "CarrotOnNearPlate-v0": {
+        "synonyms": (
+            "lay the carrot on the plate nearest the camera",
+            "move the carrot onto the plate nearer to the camera",
+            "rest the carrot on the platter closest to the camera",
+            "transfer the carrot to the plate that sits nearer the camera",
+            "put the carrot onto the saucer that is nearer to the camera",
+            "lower the carrot onto the plate with less distance to the camera",
+            "lay the carrot down on the nearer plate as seen from the camera",
+            "shift the carrot onto the platter nearest to the camera",
+        ),
+        "attributes": (
+            "put the tapered root on the round plate nearest the camera",
+            "put the pointed root on the plate closer to the camera",
+            "put the slender root on the plate in the foreground",
+            "put the long thin root on the plate closest to the camera",
+            "lay the cone-shaped root on the plate nearer the camera",
+            "put the skinny root on the round plate in the foreground",
+            "put the bright root onto the plate nearest to the camera",
+            "put the crunchy root on the plate that is nearer to the camera",
+        ),
+        "order": (
+            "on the plate closer to the camera, lay the carrot",
+            "the carrot must sit on the plate nearest the camera",
+            "the plate nearest the camera needs the carrot on it",
+            "have the carrot resting on the plate closer to the camera",
+            "the carrot is to be put on the plate nearer the camera",
+            "grab the carrot and lay it on the plate closest to the camera",
+            "it is the plate nearer to the camera that the carrot belongs on",
+            "leave the carrot lying on the plate in the foreground",
+        ),
+        "reasoning": (
+            "put the root a snowman wears as a nose on the plate closer to the camera",
+            "put the root rich in beta-carotene on the plate nearest the camera",
+            "put the root shredded into coleslaw on the plate nearer to the camera",
+            "put the root you would juice for breakfast on the plate closest to the camera",
+            "put the root that is said to help night vision on the plate in the foreground",
+            "put the root often glazed with butter on the plate nearest to the camera",
+            "put the root that grows underground with a leafy top on the plate closer to the camera",
+            "put the root sliced into coins for a stir-fry on the plate nearer the camera",
+        ),
+    },
+    "CarrotOnFarPlate-v0": {
+        "synonyms": (
+            "lay the carrot on the plate farthest from the camera",
+            "move the carrot onto the plate further from the camera",
+            "rest the carrot on the platter farthest from the camera",
+            "transfer the carrot to the plate that sits farther from the camera",
+            "put the carrot onto the saucer that is further from the camera",
+            "lower the carrot onto the plate with more distance to the camera",
+            "lay the carrot down on the more distant plate as seen from the camera",
+            "shift the carrot onto the platter furthest from the camera",
+        ),
+        "attributes": (
+            "put the tapered root on the round plate farthest from the camera",
+            "put the pointed root on the plate farther from the camera",
+            "put the slender root on the plate in the background",
+            "put the long thin root on the plate furthest from the camera",
+            "lay the cone-shaped root on the plate farther away from the camera",
+            "put the skinny root on the round plate in the background",
+            "put the bright root onto the plate further away from the camera",
+            "put the crunchy root on the plate that is more distant from the camera",
+        ),
+        "order": (
+            "on the plate farther from the camera, lay the carrot",
+            "the carrot must sit on the plate farthest from the camera",
+            "the plate farthest from the camera needs the carrot on it",
+            "have the carrot resting on the plate farther from the camera",
+            "the carrot is to be put on the plate further from the camera",
+            "grab the carrot and lay it on the plate furthest from the camera",
+            "it is the plate farther from the camera that the carrot belongs on",
+            "leave the carrot lying on the plate in the background",
+        ),
+        "reasoning": (
+            "put the root a snowman wears as a nose on the plate farther from the camera",
+            "put the root rich in beta-carotene on the plate farthest from the camera",
+            "put the root shredded into coleslaw on the plate further from the camera",
+            "put the root you would juice for breakfast on the plate furthest from the camera",
+            "put the root that is said to help night vision on the plate in the background",
+            "put the root often glazed with butter on the plate farthest away from the camera",
+            "put the root that grows underground with a leafy top on the plate farther from the camera",
+            "put the root sliced into coins for a stir-fry on the plate further away from the camera",
         ),
     },
 }

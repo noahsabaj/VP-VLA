@@ -93,8 +93,8 @@ moves the hand to above the object, and then the VLA does the rest of the episod
 
 **Demonstrations** (since 2026-10-30). `RECORD_DEMOS=1` records every episode of any runner as a demonstration for
 the VLA, in each sim's folder (`.../demos`; `demos.py`): the camera pictures, each step's command as the VLA's 7
-action numbers (the exact inverse of the VLA's own conversion), the hand's pose, the instruction and which of the
-episode's objects each pixel shows (the simulator's own segmentation).
+action numbers (the exact inverse of the VLA's own conversion), the hand's pose, the instruction, which of the
+episode's objects each pixel shows (the simulator's own segmentation) and where each object is.
 `python -m examples.SimplerEnv.train_files.planner_demos_to_lerobot --out DATA_ROOT/NAME --stats
 CHECKPOINT_RUN/dataset_statistics.json RUN...` makes a VP-VLA training set (starVLA's LeRobot v2.0 layout, the
 Bridge data config's keys) of the successful ones, and prints how many actions training would clip. With
@@ -102,12 +102,16 @@ Bridge data config's keys) of the successful ones, and prints how many actions t
 move, a box around its place) from the simulator's masks instead of SAM's, with the subtasks taken from the
 recording instead of a VLM (a subtask with "on", "onto", "upon", "in", "into" or "to" puts something down and so
 names the place; the tests check that every training rewording gets its box), and prints how often each task's
-steps show them. The eggplant's basket is part of the
+steps show them. A scene with several goals (the harder scenes' two-step task) needs an instruction with one part for
+each goal, and its prompts take the goals in the order they were done, each until the release that put its object in
+place (from where the objects were). The eggplant's basket is part of the
 background picture, so its box is around SimplerEnv's invisible target plane in the basket: check it in the first
 recorded demonstrations. With `--reword` each episode is also written once with a training rewording of each of the
-test sets' four families (`train_files/rewordings.py`, 8 per task and family). Their exclusion list of every test
-instruction (the four reworded sets and the harder scenes) and of the words that carry each test family's concepts
-was fixed on 2026-10-30 before any rewording was written; the tests check every rewording against it.
+test sets' four families (`train_files/rewordings.py`, 8 per task and family, for SimplerEnv's 4 tasks and the 5
+harder scenes). Their exclusion list of every test instruction (the four reworded sets and the harder scenes; since
+its change of 2026-10-30, the new test scenes instead of the harder scenes) and of the words that carry each test
+family's concepts was fixed on 2026-10-30 before any rewording was written; the tests check every rewording against
+it.
 
 **Fine-tuning** (since 2026-10-30). `DATA_ROOT=... VP_DIR=... bash examples/SimplerEnv/train_files/run_finetune_1gpu.sh
 RUN_ID DATA_MIX` fine-tunes the released VP-VLA checkpoint on one 48 GB GPU with VP-VLA's own training code. The

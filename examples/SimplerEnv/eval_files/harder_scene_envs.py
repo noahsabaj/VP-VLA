@@ -1,30 +1,55 @@
-"""The harder scenes of harder_scenes.py as ManiSkill2_real2sim tasks, registered under their names when this file is
-imported (planner_evaluator.py imports it). Needs the simulator.
+"""The harder scenes of harder_scenes.py and the new test scenes of novel_scenes.py as ManiSkill2_real2sim tasks,
+registered under their names when this file is imported (planner_evaluator.py imports it). Needs the simulator.
 
 Each task is SimplerEnv's PutOnBridgeInSceneEnv (the spoon and carrot tasks' table, camera, lighting and robot) with
-all of the scene's objects instead of two. Each goal is checked as SimplerEnv's PutOnInSceneEnv.evaluate checks its
-one goal, for any pair of objects. Objects 0 and 1 stay the source and target object that SimplerEnv's code and the
-planner's logs read.
+all of the scene's objects instead of two; a sink scene is SimplerEnv's PutEggplantInBasketScene (the eggplant task's
+sink, camera and robot) in the same way. Each goal is checked as SimplerEnv's PutOnInSceneEnv.evaluate checks its one
+goal, for any pair of objects. Objects 0 and 1 stay the source and target object that SimplerEnv's code and the
+planner's logs read. The new test scenes have no fixed layouts: planner_evaluator.py gives each episode its own.
 """
 
+import json
 from collections import OrderedDict
 
 import numpy as np
-from mani_skill2_real2sim.envs.custom_scenes.put_on_in_scene import PutOnBridgeInSceneEnv
+from mani_skill2_real2sim import ASSET_DIR
+from mani_skill2_real2sim.envs.custom_scenes.put_on_in_scene import PutEggplantInBasketScene, PutOnBridgeInSceneEnv
 from mani_skill2_real2sim.utils.registration import register_env
 from transforms3d.quaternions import quat2mat
 
-from .harder_scenes import TASKS, Task, layouts
+from . import harder_scenes, novel_scenes
+from .harder_scenes import Task
+
+TASKS = {**harder_scenes.TASKS, **novel_scenes.TASKS}
+# The model infos of SimplerEnv's Google-robot objects, which a Bridge scene does not load (novel_scenes.PICK_MODELS).
+PICK_MODEL_JSON = ASSET_DIR / "custom" / "info_pick_custom_v0.json"
+
+
+def layouts(name: str):
+    """The task's xy and turn configs: a harder scene's fixed layouts; for a new test scene, one random layout that
+    only stands in until the evaluator gives the episode its own (novel_scenes.random_layout)."""
+    if name in harder_scenes.TASKS:
+        return harder_scenes.layouts(name)
+    xy, quats = novel_scenes.random_layout(name, 0, 0)
+    return [xy], [quats]
 
 
 class HarderBridgeScene(PutOnBridgeInSceneEnv):
     TASK_NAME: str
+    OVERLAY_OBJECTS = ()  # objects drawn from the real picture, as the eggplant task's sink (rgb_always_overlay_...)
 
     def __init__(self, **kwargs):
-        self.task: Task = TASKS[self.TASK_NAME]  # before super().__init__, which already resets the scene once
+        self.task: Task = TASKS[self.TASK_NAME]  # before __init__, which already resets the scene once
         xys, quats = layouts(self.TASK_NAME)
-        super().__init__(source_obj_name=self.task.objects[0], target_obj_name=self.task.objects[1],
-                         xy_configs=xys, quat_configs=quats, **kwargs)
+        picks = [m for m in self.task.objects if m in novel_scenes.PICK_MODELS]
+        if picks:
+            db = json.loads(PICK_MODEL_JSON.read_text())
+            kwargs["model_db_override"] = {**{m: db[m] for m in picks}, **kwargs.get("model_db_override", {})}
+        if self.OVERLAY_OBJECTS:
+            kwargs.setdefault("rgb_always_overlay_objects", list(self.OVERLAY_OBJECTS))
+        # PutOnBridgeInSceneEnv's own __init__, also in a sink scene (PutEggplantInBasketScene's sets the eggplant).
+        PutOnBridgeInSceneEnv.__init__(self, source_obj_name=self.task.objects[0], target_obj_name=self.task.objects[1],
+                                       xy_configs=xys, quat_configs=quats, **kwargs)
 
     def reset(self, seed=None, options=None):
         """PutOnBridgeInSceneEnv.reset with all of the scene's objects."""
@@ -86,7 +111,7 @@ class HarderBridgeScene(PutOnBridgeInSceneEnv):
         return True
 
     def evaluate(self, **kwargs):
-        on = {p: self._on(*p) for p in self.task.goals + self.task.logged}
+        on = {p: self._on(*p, z_offset=self.task.z_offset) for p in self.task.goals + self.task.logged}
         moving = {i for p in self.task.goals for i in p[:2]}
         starts = enumerate(zip(self.episode_objs, self.episode_obj_xyzs_after_settle, strict=True))
         moved_other = any(np.linalg.norm(np.asarray(xyz)[:2] - obj.pose.p[:2]) > 0.03
@@ -100,8 +125,15 @@ class HarderBridgeScene(PutOnBridgeInSceneEnv):
         return self.task.instruction
 
 
+class SinkScene(HarderBridgeScene, PutEggplantInBasketScene):
+    """The eggplant task's sink scene: PutEggplantInBasketScene adds the sink (_load_model), moves it into place
+    (_initialize_actors) and gives the robot and camera of its prepackaged config; the rest is HarderBridgeScene's."""
+    OVERLAY_OBJECTS = ("sink", "dummy_sink_target_plane")
+
+
 def _register(name: str) -> None:
-    cls = type(name.split("-")[0], (HarderBridgeScene,), {"TASK_NAME": name, "__module__": __name__})
+    base = SinkScene if TASKS[name].scene == "sink" else HarderBridgeScene
+    cls = type(name.split("-")[0], (base,), {"TASK_NAME": name, "__module__": __name__})
     globals()[cls.__name__] = cls  # so the gym entry point "harder_scene_envs:<class>" resolves
     register_env(name, max_episode_steps=TASKS[name].max_steps)(cls)
 

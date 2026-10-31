@@ -101,7 +101,7 @@ def test_runners_match_the_scenes():
     harder = re.search(r"harder\) TASKS=\(([^)]*)\)", text).group(1).split()
     assert harder == sh.TASKS
     assert "Cluttered*-v0 | TwoStep*-v0) echo 96" in text and "CarrotOn*Plate-v0) echo 32" in text
-    assert '[ "$task" = TwoStepSpoonAndCarrot-v0 ] && steps=240' in text
+    assert "TwoStepSpoonAndCarrot-v0 | NovelStackOnPlate-v0) steps=240" in text
 
 
 def test_vla_stats(tmp_path):  # from the video names

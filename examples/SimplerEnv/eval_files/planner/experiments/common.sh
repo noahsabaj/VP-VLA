@@ -26,13 +26,16 @@ cd "$REPO" || exit 1
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 
 # The tasks of an eval (TASK_SET): simpler = SimplerEnv's 4 WidowX tasks (the default); harder = the 5 harder scenes
-# (eval_files/harder_scenes.py), with their fixed layouts (LAYOUTS=paper) or a random one per episode (LAYOUTS=iidN).
+# (eval_files/harder_scenes.py), with their fixed layouts (LAYOUTS=paper) or a random one per episode (LAYOUTS=iidN);
+# novel = the 8 new test scenes (eval_files/novel_scenes.py), with a random layout per episode only (LAYOUTS=iidN).
 case ${TASK_SET:-simpler} in
   simpler) TASKS=(PutSpoonOnTableClothInScene-v0 PutCarrotOnPlateInScene-v0
                   StackGreenCubeOnYellowCubeBakedTexInScene-v0 PutEggplantInBasketScene-v0) ;;
   harder) TASKS=(ClutteredSpoonOnTowel-v0 ClutteredCarrotOnPlate-v0 TwoStepSpoonAndCarrot-v0 CarrotOnNearPlate-v0
                  CarrotOnFarPlate-v0) ;;
-  *) echo "TASK_SET must be simpler or harder, not '$TASK_SET'" >&2; exit 1 ;;
+  novel) TASKS=(NovelSpongeOnPlate-v0 NovelCanOnTowel-v0 NovelEggplantOnPlate-v0 NovelCarrotInBasket-v0
+                NovelNotOrangeOnTowel-v0 NovelCarrotByTowelOnPlate-v0 NovelStackOnPlate-v0 NovelThreeStep-v0) ;;
+  *) echo "TASK_SET must be simpler, harder or novel, not '$TASK_SET'" >&2; exit 1 ;;
 esac
 # The VLA's visual prompts and VLM, as in the paper's SimplerEnv eval.
 VP_ARGS="--use-sam3 --target-object-prompt-mode crosshair --target-location-prompt-mode box --use-vlm
@@ -58,6 +61,10 @@ wait_port() {
 # iidN = a random layout of its own for each episode from layout seed N (iid11: the two-model ASM's training set,
 # iid12: its test set).
 layout_args() {
+  if [ "${TASK_SET:-simpler}" = novel ] && [[ $1 != iid[0-9]* ]]; then
+    echo "the new test scenes (TASK_SET=novel) have a random layout per episode only: LAYOUTS=iidN, not '$1'" >&2
+    return 1
+  fi
   case $1 in
     paper) ;;
     heldout) echo "--layout-seed 1" ;;
@@ -126,10 +133,14 @@ sim() {
   local gpu=$1 task=$2 start=$3 end=$4 out=$5
   shift 5
   local robot=widowx scene=bridge_table_1_v1 overlay=bridge_real_eval_1.png x=0.147 y=0.028 steps=120
-  if [ "$task" = PutEggplantInBasketScene-v0 ]; then
-    robot=widowx_sink_camera_setup scene=bridge_table_1_v2 overlay=bridge_sink.png x=0.127 y=0.06
-  fi
-  [ "$task" = TwoStepSpoonAndCarrot-v0 ] && steps=240  # two pick-and-places (harder_scenes.py)
+  case $task in  # the eggplant task's sink scene
+    PutEggplantInBasketScene-v0 | NovelCarrotInBasket-v0)
+      robot=widowx_sink_camera_setup scene=bridge_table_1_v2 overlay=bridge_sink.png x=0.127 y=0.06 ;;
+  esac
+  case $task in  # two or three pick-and-places (harder_scenes.py, novel_scenes.py)
+    TwoStepSpoonAndCarrot-v0 | NovelStackOnPlate-v0) steps=240 ;;
+    NovelThreeStep-v0) steps=360 ;;
+  esac
   [ -n "$out" ] || return 1
   rm -rf "$out" && mkdir -p "$out" || return 1
   CUDA_VISIBLE_DEVICES=$gpu "$SIMPLER_PYTHON" examples/SimplerEnv/eval_files/start_simpler_env_visual_prompt.py \

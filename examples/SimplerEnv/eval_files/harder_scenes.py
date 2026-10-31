@@ -57,6 +57,7 @@ class Task(NamedTuple):
     logged: Tuple[Tuple[int, int, bool], ...]  # pairs only logged, not part of success
     instruction: str
     max_steps: int
+    z_offset: float = 0.02  # how far (m) the object's bottom may be above the target's top, as SimplerEnv's evaluate
 
 
 STEPS = 120  # as every eval of SimplerEnv's 4 tasks in this repo; 120 per pick-and-place
@@ -135,15 +136,15 @@ def fixed_layout_group(task: str, episode: int) -> int:
     return episode // len(KITCHEN_YAWS if TASKS[task].scene == "kitchen" else CARROT_YAWS)
 
 
-def extent(model: str, yaw: float) -> np.ndarray:
-    """The x and y size (m) of the box around the object's footprint when it is turned by yaw."""
+def extent(model: str, yaw: float, sizes: Dict[str, Tuple[float, float]] = FOOTPRINT) -> np.ndarray:
+    """The x and y size (m) of the box around the object's footprint (`sizes`) when it is turned by yaw."""
     c, s = abs(np.cos(yaw)), abs(np.sin(yaw))
-    return np.array([[c, s], [s, c]]) @ FOOTPRINT[model]
+    return np.array([[c, s], [s, c]]) @ sizes[model]
 
 
-def apart(models, xys, yaws, gap: float = MIN_GAP) -> bool:
+def apart(models, xys, yaws, gap: float = MIN_GAP, sizes: Dict[str, Tuple[float, float]] = FOOTPRINT) -> bool:
     """Is every two objects' gap at least `gap` along x or along y (their footprints' boxes)?"""
-    ext = [extent(m, y) for m, y in zip(models, yaws, strict=True)]
+    ext = [extent(m, y, sizes) for m, y in zip(models, yaws, strict=True)]
     return all((np.abs(xys[i] - xys[j]) - (ext[i] + ext[j]) / 2).max() >= gap
                for i in range(len(models)) for j in range(i))
 

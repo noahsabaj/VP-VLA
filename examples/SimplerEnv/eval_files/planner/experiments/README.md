@@ -82,7 +82,8 @@ line. `RGB_NOISE=realistic|harsh` puts a real color camera's errors (`camera_noi
 controller (default `none`; in `planner_eval.sh` and `selector_eval.sh`, `same` = the depth noise's level).
 `INSTRUCTIONS=NAME` gives the 4 tasks the reworded instructions of `instruction_sets.py` instead of their own.
 `TASK_SET=harder` runs the 5 harder scenes of `harder_scenes.py` instead of SimplerEnv's 4 tasks (their fixed
-layouts only: `LAYOUTS=paper`). `PLAN_CHECK=1` adds the VLM plan check (`plan_check.py`): in `planner_eval.sh` it
+layouts, `LAYOUTS=paper`, or a random one per episode, `LAYOUTS=iidN`), and `TASK_SET=novel` the 8 new test scenes of
+`novel_scenes.py` (a random layout per episode only: `LAYOUTS=iidN`). `PLAN_CHECK=1` adds the VLM plan check (`plan_check.py`): in `planner_eval.sh` it
 only logs the feature `vlm_plan_yes`; in `selector_eval.sh` a "no" gives the episode to the VLA.
 `TASK_SOURCE=vlm` replaces the planner's fixed rule with the VLM plan (`vlm_plan.py`; see "VLM plan" below), and
 `TASK_SOURCE=vp` with VP-VLA's own VLM marks (see "VP-VLA's VLM marks" below). `MISSING_DEPTH=target` takes all depth away from the place target in half of the episodes (see "Missing-depth

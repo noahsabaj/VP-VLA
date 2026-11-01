@@ -16,7 +16,8 @@ difficulty sweep's depth levels harsh_xS (harsh's errors times S) give vlmplan_i
 missing-depth study's evals are miss_{layouts}_none (score_missing_depth); the harder-task system study's are named
 in score_harder_system (vlmplan_* and pseed31_* of each instruction group, with harsh depth). The energy study's
 energy runs are named in score_energy (energy_*, each with its null episodes in energy_*_null), with the ASMs
-energy_model/asm_{level}.json.
+energy_model/asm_{level}.json. The VLM-router study's planner-only eval is router_{layouts}_harsh (the fixed rule,
+with the VLM router's questions; score_vlm_router).
 """
 
 import os

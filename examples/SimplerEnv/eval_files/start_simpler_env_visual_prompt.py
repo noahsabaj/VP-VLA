@@ -97,6 +97,8 @@ if __name__ == "__main__":
             plan_check_threshold=args.plan_check_threshold,
             missing_depth=args.missing_depth,
             takeover_steps=args.takeover_steps,
+            vlm_router_host=args.vlm_host,
+            vlm_router_port=args.vlm_router_port,
         )
 
     success_arr = maniskill2_evaluator(model, args)

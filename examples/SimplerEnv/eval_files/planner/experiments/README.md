@@ -399,6 +399,13 @@ DEPTHS="harsh none" bash $E/selector_eval.sh 0 10510 energy_closed_loop_iid15 ii
 unset ENERGY IID_EPISODES
 ```
 
+The VLM-router study's eval (see "VLM-router study" below): the fixed rule's planner-only eval of `iid14` again, with
+the VLM router's questions on each first frame. Its VLA-only eval, `vla31_iid14`, is the learned-features data above:
+
+```bash
+VLM_ROUTER=1 bash $E/planner_eval.sh 0 10320 router_iid14_harsh harsh iid14
+```
+
 The marriage study's runs (see "Marriage study" below). `RUN_ROOT` is the
 fine-tuning runs' folder and `STEPS` their steps (fixed after the smoke tests); `CHECKPOINT_RUN` is the released
 checkpoint's run folder, and `DATA_ROOT` and `VP_DIR` are the folders of the training sets and of their visual
@@ -540,7 +547,8 @@ VLM-plan study's: `score_vlm_plan` (all its tables and tests, with the role spli
 vla31_iid15` (its closed-loop eval) and `score_costs vlmplan_iid15_harsh vla31_iid15 closed_loop_vlmplan_iid15
 handoff_vlmplan_iid15` (its costs). The difficulty sweep's: `score_sweep`. The missing-depth study's:
 `score_missing_depth`. The harder-task system study's: `score_harder_system`. The energy study's: `score_energy`.
-The marriage study's: `score_marriage` (all its tables and tests). Any eval's costs (see "Costs" above):
+The marriage study's: `score_marriage` (all its tables and tests). The VLM-router study's: `score_vlm_router`. Any
+eval's costs (see "Costs" above):
 `score_costs RUN...`.
 
 The `dfix_*` and `seeded_*` runs and `heldout_planner_none` (the evals before the planner seed and before the
@@ -1648,3 +1656,72 @@ client, the same visual prompts from SAM 3.1 and the VLM, the same ensembling of
 The server picks each request's policy by the task's own instruction, which the client sends; the policies read no
 language. The smoke run measures the training's speed; the training is short next to the VLAs', and the eval costs
 one VLA-only eval of T1.
+
+## VLM-router study
+
+The plan below was fixed on 2026-10-31, before any eval of `iid14` ran, and `score_vlm_router` follows it. The
+results do not change it. A result that is not in the plan is reported as exploratory.
+
+**Question.** A router built on a vision-language model (VLM) alone chooses the method for each episode from the
+camera picture and the instruction, without any training on the methods' outcomes. Does the two-model ASM, which
+predicts each method's success from the planner's first look, choose better than such a VLM router?
+
+**The VLM router** (`vlm_router.py`). On each episode's first frame, the VLM gets the camera picture, the instruction
+and a description of the two methods, and it is asked once per method whether that method will complete the
+instruction (yes or no). The VLM is the system's own, Qwen3-VL-4B-Instruct, served as for the plan check
+(`vlm_server_subtask_simpler.py`, the fast settings). Its probability of "yes" from its first answer token (no
+sampling) is the method's score, and the episode goes to the planner when the planner's score is at least the VLA's.
+This is the two-model ASM's rule, with the VLM's answers in place of the two success models. Two versions of the
+question are asked on every episode:
+
+- **described**: the two methods as their designers would describe them, with what each does badly: the planner's
+  depth camera is very noisy, and the VLA is less precise and often fails when the object lies at an unusual angle
+  (the full text is in `vlm_router.py`);
+- **rates**: the same, and each method's successes on this task in the 100 training episodes of `iid11` with harsh
+  depth (spoon: planner 54, VLA 74; carrot: 51 and 63; stack: 54 and 22; eggplant: 46 and 78), as a router that
+  remembers past episodes would know them.
+
+The questions were written before the VLM answered any of them, and they are not tuned.
+
+**ASM.** The two-model ASM with the fixed rule, as in the VLM-plan study's fixed-rule rows: trained on
+`pseed31_iid11_harsh` and `vla31_iid11` (`selector.train_two_model` with the default features); the planner when
+P(planner) >= P(VLA).
+
+**Test set.** `iid14`: 100 episodes of each of SimplerEnv's 4 tasks, each episode index with a random layout of its
+own, the tasks' own instructions and harsh depth. It was made as the learned features' second training set (see
+"Learned first-frame features"). None of its evals had run when this plan was fixed (the GPU 0 queue runs them
+last), and no model in this study is trained on it.
+
+**Evals.** `router_iid14_harsh`: the fixed rule's planner-only eval with the VLM router's questions (harsh depth,
+planner seed 0, noise seed 0, SAM 3.1, `VLM_ROUTER=1`). The planner's outcomes, the ASM's first look and the
+router's scores all come from it. `vla31_iid14`: the VLA-only eval, from the learned-features data. As a check, the
+planner's outcomes are compared with `pseed31_iid14_harsh`, the same episodes and seeds without the questions; they
+should agree.
+
+**Planned tests.** On `iid14`, the ASM against (1) the described VLM router and (2) the VLM router with rates: the
+exact two-sided paired sign-flip test of the success difference, with one value per episode index (the sum over its
+4 tasks, which share their layout). Only the episode indices with all 4 tasks count. The two tests are judged
+together by Holm's method at 0.05: the smaller p must be below 0.025, and then the other below 0.05. A win:
+significant, with the ASM higher. Intervals: 95% percentile bootstrap of the mean difference per episode, over the
+episode indices (10,000 draws).
+
+**What we expect.** The VLM cannot see the depth errors that make the planner fail. The rates version knows what the
+per-task choice knows, and the picture adds little that the VLM can judge. So we expect both VLM routers to do no
+better than the per-task choice, and the ASM to beat both. The rates version should do better than the described
+one, because the rates say which method is better on each task.
+
+**Secondary (reported, no claims).** The success rate of every row, with its interval: the planner alone, the VLA
+alone, the ASM, both VLM routers, the per-task choice (each task's better method on `iid11`) and the oracle. Each VLM
+router against the better single method and against the per-task choice, the ASM against the per-task choice, and the
+rates version against the described one. Each router's share of episodes to the planner, per task, and how often it
+chooses as the ASM does. Each router's scores as a success model of its method (AUC and within-task AUC), against the
+ASM's P(planner) and P(VLA), with DeLong's test. The VLM's probability of answering yes or no at all (when it is low,
+its answers say little).
+
+**Limits.** One VLM (the system's own, a 4B model; a larger VLM might route better), one wording of each question,
+harsh depth only, and SimplerEnv's 4 tasks with their own instructions. The router sees the first frame only, as a
+VLM router would; the ASM sees the planner's first look, which needs the depth image and SAM. The router eval's
+first-look times include the router's questions, so no cost result uses it.
+
+**Cost.** About 30 GPU minutes on GPU 0 for `router_iid14_harsh`: the planner-only eval takes about 15 minutes, and
+the questions add 1,600 one-token answers. `vla31_iid14` and `pseed31_iid14_harsh` are in the GPU 0 queue anyway.

@@ -56,6 +56,7 @@ if __name__ == "__main__":
             overlay_video_dir=args.overlay_video_dir,
             hidden_dir=args.vla_hidden_dir,
             perturb_k=args.vla_perturb,
+            action_instruction=args.action_instruction,
         )
 
     if (args.controller == "vla_then_planner") != (args.takeover_steps is not None):

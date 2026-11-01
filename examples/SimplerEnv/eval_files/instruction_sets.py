@@ -15,9 +15,12 @@ pick-and-place script. Each set below moves further from that form:
 The marriage study's controls (experiments README, "Marriage study") ask whether a VLA reads the instruction at all:
 `blank` gives an empty instruction and `wrong` another task's own. They are not rewordings, so they stay out of
 INSTRUCTION_SETS, which the studies of the reworded sets go through.
+
+The study's VLA-0 reading the subtask (`--action-instruction subtask`) keeps the instruction for VP-VLA's VLM, but its
+action head reads the VLM's current subtask instead (subtask_instruction).
 """
 
-from typing import Optional
+from typing import Optional, Sequence
 
 TASKS = ("PutSpoonOnTableClothInScene-v0", "PutCarrotOnPlateInScene-v0",
          "StackGreenCubeOnYellowCubeBakedTexInScene-v0", "PutEggplantInBasketScene-v0")
@@ -71,3 +74,10 @@ def instruction_for(set_name: str, env_name: str) -> Optional[str]:
     if env_name not in TASKS:
         raise ValueError(f"the instruction sets cover only the 4 WidowX tasks, not {env_name}")
     return sets[set_name][TASKS.index(env_name)]
+
+
+def subtask_instruction(instruction: str, subtasks: Sequence[str], current: int, from_vlm: bool) -> str:
+    """What VP-VLA's action head reads with `--action-instruction subtask`: the subtask that the VLM's decisions have
+    reached, `subtasks[current]`, when the VLM split the instruction; else (VP-VLA's own split, or a subtask that the
+    VLM left empty) the instruction."""
+    return subtasks[current] if from_vlm and subtasks[current].strip() else instruction

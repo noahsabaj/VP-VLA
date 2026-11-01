@@ -399,8 +399,8 @@ DEPTHS="harsh none" bash $E/selector_eval.sh 0 10510 energy_closed_loop_iid15 ii
 unset ENERGY IID_EPISODES
 ```
 
-The marriage study's runs (see "Marriage study" below). VLA-0 reading the subtask and the small policy are built
-before their first run, and their commands come with their code. `RUN_ROOT` is the
+The marriage study's runs (see "Marriage study" below). The small policy is built before its first run, and its
+commands come with its code. `RUN_ROOT` is the
 fine-tuning runs' folder and `STEPS` their steps (fixed after the smoke tests); `CHECKPOINT_RUN` is the released
 checkpoint's run folder, and `DATA_ROOT` and `VP_DIR` are the folders of the training sets and of their visual
 prompts:
@@ -457,6 +457,10 @@ for set in blank wrong; do
   IID_EPISODES=24 INSTRUCTIONS=$set bash $E/vla_eval.sh 0 10400 vla31_${set}_iid16 iid16 4
   CKPT=$RUN_ROOT/vlapl/checkpoints/steps_${STEPS}_pytorch_model.pt IID_EPISODES=24 INSTRUCTIONS=$set \
       bash $E/vla_eval.sh 0 10400 vlapl_${set}_iid16 iid16 4
+done
+# VLA-0 reading the subtask on T2
+for set in synonyms attributes order reasoning; do
+  ACTION_INSTRUCTION=subtask INSTRUCTIONS=$set bash $E/vla_eval.sh 0 10400 vlasub_words_${set}_paper paper 4
 done
 # the change of 2026-10-30: the harder scenes' demonstrations (the planner reading the VLM's marks; VLA-0, then 100
 # more episodes at a time, as explicit chunks, up to 600 of a scene)
@@ -1601,3 +1605,17 @@ Four points that the plan left open are fixed here:
 so do the stack and eggplant tasks). As a reworded instruction does, either one replaces the task's own everywhere:
 VP-VLA's VLM reads it to choose the visual prompts, and the action head reads it. They are not reworded sets, so the
 studies of the reworded sets do not see them.
+
+**Built on 2026-10-31, before any of the study's runs: VLA-0 reading the subtask** (`ACTION_INSTRUCTION=subtask` in
+`vla_eval.sh`, which passes `--action-instruction subtask`; `instruction_sets.subtask_instruction`, with its test).
+When an episode starts, VP-VLA's VLM splits the instruction into subtasks; at the first frame and at each change of
+the gripper, it decides whether the current subtask is done. The action head reads the subtask that these decisions
+have reached: from the step where the VLM decides that a subtask is done, it reads the next one. VP-VLA's client also
+keeps the subtask of the VLM's last question, which changes only at the next question. The head does not read that
+one, because in a pick and place it would still be the pick while the robot carries the object; VP-VLA's labeling of
+its own training data also moves on at the decision. When the VLM gives no subtasks, the client splits the
+instruction by its own rule, and the head reads the instruction; it also reads the instruction in place of a subtask
+that the VLM leaves empty. Only the head's text changes: the VLM gets the same
+questions as in VLA-0's evals (the whole instruction and the current subtask), so the visual prompts come about as
+before. Each text that the head reads is in the run's `sim.log` (`[ACTION TEXT]`). The option needs SAM 3, the VLM
+and its subtasks, as every VLA eval has them.

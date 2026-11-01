@@ -43,6 +43,15 @@ def test_the_controls():
         ins.instruction_for("wrong", "OpenTopDrawerCustomInScene-v0")
 
 
+def test_the_subtask_instruction():
+    own, parts = "put carrot on plate", ["pick up the carrot", "place the carrot on the plate"]
+    # the VLM's subtasks: the one that its decisions have reached
+    assert [ins.subtask_instruction(own, parts, i, from_vlm=True) for i in range(2)] == parts
+    # VP-VLA's own split, when the VLM gives no subtasks, or a subtask that the VLM left empty: the instruction
+    assert ins.subtask_instruction(own, [own], 0, from_vlm=False) == own
+    assert ins.subtask_instruction(own, [parts[0], " "], 1, from_vlm=True) == own
+
+
 def test_planned_tests_count_each_layout_once(capsys):
     tasks = np.array([s.TASKS[0]] * 10)
     # columns: own instructions, then 4 reworded sets; the planner drops from 1 to 0, the VLA stays at 1

@@ -127,7 +127,8 @@ fast_defaults() {
 
 # sim GPU TASK START END OUT ARGS...: episodes START..END-1 of TASK with the paper's SimplerEnv settings. OUT is
 # replaced; it gets the videos, the planner records and sim.log. ARGS choose the controller and its servers.
-# INSTRUCTIONS=NAME: the reworded instructions of instruction_sets.py instead of the task's own (default: none).
+# INSTRUCTIONS=NAME: the reworded instructions, or the controls blank and wrong, of instruction_sets.py instead of the
+# task's own (default: none).
 # RECORD_DEMOS=1: each episode also recorded as a demonstration for the VLA in OUT/demos (planner/demos.py).
 sim() {
   local gpu=$1 task=$2 start=$3 end=$4 out=$5

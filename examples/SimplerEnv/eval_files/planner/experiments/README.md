@@ -399,8 +399,8 @@ DEPTHS="harsh none" bash $E/selector_eval.sh 0 10510 energy_closed_loop_iid15 ii
 unset ENERGY IID_EPISODES
 ```
 
-The marriage study's runs (see "Marriage study" below). VLA-0 reading the subtask, the blank and wrong instructions
-and the small policy are built before their first run, and their commands come with their code. `RUN_ROOT` is the
+The marriage study's runs (see "Marriage study" below). VLA-0 reading the subtask and the small policy are built
+before their first run, and their commands come with their code. `RUN_ROOT` is the
 fine-tuning runs' folder and `STEPS` their steps (fixed after the smoke tests); `CHECKPOINT_RUN` is the released
 checkpoint's run folder, and `DATA_ROOT` and `VP_DIR` are the folders of the training sets and of their visual
 prompts:
@@ -452,6 +452,12 @@ export CKPT=$RUN_ROOT/vlaplt/checkpoints/steps_${STEPS}_pytorch_model.pt
 CONTROLLER=vla_then_planner TAKEOVER_STEPS="10 40" RECORD_DEMOS=1 DEPTHS=none \
     bash $E/selector_eval.sh 0 10510 demos_corrections_iid101 iid101 - 6
 unset CKPT
+# the blank and wrong instructions (instruction_sets.py): VLA-0 and VLA-PL on T1's first 24 episodes of each task
+for set in blank wrong; do
+  IID_EPISODES=24 INSTRUCTIONS=$set bash $E/vla_eval.sh 0 10400 vla31_${set}_iid16 iid16 4
+  CKPT=$RUN_ROOT/vlapl/checkpoints/steps_${STEPS}_pytorch_model.pt IID_EPISODES=24 INSTRUCTIONS=$set \
+      bash $E/vla_eval.sh 0 10400 vlapl_${set}_iid16 iid16 4
+done
 # the change of 2026-10-30: the harder scenes' demonstrations (the planner reading the VLM's marks; VLA-0, then 100
 # more episodes at a time, as explicit chunks, up to 600 of a scene)
 IID_EPISODES=700 RECORD_DEMOS=1 TASK_SET=harder TASK_SOURCE=vp \
@@ -1588,3 +1594,10 @@ Four points that the plan left open are fixed here:
   half of the draws; one set gives every step the same chance, as DAgger's aggregated data does.
 - The learning curve's models are `vlap450` and `vlap1125` (mixtures `vla_p450` and `vla_p1125`), and their evals
   `vlap450_iid16` and `vlap1125_iid16` replace `vlap200_iid16` and `vlap500_iid16`.
+
+**Built on 2026-10-31, before any of the study's runs: the blank and wrong instructions** (`instruction_sets.py`,
+`INSTRUCTIONS=blank` or `INSTRUCTIONS=wrong` in the runners, with their tests). `blank` is the empty instruction;
+`wrong` gives each of SimplerEnv's 4 tasks another task's own instruction (the spoon and carrot tasks swap theirs, and
+so do the stack and eggplant tasks). As a reworded instruction does, either one replaces the task's own everywhere:
+VP-VLA's VLM reads it to choose the visual prompts, and the action head reads it. They are not reworded sets, so the
+studies of the reworded sets do not see them.

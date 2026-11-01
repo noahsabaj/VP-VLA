@@ -17,7 +17,8 @@
 #   SAM_VERSION=sam3.1 (default since 2026-10-23) | sam3 (the paper's setup): the segmentation model of the
 #     visual prompts (common.sh).
 #   RGB_NOISE=none (default) | realistic | harsh: a real color camera's errors in the picture (camera_noise.py).
-#   INSTRUCTIONS=NAME: reworded instructions (instruction_sets.py; default: the task's own).
+#   INSTRUCTIONS=NAME: reworded instructions, or the controls blank and wrong (instruction_sets.py; default: the
+#     task's own).
 #   TASK_SET=simpler (default: SimplerEnv's 4 tasks) | harder (the harder scenes; LAYOUTS=paper or iidN) | novel (the
 #     new test scenes; LAYOUTS=iidN).
 #   ENERGY=1: an energy run (K must be 1): each episode's GPU energy, the idle power and the null episodes (energy_setup

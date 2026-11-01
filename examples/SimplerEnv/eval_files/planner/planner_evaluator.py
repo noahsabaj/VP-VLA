@@ -17,9 +17,9 @@ The changes, marked "CHANGED":
 6. `rgb_noise` (`--rgb-noise`): a real color camera's errors (camera_noise.py) in the picture, seeded per episode
    like the depth noise. The noisy picture is what the model gets and also replaces the camera's picture in `obs`,
    so the VLA and the planner see the same pixels. Off by default.
-7. `instruction_set` (`--instruction-set`): a reworded instruction for the task (instruction_sets.py). A given
-   instruction now stays for the whole episode; SimplerEnv's loop replaced it with the task's own after the first
-   step. Off by default.
+7. `instruction_set` (`--instruction-set`): a reworded instruction for the task, or a control (an empty instruction
+   or another task's own; instruction_sets.py). A given instruction now stays for the whole episode; SimplerEnv's
+   loop replaced it with the task's own after the first step. Off by default.
 8. The harder scenes and the new test scenes (harder_scene_envs.py) are registered on import, so `env_name` can be
    one of them.
 9. Each episode's cost (model_time.py): its wall-clock time from the model's reset to the last step, its model

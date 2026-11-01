@@ -6,6 +6,7 @@ import pytest
 from examples.SimplerEnv.eval_files import instruction_sets as ins
 from examples.SimplerEnv.eval_files.planner import selector as s
 from examples.SimplerEnv.eval_files.planner.experiments import score_instructions
+from examples.SimplerEnv.train_files import rewordings
 
 
 def test_every_set_has_one_new_instruction_per_task():
@@ -25,6 +26,21 @@ def test_instruction_for():
         ins.instruction_for("nonsense", ins.TASKS[0])
     with pytest.raises(ValueError):
         ins.instruction_for("order", "OpenTopDrawerCustomInScene-v0")
+
+
+def test_the_controls():
+    # the runners take them as instruction sets, but the studies of the reworded sets must not see them
+    assert ins.NAMES == ("default", *ins.INSTRUCTION_SETS, "blank", "wrong")
+    assert not set(ins.CONTROL_SETS) & set(ins.INSTRUCTION_SETS)
+    own = dict(zip(ins.TASKS, ins.OWN, strict=True))
+    assert rewordings.OWN == own
+    # an empty string, not None: the evaluator gives the task's own instruction for None
+    assert [ins.instruction_for("blank", t) for t in ins.TASKS] == [""] * len(ins.TASKS)
+    spoon, carrot, stack, eggplant = ins.TASKS
+    wrong = {t: ins.instruction_for("wrong", t) for t in ins.TASKS}
+    assert wrong == {spoon: own[carrot], carrot: own[spoon], stack: own[eggplant], eggplant: own[stack]}
+    with pytest.raises(ValueError):
+        ins.instruction_for("wrong", "OpenTopDrawerCustomInScene-v0")
 
 
 def test_planned_tests_count_each_layout_once(capsys):

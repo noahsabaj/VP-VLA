@@ -11,12 +11,19 @@ pick-and-place script. Each set below moves further from that form:
 * reasoning: the object to move must be worked out from what it is used for or known for.
 
 `--instruction-set default` (the default) keeps SimplerEnv's own instruction.
+
+The marriage study's controls (experiments README, "Marriage study") ask whether a VLA reads the instruction at all:
+`blank` gives an empty instruction and `wrong` another task's own. They are not rewordings, so they stay out of
+INSTRUCTION_SETS, which the studies of the reworded sets go through.
 """
 
 from typing import Optional
 
 TASKS = ("PutSpoonOnTableClothInScene-v0", "PutCarrotOnPlateInScene-v0",
          "StackGreenCubeOnYellowCubeBakedTexInScene-v0", "PutEggplantInBasketScene-v0")
+# SimplerEnv's own instruction of each task (its get_language_instruction), in the order of TASKS.
+OWN = ("put the spoon on the towel", "put carrot on plate", "stack the green block on the yellow block",
+       "put eggplant into yellow basket")
 
 # One instruction per task, in the order of TASKS. Fixed before any eval with them ran.
 INSTRUCTION_SETS = {
@@ -45,15 +52,22 @@ INSTRUCTION_SETS = {
         "put the vegetable that baba ganoush is made from into the basket",
     ),
 }
-NAMES = ("default", *INSTRUCTION_SETS)
+# The controls, in the order of TASKS: the spoon and carrot tasks swap their own instructions, and so do the stack and
+# eggplant tasks. Fixed on 2026-10-31, before any eval with them ran.
+CONTROL_SETS = {
+    "blank": ("",) * len(TASKS),
+    "wrong": (OWN[1], OWN[0], OWN[3], OWN[2]),
+}
+NAMES = ("default", *INSTRUCTION_SETS, *CONTROL_SETS)
 
 
 def instruction_for(set_name: str, env_name: str) -> Optional[str]:
     """The instruction of `set_name` for the task `env_name`; None for "default" (SimplerEnv's own)."""
     if set_name == "default":
         return None
-    if set_name not in INSTRUCTION_SETS:
+    sets = {**INSTRUCTION_SETS, **CONTROL_SETS}
+    if set_name not in sets:
         raise ValueError(f"unknown instruction set {set_name!r}; known: {', '.join(NAMES)}")
     if env_name not in TASKS:
         raise ValueError(f"the instruction sets cover only the 4 WidowX tasks, not {env_name}")
-    return INSTRUCTION_SETS[set_name][TASKS.index(env_name)]
+    return sets[set_name][TASKS.index(env_name)]

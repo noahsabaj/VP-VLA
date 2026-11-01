@@ -195,6 +195,10 @@ def get_args():
                         help="How the plan check marks the object, comma-separated (planner/plan_check.py MARKS: tint, "
                              "outline); each mark is one more VLM question and feature. The selector mode's gate uses "
                              "the first (default: tint)")
+    parser.add_argument("--vlm-router-port", type=int, default=None,
+                        help="VLM server for the VLM router's questions (planner/vlm_router.py), planner-only evals: on "
+                             "the first frame the VLM says, for each method, whether it will complete the instruction "
+                             "(default: no questions)")
     parser.add_argument("--plan-check-threshold", type=float, default=0.5,
                         help="The selector mode's gate: the VLA when the first mark's P(yes) is below this (default 0.5)")
     parser.add_argument("--task-source", type=str, default="rule", choices=["rule", "vlm", "vp"],

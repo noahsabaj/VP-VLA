@@ -44,7 +44,7 @@ from scipy.spatial.transform import Rotation, Slerp
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "Robocasa_tabletop" / "visual_prompt_utility"))
 
 from ..model_time import METER, time_requests
-from . import plan_check, vlm_plan, vp_marks
+from . import plan_check, vlm_plan, vlm_router, vp_marks
 from .geometry import (CameraView, DepthNoise, MissingDepth, corridor_points, depth_roughness, ee_delta_action,
                        mat_to_pose, path_length, pose_to_mat, short_width)
 from .planners import FINGER_OPEN, WORKSPACE, RobotSpheres, make_planner
@@ -162,6 +162,8 @@ class PlannerClient:
         plan_check_threshold: float = plan_check.THRESHOLD,
         missing_depth: str = "none",
         takeover_steps: Optional[Sequence[int]] = None,
+        vlm_router_host: str = "127.0.0.1",
+        vlm_router_port: Optional[int] = None,
     ) -> None:
         self.planner = make_planner(planner)
         self.planner_name = planner
@@ -271,6 +273,15 @@ class PlannerClient:
         if vlm_plan_min_score and task_source != "vlm":
             raise ValueError("vlm_plan_min_score is for the VLM plan (task_source vlm)")
         self.vlm_plan_min_score = vlm_plan_min_score
+        # The VLM router (vlm_router.py), a baseline scored offline: on the first frame the VLM says, for each method,
+        # whether it will complete the instruction. Planner-only evals only; the planner works as before.
+        self.vlm_router = None
+        if vlm_router_port is not None:
+            if self.mode != "planner":
+                raise ValueError(f"the VLM router's questions are for planner-only evals, not the {self.mode} mode")
+            from ..vlm_client_simpler import VLMClientSimpler
+
+            self.vlm_router = time_requests(VLMClientSimpler(host=vlm_router_host, port=vlm_router_port), "vlm")
         self._clear("")
 
     # ------------------------------------------------------------------ episode
@@ -305,7 +316,7 @@ class PlannerClient:
                       "features_version": FEATURES_VERSION, "features": {}, "plan_check": self.plan_check is not None,
                       "task_source": self.task_source, "vlm_plan_min_score": self.vlm_plan_min_score,
                       "sam_model": self.sam_model, "missing_depth": self.missing_depth.mode,
-                      "target_depth_missing": self.target_depth_missing}
+                      "target_depth_missing": self.target_depth_missing, "vlm_router": self.vlm_router is not None}
         if self.plan_check is not None:
             self.stats.update(plan_check_marks=self.plan_check_marks, plan_check_threshold=self.plan_check_threshold)
         if self.takeover_steps is not None:
@@ -493,6 +504,8 @@ class PlannerClient:
             place = self._locate(image, obs, env, which="place", record=True, view=self.view)
             if self.plan_check is not None:
                 self._check_plan(image, grasp, place)
+            if self.vlm_router is not None:
+                self._ask_router(image)
             if any(s["rejected"] for s in self.stats.get("vlm_plan_sam", [])):
                 self.stats["failure"] = "VLM plan: SAM score below the minimum"
                 self._give_up()
@@ -562,6 +575,19 @@ class PlannerClient:
                 path = Path(self.log_path).parent / "plan_check" / f"{stem}.jpg"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(path), np.ascontiguousarray(marked[..., ::-1]))
+
+    def _ask_router(self, image) -> None:
+        """The VLM router (vlm_router.py) on the first frame: for each version of the question and each method, the
+        VLM's P(yes) that the method completes the instruction is a feature (vlm_router.feature), and the probability
+        that the VLM's first answer token is yes or no goes into vlm_router_answer_mass."""
+        f, mass = self.stats["features"], self.stats.setdefault("vlm_router_answer_mass", {})
+        task = self.episode_key.split("/")[0] if self.episode_key else None
+        for version in vlm_router.VERSIONS:
+            for method in vlm_router.METHODS:
+                name = vlm_router.feature(method, version)
+                answer = self.vlm_router.yes_probability(
+                    [image], vlm_router.question(self.task_description, method, version, task))
+                f[name], mass[name] = float(answer["p_yes"]), float(answer["answer_mass"])
 
     def _next_phase(self, env, obs, qpos, target) -> None:
         """Called when the current move or hold is finished."""

@@ -21,6 +21,8 @@
 #     task's own).
 #   ACTION_INSTRUCTION=subtask: the action head reads the subtask that the VLM's decisions have reached instead of
 #     the instruction (--action-instruction; default: task, the instruction).
+#   POLICY=small: the marriage study's small policies (CKPT from train_files/small_policy.py) instead of VP-VLA's
+#     policy, with VP-VLA's visual prompts and client (start_vla_servers in common.sh).
 #   TASK_SET=simpler (default: SimplerEnv's 4 tasks) | harder (the harder scenes; LAYOUTS=paper or iidN) | novel (the
 #     new test scenes; LAYOUTS=iidN).
 #   ENERGY=1: an energy run (K must be 1): each episode's GPU energy, the idle power and the null episodes (energy_setup
@@ -53,7 +55,7 @@ T0=$SECONDS
 start_vla_servers $PB "$OUT" && wait_port $PB && wait_port $((PB + 1)) && wait_port $((PB + 2)) ||
   { log "servers did not start"; exit 1; }
 energy_baseline $GPU "$OUT" "$LAYOUTS" "${CHUNKS[@]}" || exit 1
-log "START K=$K MPS=${MPS:-1} ENERGY=${ENERGY:-0} TASK_SET=${TASK_SET:-simpler} LAYOUTS=$LAYOUTS RGB_NOISE=${RGB_NOISE:-none} INSTRUCTIONS=${INSTRUCTIONS:-default} SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \
+log "START K=$K MPS=${MPS:-1} ENERGY=${ENERGY:-0} POLICY=${POLICY:-vpvla} TASK_SET=${TASK_SET:-simpler} LAYOUTS=$LAYOUTS RGB_NOISE=${RGB_NOISE:-none} INSTRUCTIONS=${INSTRUCTIONS:-default} SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \
   "SIM_ARGS=[$SIM_ARGS] on GPU $GPU, commit $(git log -1 --format=%h), servers up in $((SECONDS - T0)) s: ${CHUNKS[*]}"
 nvidia-smi dmon -i $GPU -s pum -o DT -d 5 > "$OUT/dmon.txt" 2>&1 &
 DMON=$!

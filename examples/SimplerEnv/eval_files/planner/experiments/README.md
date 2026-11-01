@@ -399,8 +399,7 @@ DEPTHS="harsh none" bash $E/selector_eval.sh 0 10510 energy_closed_loop_iid15 ii
 unset ENERGY IID_EPISODES
 ```
 
-The marriage study's runs (see "Marriage study" below). The small policy is built before its first run, and its
-commands come with its code. `RUN_ROOT` is the
+The marriage study's runs (see "Marriage study" below). `RUN_ROOT` is the
 fine-tuning runs' folder and `STEPS` their steps (fixed after the smoke tests); `CHECKPOINT_RUN` is the released
 checkpoint's run folder, and `DATA_ROOT` and `VP_DIR` are the folders of the training sets and of their visual
 prompts:
@@ -413,6 +412,9 @@ python -m examples.SimplerEnv.train_files.planner_demos_to_lerobot --out $SMOKE_
     --stats $CHECKPOINT_RUN/dataset_statistics.json --visual-prompts $SMOKE_VP $RUNS_DIR/smoke_demos_iid100
 DATA_ROOT=$SMOKE_ROOT VP_DIR=$SMOKE_VP MAX_STEPS=200 WARMUP=20 \
     bash examples/SimplerEnv/train_files/run_finetune_1gpu.sh smoke_vla_p vla_p
+CUDA_VISIBLE_DEVICES=0 python -m examples.SimplerEnv.train_files.small_policy train \
+    --config $CHECKPOINT_RUN/config.yaml --data-root $SMOKE_ROOT --visual-prompts $SMOKE_VP --out $SMOKE_ROOT/small \
+    --steps 200 --warmup 20
 # the demonstrations: the planner on the pool's episodes 0 to 699 of each task, VLA-0 on 0 to 399 (then 100 more at
 # a time, as explicit chunks, for a task with fewer than 250 successes)
 IID_EPISODES=700 RECORD_DEMOS=1 bash $E/planner_eval.sh 0 10320 demos_planner_iid100 none iid100
@@ -488,6 +490,10 @@ $SD --write targeted_corrections_reworded && DATA_ROOT=$DATA_ROOT VP_DIR=$VP_DIR
 for M in vlap450 vlap1125; do
   CKPT=$RUN_ROOT/$M/checkpoints/steps_${STEPS}_pytorch_model.pt bash $E/vla_eval.sh 0 10400 ${M}_iid16 iid16 4
 done
+# the small policy: trained on VLA-P's set (written above), then evaluated on T1 with VP-VLA's visual prompts
+CUDA_VISIBLE_DEVICES=0 python -m examples.SimplerEnv.train_files.small_policy train \
+    --config $CHECKPOINT_RUN/config.yaml --data-root $DATA_ROOT --visual-prompts $VP_DIR --out $RUN_ROOT/small
+POLICY=small CKPT=$RUN_ROOT/small/checkpoints/steps_20000_pytorch_model.pt bash $E/vla_eval.sh 0 10400 small_iid16 iid16 4
 # T5's smoke tests (not part of the results): the planner reading the VLM's marks, and reading the simulator's
 # positions on the one-goal tasks
 IID_EPISODES=8 TASK_SET=novel TASK_SOURCE=vp bash $E/planner_eval.sh 0 10320 smoke_vp_novel_iid98 none iid98
@@ -1619,3 +1625,26 @@ that the VLM leaves empty. Only the head's text changes: the VLM gets the same
 questions as in VLA-0's evals (the whole instruction and the current subtask), so the visual prompts come about as
 before. Each text that the head reads is in the run's `sim.log` (`[ACTION TEXT]`). The option needs SAM 3, the VLM
 and its subtasks, as every VLA eval has them.
+
+**Built on 2026-10-31, before any of the study's runs: the small policy** (`train_files/small_policy.py`, and
+`POLICY=small` in `vla_eval.sh`, with its tests). Its training settings are fixed here, before it is trained:
+
+- One policy for each of SimplerEnv's 4 tasks, trained on VLA-P's demonstrations of that task. Its samples are the
+  ones that VLA-P's training draws from them, made by VP-VLA's own training data code from VLA-P's set: the camera
+  picture and the picture with the visual prompts (224 x 224), and the scaled action chunk (the next 16 steps' 7
+  numbers, in VLA-P's scale). Each sample is made once, and the batches draw from them uniformly, with replacement.
+- The model: a ResNet-18 with ImageNet weights (torchvision's `IMAGENET1K_V1`), shared by the two pictures; their
+  two sets of 512 features go to an MLP with two hidden layers of 512 (ReLU), which gives the 112 numbers. Every
+  weight trains.
+- An L1 loss on the 112 numbers; AdamW with learning rate 1e-4 and weight decay 1e-4; 500 warm-up steps, then a
+  cosine decay to 0; batches of 64 and 20,000 steps per task (1.28 million draws); bf16; seed 0.
+- The only augmentation: both pictures of a sample move by the same random amount, up to 8 pixels each way, with
+  the edge pixels repeated. VP-VLA's training data code applies none (its Bridge data config has its picture
+  transforms switched off), but a policy trained from scratch on a few hundred demonstrations needs one to be a fair
+  baseline. The evals take the pictures as they are.
+
+The eval `small_iid16` is VLA-P's eval of T1 with the small policies in place of VP-VLA's policy server: the same
+client, the same visual prompts from SAM 3.1 and the VLM, the same ensembling of the action chunks and the same scale.
+The server picks each request's policy by the task's own instruction, which the client sends; the policies read no
+language. The smoke run measures the training's speed; the training is short next to the VLAs', and the eval costs
+one VLA-only eval of T1.

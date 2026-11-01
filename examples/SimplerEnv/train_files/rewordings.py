@@ -28,12 +28,12 @@ import re
 import zlib
 from typing import List
 
+from examples.SimplerEnv.eval_files import instruction_sets
 from examples.SimplerEnv.eval_files.instruction_sets import INSTRUCTION_SETS, TASKS
 from examples.SimplerEnv.eval_files.novel_scenes import TASKS as NOVEL_TASKS
 
 # SimplerEnv's own instruction of each of the 4 WidowX tasks (their get_language_instruction).
-OWN = dict(zip(TASKS, ("put the spoon on the towel", "put carrot on plate", "stack the green block on the yellow block",
-                       "put eggplant into yellow basket"), strict=True))
+OWN = dict(zip(TASKS, instruction_sets.OWN, strict=True))
 TEST_INSTRUCTIONS = tuple(i for s in INSTRUCTION_SETS.values() for i in s) + tuple(
     t.instruction for t in NOVEL_TASKS.values())
 # Regular expressions, each matched as whole words in the lower-case instruction without punctuation.

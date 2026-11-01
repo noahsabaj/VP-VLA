@@ -173,8 +173,8 @@ def get_args():
                         help="Simulated color-camera errors in the picture every controller gets (camera_noise.py)")
     parser.add_argument("--noise-seed", type=int, default=0, help="Seed of the depth and RGB noise")
     parser.add_argument("--instruction-set", type=str, default="default", choices=INSTRUCTION_SET_NAMES,
-                        help="Reworded instructions for the 4 WidowX tasks (instruction_sets.py); default = the "
-                             "task's own")
+                        help="Reworded instructions for the 4 WidowX tasks, or the controls blank and wrong "
+                             "(instruction_sets.py); default = the task's own")
     parser.add_argument("--planner-seed", type=int, default=None,
                         help="Seed the planner's random steps (MPlib's IK restarts and RRT) per episode from this seed "
                              "and the episode, so a try plans the same in every run (default: unseeded)")

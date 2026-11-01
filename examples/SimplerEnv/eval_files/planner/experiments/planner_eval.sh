@@ -17,7 +17,8 @@
 #                  an episode gives the same result either way.
 #   RGB_NOISE      none (default) | realistic | harsh | same: a real color camera's errors in the picture
 #                  (camera_noise.py); same = the depth noise's level (one camera at LEVEL; not with harsh_xS).
-#   INSTRUCTIONS   reworded instructions (instruction_sets.py; default: the task's own).
+#   INSTRUCTIONS   reworded instructions, or the controls blank and wrong (instruction_sets.py; default: the task's
+#                  own).
 #   TASK_SET       simpler (default: SimplerEnv's 4 tasks) | harder (the harder scenes; LAYOUTS=paper or iidN) |
 #                  novel (the new test scenes; LAYOUTS=iidN).
 #   PLAN_CHECK     1: the VLM plan check (planner/plan_check.py) on each episode's first frame, from a VLM server

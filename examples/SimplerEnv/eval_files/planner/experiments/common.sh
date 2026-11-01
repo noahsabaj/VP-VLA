@@ -221,11 +221,17 @@ start_sam_server() {
 }
 
 # start_vla_servers PORT_BASE DIR: the VLA's servers, logs in DIR: policy (PORT_BASE, POLICY_ARGS), SAM (+1,
-# SAM_VERSION, SAM3_ARGS) and VLM (+2, VLM_ARGS). The VLM server is in the sam3 env.
+# SAM_VERSION, SAM3_ARGS) and VLM (+2, VLM_ARGS). The VLM server is in the sam3 env. POLICY=small: the marriage
+# study's small policies (CKPT from train_files/small_policy.py) instead of VP-VLA's policy (POLICY_ARGS do not apply).
 start_vla_servers() {
   local pb=$1 dir=$2
-  start_server $pb "$dir/policy.log" "$STARVLA_PYTHON" deployment/model_server/server_policy.py \
-    --ckpt_path "$CKPT" --port $pb --use_bf16 $POLICY_ARGS &&
+  if [ "${POLICY:-vpvla}" = small ]; then
+    start_server $pb "$dir/policy.log" "$STARVLA_PYTHON" -m examples.SimplerEnv.train_files.small_policy serve \
+      --ckpt "$CKPT" --port $pb
+  else
+    start_server $pb "$dir/policy.log" "$STARVLA_PYTHON" deployment/model_server/server_policy.py \
+      --ckpt_path "$CKPT" --port $pb --use_bf16 $POLICY_ARGS
+  fi &&
   start_sam_server $((pb + 1)) "$dir/sam3.log" $SAM3_ARGS &&
   start_server $((pb + 2)) "$dir/vlm.log" "$SAM3_PYTHON" examples/SimplerEnv/eval_files/vlm_server_subtask_simpler.py \
     --port $((pb + 2)) $VLM_ARGS

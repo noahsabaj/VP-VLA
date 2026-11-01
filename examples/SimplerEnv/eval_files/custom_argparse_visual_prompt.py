@@ -141,6 +141,10 @@ def get_args():
                         help="On each try's first step, also run the policy on this many slightly changed copies of its "
                              "input and save their actions with the hidden states (needs --vla-hidden-dir; the try goes "
                              "on with the unchanged input)")
+    parser.add_argument("--action-instruction", type=str, default="task", choices=["task", "subtask"],
+                        help="What the policy's action head reads: the instruction (task, VP-VLA's) or the subtask "
+                             "that the VLM's decisions have reached (subtask; needs --use-sam3, --use-vlm and "
+                             "--vlm-decompose-subtasks; the instruction when the VLM gives no subtasks)")
 
     # ===== Motion planner =====
     parser.add_argument("--controller", type=str, default="vla",

@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "Robocasa
 
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
 from examples.SimplerEnv.eval_files.adaptive_ensemble import AdaptiveEnsembler
+from examples.SimplerEnv.eval_files.instruction_sets import subtask_instruction
 from examples.SimplerEnv.eval_files.model_time import time_requests
 from examples.SimplerEnv.eval_files.vla_perturbation import perturb_images, perturbation_rng
 from starVLA.model.tools import read_mode_config
@@ -80,9 +81,17 @@ class ModelClientVP:
         # First step: also the actions for this many changed copies of the input (vla_perturbation), saved with the
         # hidden states; 0 = off
         perturb_k: int = 0,
+        # What the action head reads: "task", the instruction (VP-VLA's), or "subtask", the subtask that the VLM's
+        # decisions have reached (instruction_sets.subtask_instruction)
+        action_instruction: str = "task",
     ) -> None:
         if perturb_k and not hidden_dir:
             raise ValueError("perturb_k needs hidden_dir: the actions are saved with the hidden states")
+        if action_instruction not in ("task", "subtask"):
+            raise ValueError(f"action_instruction must be 'task' or 'subtask', not {action_instruction!r}")
+        if action_instruction == "subtask" and not (use_sam3 and use_vlm and vlm_decompose_subtasks):
+            # the VLM splits the instruction, and its questions with the visual prompts move through the subtasks
+            raise ValueError("action_instruction='subtask' needs use_sam3, use_vlm and vlm_decompose_subtasks")
         # Every server request is timed for the episode's cost record (model_time.py).
         self.client = time_requests(WebsocketClientPolicy(host, port), "vla")
 
@@ -170,8 +179,11 @@ class ModelClientVP:
         self._subtasks: List[str] = []
         self._current_subtask_idx: int = 0
         self._current_subtask: str = ""
+        self._subtasks_from_vlm = False
 
         self.vlm_decompose_subtasks = vlm_decompose_subtasks
+        self.action_instruction = action_instruction
+        self._action_text: Optional[str] = None
 
         if use_vlm:
             from vlm_client_simpler import VLMClientSimpler
@@ -270,10 +282,13 @@ class ModelClientVP:
         self._last_proceed_step = -999
 
         # Reset subtask tracking
+        self._subtasks_from_vlm = False
+        self._action_text = None
         if self.vlm_decompose_subtasks and self.use_vlm and self.vlm_client is not None:
             vlm_subtasks = self.vlm_client.decompose_task_to_subtasks(task_description)
             if vlm_subtasks:
                 self._subtasks = vlm_subtasks
+                self._subtasks_from_vlm = True
                 print(f"[SUBTASK] VLM decomposition: '{task_description}' -> {self._subtasks}")
             else:
                 self._subtasks = parse_explicit_task(task_description)
@@ -438,6 +453,13 @@ class ModelClientVP:
 
         # ===== Build language instruction =====
         current_instruction = self.task_description
+        if self.action_instruction == "subtask":
+            # from the step where the VLM decides that a subtask is done on, the next one
+            current_instruction = subtask_instruction(self.task_description, self._subtasks,
+                                                      self._current_subtask_idx, self._subtasks_from_vlm)
+            if current_instruction != self._action_text:
+                print(f"[ACTION TEXT] step {self._step_count}: '{current_instruction}'")
+                self._action_text = current_instruction
 
         current_instruction = (
             "You are given two images: the first is the original robot observation, "

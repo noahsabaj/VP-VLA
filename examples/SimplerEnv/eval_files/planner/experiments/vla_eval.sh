@@ -19,6 +19,8 @@
 #   RGB_NOISE=none (default) | realistic | harsh: a real color camera's errors in the picture (camera_noise.py).
 #   INSTRUCTIONS=NAME: reworded instructions, or the controls blank and wrong (instruction_sets.py; default: the
 #     task's own).
+#   ACTION_INSTRUCTION=subtask: the action head reads the subtask that the VLM's decisions have reached instead of
+#     the instruction (--action-instruction; default: task, the instruction).
 #   TASK_SET=simpler (default: SimplerEnv's 4 tasks) | harder (the harder scenes; LAYOUTS=paper or iidN) | novel (the
 #     new test scenes; LAYOUTS=iidN).
 #   ENERGY=1: an energy run (K must be 1): each episode's GPU energy, the idle power and the null episodes (energy_setup
@@ -41,6 +43,7 @@ if [ "${PERTURB:-0}" != 0 ]; then
   [ "${HIDDEN:-0}" = 1 ] || { echo "PERTURB needs HIDDEN=1" >&2; exit 1; }
   SIM_ARGS="$SIM_ARGS --vla-perturb $PERTURB"
 fi
+[ -n "${ACTION_INSTRUCTION:-}" ] && SIM_ARGS="$SIM_ARGS --action-instruction $ACTION_INSTRUCTION"
 energy_setup "$K" || exit 1
 
 SERVER_ENV=(CUDA_VISIBLE_DEVICES=$GPU)

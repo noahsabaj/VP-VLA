@@ -44,7 +44,9 @@ class HarderBridgeScene(PutOnBridgeInSceneEnv):
         picks = [m for m in self.task.objects if m in novel_scenes.PICK_MODELS]
         if picks:
             db = json.loads(PICK_MODEL_JSON.read_text())
-            kwargs["model_db_override"] = {**{m: db[m] for m in picks}, **kwargs.get("model_db_override", {})}
+            # SimplerEnv draws each object's scale from its info's "scales": here only novel_scenes.SCALES's (or 1).
+            infos = {m: {**db[m], "scales": [novel_scenes.SCALES.get(m, 1.0)]} for m in picks}
+            kwargs["model_db_override"] = {**infos, **kwargs.get("model_db_override", {})}
         if self.OVERLAY_OBJECTS:
             kwargs.setdefault("rgb_always_overlay_objects", list(self.OVERLAY_OBJECTS))
         # PutOnBridgeInSceneEnv's own __init__, also in a sink scene (PutEggplantInBasketScene's sets the eggplant).

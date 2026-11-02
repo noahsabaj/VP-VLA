@@ -1,6 +1,6 @@
 """The new test scenes (T5 of the marriage study; planner/experiments/README.md, "Marriage study"): eight WidowX tasks
 that no model trains on, two of each kind (KINDS):
-- new objects: a sponge and a soda can from SimplerEnv's Google-robot objects, which no training scene has;
+- new objects: a smaller sponge and a soda can from SimplerEnv's Google-robot objects, which no training scene has;
 - new pairs: an object and a target that no training task pairs, one of them in the eggplant task's sink scene;
 - reasoning in clutter: the object to move is named by what it is not, or by which other object it is next to;
 - long tasks: two and three pick-and-places in one instruction.
@@ -28,8 +28,12 @@ YELLOW = "yellow_cube_3cm"
 BASKET = "dummy_sink_target_plane"  # the sink scene's yellow basket: an invisible plane in it, as in the eggplant task
 # Models from SimplerEnv's Google-robot objects (data/custom/info_pick_custom_v0.json), not from its Bridge ones.
 PICK_MODELS = (SPONGE, CAN)
-# Length and width on the table (m) when not turned, from ManiSkill2_real2sim's model infos; the can stands upright.
-SIZES = {**FOOTPRINT, SPONGE: (0.07, 0.1), CAN: (0.066, 0.066), EGGPLANT: (0.078, 0.037), GREEN: (0.03, 0.03),
+# The models' scales (1 when not named): the sponge at 0.6 of its size, 4.2 cm wide, since at full size (7 cm) the
+# gripper could not pick it up in T5's smoke tests (README, 2026-11-02). harder_scene_envs.py gives SimplerEnv these.
+SCALES = {SPONGE: 0.6}
+# Length and width on the table (m) when not turned, from ManiSkill2_real2sim's model infos times SCALES; the can
+# stands upright.
+SIZES = {**FOOTPRINT, SPONGE: (0.042, 0.06), CAN: (0.066, 0.066), EGGPLANT: (0.078, 0.037), GREEN: (0.03, 0.03),
          YELLOW: (0.03, 0.03)}
 TURNED = (SPOON, CARROT, EGGPLANT, SPONGE, CAN, GREEN, YELLOW)  # the objects that get a random turn
 # The can model lies along its y axis; this turn stands it up, as SimplerEnv's upright cans (euler (pi/2, 0, 0)).

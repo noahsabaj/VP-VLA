@@ -53,6 +53,12 @@ def test_tasks():
     assert not any(m in ns.PICK_MODELS for t in hs.TASKS.values() for m in t.objects)
 
 
+def test_sponge_scale():
+    # 2026-11-02: at full size (7 x 10 cm) the gripper could not pick the sponge up; T5 uses it at 0.6 of its size
+    assert ns.SCALES == {ns.SPONGE: 0.6}
+    assert np.allclose(ns.SIZES[ns.SPONGE], np.array([0.07, 0.1]) * ns.SCALES[ns.SPONGE])
+
+
 def test_random_layouts():
     for task, t in ns.TASKS.items():
         for e in range(200):

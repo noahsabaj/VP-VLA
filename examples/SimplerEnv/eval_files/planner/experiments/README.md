@@ -509,6 +509,10 @@ for t in NovelSpongeOnPlate-v0 NovelCanOnTowel-v0 NovelEggplantOnPlate-v0 NovelC
   bash $E/sim_task.sh 0 $t 0 8 smoke_sim_novel_iid98/$t --controller planner --planner mplib --target-source sim \
       --robot-mask joints --noise-seed 0 --layout-seed 98 --layout-per-episode
 done
+# the same with the smaller sponge (the note of 2026-11-02), before any T5 eval
+bash $E/sim_task.sh 0 NovelSpongeOnPlate-v0 0 8 smoke_sim_sponge_iid98 --controller planner --planner mplib \
+    --target-source sim --robot-mask joints --noise-seed 0 --layout-seed 98 --layout-per-episode
+IID_EPISODES=8 TASK_SET=novel TASK_SOURCE=vp bash $E/planner_eval.sh 0 10320 smoke_vp_novel2_iid98 none iid98
 # T5
 IID_EPISODES=48 TASK_SET=novel bash $E/planner_eval.sh 0 10320 pseed31_novel_iid18_none none iid18
 IID_EPISODES=48 TASK_SET=novel TASK_SOURCE=vp bash $E/planner_eval.sh 0 10320 vp_novel_iid18_none none iid18
@@ -1656,6 +1660,42 @@ client, the same visual prompts from SAM 3.1 and the VLM, the same ensembling of
 The server picks each request's policy by the task's own instruction, which the client sends; the policies read no
 language. The smoke run measures the training's speed; the training is short next to the VLAs', and the eval costs
 one VLA-only eval of T1.
+
+**Fixed on 2026-11-02, after the smoke tests and before the first model of the study trains: the training settings,
+and T5's sponge.** The smoke tests of 2026-11-01 (not part of the results):
+
+- The clip report of the planner's recorded demonstrations (the pool's first 20 episodes of each task; 70 successes,
+  3,345 steps): no action number lies outside the checkpoint's range in more than 1% of the steps (0.0% for each of
+  the 7), so the planner's steps get no limit. Every converted step has both visual prompts.
+- The eggplant's box on rendered frames: the box lies on the inner part of the yellow basket (the simulator's target
+  plane in it, with which SimplerEnv's eggplant task checks success), not on the whole basket, and the crosshair is on
+  the eggplant in every frame. The carrot task's box covers the plate.
+- VLA-0's recording (2 episodes of each task, 7 successes) converts.
+- The short training run: 1.87 s per step at a batch of 16, at most 42.5 GB of GPU memory (of 48), 19 GB of files
+  per model.
+
+The training settings of the 7 models (the defaults of `run_finetune_1gpu.sh`, Noah's choice): 20,000 steps at a batch
+of 16 (320,000 samples, about 3 passes over VLA-P's set), the lowest 24 of the 36 language-model layers frozen, and the
+released run's learning rates (1e-4 for the action head, 1e-5 for the VLM) with 1,000 warm-up steps and its cosine
+decay, bf16 and its seed. That is about 10.4 GPU hours for each model, 73 in all (not 45), and about 216 for the study.
+
+T5's smoke tests (`iid98`, the first 8 episodes of each task):
+
+- First frames, by eye: every object in place and in view in all 64 episodes, and the can upright in all 8.
+- The planner with the simulator's positions: soda can 8/8, carrot by the towel 4/8, carrot in the basket 6/8,
+  eggplant on the plate 5/8, the vegetable that is not orange 6/8, sponge 0/8. Each sponge episode failed with "grasp
+  missed": 7 cm wide on its narrow side, the sponge does not fit in the open gripper, which only just holds the 6.6 cm
+  can. By the rule above, the sponge task changes: the same sponge at 0.6 of its size (4.2 x 6 x 2.2 cm, with
+  SimplerEnv's model scale; `novel_scenes.SCALES`), Noah's choice. Its layouts change with its size.
+- The planner reading the VLM's marks: soda can 0/8 (its grasps 3 cm off the can's centre, where the open gripper has
+  no room to spare; the rule is about the planner with the simulator's positions, so the can stays), carrot by the
+  towel 6/8, carrot in the basket 8/8, eggplant on the plate 8/8, the vegetable that is not orange 8/8, sponge 0/8,
+  the stack 5/8, the three steps 1/8.
+
+Before any T5 eval, the smoke tests run again with the smaller sponge (the commands above): the planner with the
+simulator's positions on its 8 episodes, and the planner reading the VLM's marks on all 8 tasks. Their first frames
+are checked by eye. If the planner with the simulator's positions still cannot pick up and place the sponge, the task
+changes again in a dated note.
 
 ## VLM-router study
 

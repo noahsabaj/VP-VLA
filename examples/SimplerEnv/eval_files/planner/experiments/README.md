@@ -1697,6 +1697,11 @@ simulator's positions on its 8 episodes, and the planner reading the VLM's marks
 are checked by eye. If the planner with the simulator's positions still cannot pick up and place the sponge, the task
 changes again in a dated note.
 
+**The rerun on 2026-11-02 (not part of the results).** With the smaller sponge, the planner with the simulator's
+positions placed it in 5 of its 8 episodes (before: 0/8), and the planner reading the VLM's marks in 8/8 (before: 0/8).
+The other 7 tasks gave the same number of successes as on 2026-11-01. In the first frames, the sponge is in place and
+in view in all 8 episodes, about as wide as the carrot. So the sponge task stays as it is.
+
 ## VLM-router study
 
 The plan below was fixed on 2026-10-31, before any eval of `iid14` ran, and `score_vlm_router` follows it. The

@@ -1770,3 +1770,123 @@ first-look times include the router's questions, so no cost result uses it.
 
 **Cost.** About 30 GPU minutes on GPU 0 for `router_iid14_harsh`: the planner-only eval takes about 15 minutes, and
 the questions add 1,600 one-token answers. `vla31_iid14` and `pseed31_iid14_harsh` are in the GPU 0 queue anyway.
+
+## Frontier-model study
+
+The plan below was fixed on 2026-11-09, before any call to the frontier model, before any of the study's evals, and
+before `score_marriage` ran (the study's tests use the marriage study's evals, which were not scored yet). The
+results do not change it. A result that is not in the plan is reported as exploratory.
+
+**Question.** The marriage study trains a VLA on the planner's episodes. A general frontier model needs no such
+training. Two arms ask what it can do in this system:
+
+- **The plan arm**: the frontier model writes the planner's job, and the planner does the motion. Does it give the
+  planner a better job than the system's own 4B VLM (F1)? Does it then beat the trained VLA (F2) and the married
+  system (F3)?
+- **The agent arm**: the frontier model drives the arm itself, with no pick-and-place script. Does the frontier
+  model still need the planner (A1)? Does the agent beat the trained VLA (A2) and the married system (A3)?
+
+**The model.** Claude Fable 5.2 (`claude-fable-5-2`), effort `high`, through its API. The API has no temperature
+setting, so the same input can give different answers: every episode is run once, its answers are saved, and the
+saved answers are the record. No episode is run again, whatever its result. A refusal, or an error that remains
+after the client's retries, ends the model's part of the episode: in the plan arm it counts as "not feasible", in
+the agent arm as `give_up`. There is no fallback model. The requests hold the simulator's pictures, the
+instruction and the tools' answers only. The calls run on a machine of ours that holds the API key; the shared GPU
+server holds no key.
+
+**The plan arm.** `TASK_SOURCE=vlm` as it is (see "VLM plan"): one question on each episode's first frame, the same
+text (`vlm_plan.prompt`, written for Qwen3-VL, with points in 0-1000 coordinates), the same parser, at most 4 moves,
+and the same planner after it. Only the model that answers changes: one request per episode, with the picture and
+the question, no tools and no system prompt. The first frames are saved first, the model answers them, and the
+planner-only eval reads the saved answers in place of the VLM server. The question is not tuned. A smoke test on
+`iid98` (the first 8 episodes of each task; not part of the results) checks the parser and measures the cost. If it
+shows a problem of form (not of content), the fix is written in a dated note before the first test call.
+
+**The agent arm.** No fixed rule, no pick-and-place script, no SAM and no VLA: the model decides every motion. It
+gets the instruction and these tools, and no state of the simulator:
+
+| Tool | What it does |
+|---|---|
+| `look` | the camera picture now (the camera that the VLA sees) |
+| `locate(x, y)` | the 3D position of a point of the picture, from the depth image (clean depth) and the camera's calibration |
+| `move_to(x, y, z, turn)` | moves the gripper, pointing down, to a position with a turn about the vertical axis; the path comes from the planner's motion planning (mplib); it answers whether the motion was done, and the new picture |
+| `gripper(open or close)` | opens or closes the gripper, and answers with the new picture |
+| `done`, `give_up` | end the model's part of the episode |
+
+An episode has at most 30 turns of the model and the eval's step limit; the motions' steps count as the planner's do.
+Success is the simulator's check, as in every eval. Each episode starts a new conversation: the model keeps nothing
+from one episode to the next.
+
+The harness (the system prompt, the tools' descriptions and the steps' accounting) is built and changed on `iid98`
+only: the first 8 episodes of each of the 17 tasks, and at most 3 passes over them. It is then frozen in a dated
+note, with its commit, before the first test episode. That note also gives the cost per episode that the last pass
+measured, and Noah's spending limit for the arm. If the test sets would cost more than the limit, the arm runs
+whole sets only, in the order T5, T2, T3, and its tests take the sets that ran; this too is fixed in the note,
+before the first test episode.
+
+**Test sets.** The marriage study's, with clean depth: T2 (the 4 reworded sets on `paper`, 384 episodes), T3 (the
+harder scenes on `iid17`, 240) and T5 (the new scenes on `iid18`, 384): 1,008 episodes. T1 (`iid16`, 400) is
+secondary. The episodes, layouts and seeds are those of the existing evals, so every comparison is paired.
+
+**Evals.** All with SAM 3.1 (where the planner reads names), noise seed 0, planner seed 0 and clean depth; `S` is a
+reworded set.
+
+| System | T1 | T2 | T3 | T5 |
+|---|---|---|---|---|
+| The planner reading the frontier plan (new) | `fplan_iid16_none` | `fplan_words_S_paper_none` | `fplan_harder_iid17_none` | `fplan_novel_iid18_none` |
+| The planner reading Qwen3-VL's plan (new) | `vlmplan_iid16_none` | `vlmplan_words_S_paper_none` | `vlmplan_harder_iid17_none` | `vlmplan_novel_iid18_none` |
+| The frontier agent (new) | | `fagent_words_S_paper` | `fagent_harder_iid17` | `fagent_novel_iid18` |
+| The planner reading the VLM's marks | `vp_iid16_none` | `vp_words_S_paper_none` | `vp_harder_iid17_none` | `vp_novel_iid18_none` |
+| VLA-PL | `vlapl_iid16` | `vlapl_words_S_paper` | `vlapl_harder_iid17` | `vlapl_novel_iid18` |
+
+The married system is the marriage study's, scored offline by its rules (H4's on T2 and T3, H5's on T5).
+
+**Planned tests.** Two families, one for each arm, each at 0.025 (Bonferroni for the two), so 0.05 for the study.
+In a family the order is fixed, each test is the exact two-sided paired sign-flip test, and each counts only when
+every test before it in the family was a win (significant, with the frontier arm higher). A significant difference
+in the other direction is reported as a loss. All tests take T2, T3 and T5 together (1,008 episodes; for the agent
+arm, the sets that ran).
+
+| # | Question | Comparison |
+|---|---|---|
+| F1 | Is a frontier model a better front-end for the planner than the 4B VLM? | the frontier plan vs. each of Qwen3-VL's plan and the VLM's marks |
+| F2 | Does the frontier model with the planner beat the trained VLA? | the frontier plan vs. VLA-PL |
+| F3 | Does it beat the married system? | the frontier plan vs. the married system |
+| A1 | Does the frontier model need the planner? | the frontier agent vs. the frontier plan |
+| A2 | Does the agent beat the trained VLA? | the frontier agent vs. VLA-PL |
+| A3 | Does it beat the married system? | the frontier agent vs. the married system |
+
+F1 is an intersection-union test, as the marriage study's H3: a win when the frontier plan is significantly higher
+than each of the two; its p is the larger one. The units are the marriage study's (T2: a layout, with one task's
+episode in the 4 reworded sets; T3: an episode index, with its 5 scenes; T5: an episode), and only the units that
+every eval of a test has in full count. Intervals: 95% percentile bootstrap of the mean difference per episode, over
+the units (10,000 draws).
+
+**Secondary (reported, no claims).** Every row's success rate on each set and each task. The frontier plan on T1
+with clean and with harsh depth (the answers are the same, because the camera picture is the same; only the
+planner's depth changes). How often the frontier plan says "not feasible", and how often its point lies in the SAM
+mask that the planner uses. For the agent: turns per episode, the share of episodes that end with `done`,
+`give_up` or a limit, and the success rate of each. Refusals, errors, tokens, cost and time per episode, for both
+arms.
+
+**What we expect.** The frontier model reads reworded, reasoning and several-step instructions better than a 4B
+VLM, so F1 should be a win. F2 and F3 are open: at clean depth the planner is precise, so the plan arm can win.
+For the agent, public reports give frontier models high scores on a two-arm benchmark only with a harness made for
+them, and much lower scores with a plain one, so A1 is open in both directions; a loss in A1 says that the frontier
+model still needs the planner.
+
+**Limits.** One frontier model, one run of each episode, and a model behind an API, which can change under the same
+name (the saved answers and their dates are the record). Clean depth only: the plan arm must fall with harsh depth
+as the planner does, and a frontier arm with an ASM and a VLA behind it is not in this study. The plan arm sees the
+first frame only. The agent's harness is built by us in at most 3 passes on 136 episodes; a better harness may give
+a better agent, so the agent arm measures this harness with this model. The harness is written with the help of an
+AI assistant of the model's own family; the fixed question, the frozen harness, the saved answers and the paired
+tests guard against that.
+
+**Built before their first run.** The saved-answers reader for `TASK_SOURCE=vlm`, the first-frame export, the agent
+controller and `score_frontier`. `score_frontier` is checked on made-up data before it reads any result.
+
+**Cost (estimates; the smoke tests measure them).** The plan arm: about 1,550 requests, 50 to 170 USD. The agent
+arm: up to 30 requests in each of 1,008 episodes, 500 to 2,500 USD, under the spending limit above. GPU 0: 8
+planner-only evals (the frontier plan's and Qwen3-VL's), about 15 to 80 minutes each, and the agent's evals, which
+hold the simulator while the model answers; their time is measured on `iid98`.

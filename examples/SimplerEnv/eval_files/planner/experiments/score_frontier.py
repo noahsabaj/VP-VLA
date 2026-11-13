@@ -73,13 +73,13 @@ def agent_name(group: str, layouts: str) -> str:
 
 
 def load_agent(root: str, tasks: Sequence[str]) -> Dict[Tuple[str, int], dict]:
-    """(task, episode) -> the agent's record (frontier.AGENT_FILE in each task's folder). A second record for an
-    episode, or an end that is not one of frontier.AGENT_ENDS, stops the load."""
+    """(task, episode) -> the agent's record (frontier.AGENT_FILE in each task's folder, and in its chunks' folders).
+    A second record for an episode, or an end that is not one of frontier.AGENT_ENDS, stops the load."""
     out = {}
-    for task in tasks:
-        path = os.path.join(root, task, frontier.AGENT_FILE)
-        if not os.path.exists(path):
-            continue
+    paths = [p for task in tasks
+             for p in sorted(glob.glob(os.path.join(root, task, "**", frontier.AGENT_FILE), recursive=True))]
+    for path in paths:
+        task = os.path.relpath(path, root).split(os.sep)[0]
         with open(path, encoding="utf-8") as f:
             for n, line in enumerate(f, 1):
                 if not line.strip():

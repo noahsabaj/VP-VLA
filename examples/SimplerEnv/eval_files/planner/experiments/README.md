@@ -1890,3 +1890,89 @@ controller and `score_frontier`. `score_frontier` is checked on made-up data bef
 arm: up to 30 requests in each of 1,008 episodes, 500 to 2,500 USD, under the spending limit above. GPU 0: 8
 planner-only evals (the frontier plan's and Qwen3-VL's), about 15 to 80 minutes each, and the agent's evals, which
 hold the simulator while the model answers; their time is measured on `iid98`.
+
+## Instruction study
+
+The plan below was fixed on 2026-11-13, after the marriage study was scored and before any of this study's code,
+smoke tests or evals. The results do not change it. A result that is not in the plan is reported as exploratory.
+
+**Why.** Two results of the marriage study. With an empty or a wrong instruction, VLA-PL succeeds on T1 about as
+often as with its own (76.0% and 78.1% against 79.2%), because each of SimplerEnv's scenes has one task; so the
+reworded sets cannot show whether a fine-tuned VLA follows the instruction. And an exploratory count on T3, made
+after the scoring: in the kitchen scene, whose spoon and carrot tasks share their layouts, VLA-PL solves both tasks
+in 35 of 48 layouts (VLA-0 in 16, the planner in 44 with the fixed rule and in 45 with the VLM's marks), so there it
+does follow the instruction, but both tasks are in its training set. No eval so far asks for a goal that the scene
+allows and that no model trained on.
+
+**Question.** In one scene, with the same layouts, does a controller do what the instruction says when the
+instruction pairs an object with a target that it was never paired with? Is the fine-tuned VLA tied to the pairings
+of its training set (I1), more than the released VLA (I2), and does the planner then do better than the fine-tuned
+VLA (I3)?
+
+**Tasks** (`TASK_SET=choice`, `eval_files/choice_scenes.py`). The kitchen scene of `harder_scenes.py`: the spoon, the
+towel, the carrot and the plate, with its random layouts (`random_layout`), so episode N of the 4 tasks has the same
+objects in the same places. Every instruction has the form that the fixed rule reads.
+
+| Task | Instruction | Goal | Pairing |
+|---|---|---|---|
+| `ChoiceSpoonOnTowel-v0` | put the spoon on the towel | the spoon on the towel | trained (SimplerEnv's spoon task, and the kitchen scene's) |
+| `ChoiceCarrotOnPlate-v0` | put carrot on plate | the carrot on the plate | trained (SimplerEnv's carrot task, and the kitchen scene's) |
+| `ChoiceSpoonOnPlate-v0` | put the spoon on the plate | the spoon on the plate | new: in no training set of this repo |
+| `ChoiceCarrotOnTowel-v0` | put the carrot on the towel | the carrot on the towel | new: in no training set of this repo |
+
+The goals are checked as in the harder scenes: the spoon as SimplerEnv's spoon goal (part of it may lie off the
+target), the carrot as SimplerEnv's carrot goal (all of it on the target, touching nothing else but the robot). Each
+task also logs, without counting it, whether the object lies on the other target at the end; every eval of this
+study, the VLA-only ones too, writes the goal and the logged pair of each episode to its episode records. 120 steps.
+
+**Layout set.** `iid19`: layout seed 19, a random layout for each episode, 48 episodes per task (192 episodes for a
+controller). No eval has run on it. The unit of every test is an episode index (48 units), because its 4 tasks share
+the layout.
+
+**Controllers.** Those of the marriage study, with its settings (SAM 3.1, noise seed 0, planner seed 0, clean
+depth; the VLAs with the fast settings and VLM seed offset 0): VLA-0 (`vla_choice_iid19`), VLA-PL
+(`vlapl_choice_iid19`), the planner with the fixed rule (`pseed31_choice_iid19_none`) and the planner reading the
+VLM's marks (`vp_choice_iid19_none`). The frontier-model study's arms are not part of this study.
+
+**Planned tests.** Three tests, judged together by Holm's method at 0.05; each is the exact two-sided paired
+sign-flip test with one value per episode index. A unit's *drop* for a controller is its successes on the two
+trained pairings minus its successes on the two new pairings (from -2 to 2).
+
+| # | Question | Value per unit | Shown when |
+|---|---|---|---|
+| I1 | Is the fine-tuned VLA tied to its trained pairings? | VLA-PL's drop | significant, above 0 |
+| I2 | Is it tied to them more than the released VLA? | VLA-PL's drop minus VLA-0's drop | significant, above 0 |
+| I3 | On a new pairing, does the planner do better than the fine-tuned VLA? | the successes on the two new pairings of the planner reading the VLM's marks, minus VLA-PL's | significant, above 0 |
+
+A significant difference in the other direction is reported as such. Intervals: 95% percentile bootstrap over the
+episode indices (10,000 draws).
+
+**Secondary (reported, no claims).** Each controller's success rate on each task. Each controller's *following
+score*: of the 96 pairs of an episode index and an object, the share where it solves both of the object's tasks (a
+controller that does the same thing whatever the instruction says can solve only one of the two, because the object
+ends on one target). On the new pairings, how often the object ends on its trained target instead (the logged
+pair). The fixed rule against the VLM's marks. VLA-0's drop alone.
+
+**What we expect.** Both planners solve the four tasks at about their rate in the kitchen scene of T3 (above 90%),
+because the instructions name the object and the target plainly. VLA-PL solves the trained pairings at about its T3
+rate (about 80%) and far fewer of the new ones, often with the object on its trained target, so I1 and I3 are shown.
+VLA-0 is weak in this scene on every task, so I2 is open: a small drop from a low level may not differ from a large
+drop from a high one.
+
+**Smoke tests first** (not part of the results, and not on `iid19`): the first 8 episodes of each task on `iid98`.
+The first frames are checked by eye. The planner reading the simulator's positions (`--target-source sim`) must pick
+up and place each task's object in at least one of the 8 episodes; if it cannot for a task, the task's goal check
+changes in a dated note before any eval of the study.
+
+**Built before their first run.** `choice_scenes.py` and its tests, `TASK_SET=choice` in the runners, the goal and
+the logged pair in every eval's episode records, and `score_instruction`, which is checked on made-up data before
+it reads any result.
+
+**Limits.** One scene with two objects and two targets, 48 layouts, and instructions in the fixed rule's form: the
+study does not test rewording, look-alike targets (T3's two plates do) or more than one move. VLA-PL trained in this
+scene (500 of its 2,006 episodes are the kitchen scene's trained pairings, and 250 more its two-step task) and VLA-0
+did not, so I2 compares a model that knows the scene with one that does not. A drop can come from the motion to an
+unfamiliar target as well as from the instruction; the logged pair separates the two only in part. VP-VLA's own training data (real robot episodes) may hold such pairings: new means new for the fine-tuning.
+
+**Cost.** About 4 GPU hours on GPU 0: two VLA-only evals of 192 episodes and two planner-only evals, and the smoke
+tests.

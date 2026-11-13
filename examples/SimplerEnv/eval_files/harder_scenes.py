@@ -83,6 +83,12 @@ SHORT = dict(zip(TASKS, ["Cluttered spoon", "Cluttered carrot", "Two-step", "Nea
 # and touch nothing else but the robot, as SimplerEnv's carrot task.
 
 
+def pair_name(task: Task, pair: Tuple[int, int, bool]) -> str:
+    """A goal's or a logged pair's name in the episode stats, e.g. spoon_on_towel (harder_scene_envs.py writes the
+    stats under these names, and the scorers read them)."""
+    return f"{task.names[pair[0]]}_on_{task.names[pair[1]]}"
+
+
 def corners(half_edge: float) -> np.ndarray:
     return CENTER + SIGNS * half_edge
 

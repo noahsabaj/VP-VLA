@@ -27,7 +27,9 @@ export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 
 # The tasks of an eval (TASK_SET): simpler = SimplerEnv's 4 WidowX tasks (the default); harder = the 5 harder scenes
 # (eval_files/harder_scenes.py), with their fixed layouts (LAYOUTS=paper) or a random one per episode (LAYOUTS=iidN);
-# novel = the 8 new test scenes (eval_files/novel_scenes.py), with a random layout per episode only (LAYOUTS=iidN).
+# novel = the 8 new test scenes (eval_files/novel_scenes.py), with a random layout per episode only (LAYOUTS=iidN);
+# choice = the 4 choice scenes (eval_files/choice_scenes.py: the kitchen scene with each object on each target), with
+# a random layout per episode only (LAYOUTS=iidN).
 case ${TASK_SET:-simpler} in
   simpler) TASKS=(PutSpoonOnTableClothInScene-v0 PutCarrotOnPlateInScene-v0
                   StackGreenCubeOnYellowCubeBakedTexInScene-v0 PutEggplantInBasketScene-v0) ;;
@@ -35,7 +37,8 @@ case ${TASK_SET:-simpler} in
                  CarrotOnFarPlate-v0) ;;
   novel) TASKS=(NovelSpongeOnPlate-v0 NovelCanOnTowel-v0 NovelEggplantOnPlate-v0 NovelCarrotInBasket-v0
                 NovelNotOrangeOnTowel-v0 NovelCarrotByTowelOnPlate-v0 NovelStackOnPlate-v0 NovelThreeStep-v0) ;;
-  *) echo "TASK_SET must be simpler, harder or novel, not '$TASK_SET'" >&2; exit 1 ;;
+  choice) TASKS=(ChoiceSpoonOnTowel-v0 ChoiceCarrotOnPlate-v0 ChoiceSpoonOnPlate-v0 ChoiceCarrotOnTowel-v0) ;;
+  *) echo "TASK_SET must be simpler, harder, novel or choice, not '$TASK_SET'" >&2; exit 1 ;;
 esac
 # The VLA's visual prompts and VLM, as in the paper's SimplerEnv eval.
 VP_ARGS="--use-sam3 --target-object-prompt-mode crosshair --target-location-prompt-mode box --use-vlm
@@ -63,6 +66,10 @@ wait_port() {
 layout_args() {
   if [ "${TASK_SET:-simpler}" = novel ] && [[ $1 != iid[0-9]* ]]; then
     echo "the new test scenes (TASK_SET=novel) have a random layout per episode only: LAYOUTS=iidN, not '$1'" >&2
+    return 1
+  fi
+  if [ "${TASK_SET:-simpler}" = choice ] && [[ $1 != iid[0-9]* ]]; then
+    echo "the choice scenes (TASK_SET=choice) have a random layout per episode only: LAYOUTS=iidN, not '$1'" >&2
     return 1
   fi
   case $1 in

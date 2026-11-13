@@ -24,7 +24,7 @@
 #   POLICY=small: the marriage study's small policies (CKPT from train_files/small_policy.py) instead of VP-VLA's
 #     policy, with VP-VLA's visual prompts and client (start_vla_servers in common.sh).
 #   TASK_SET=simpler (default: SimplerEnv's 4 tasks) | harder (the harder scenes; LAYOUTS=paper or iidN) | novel (the
-#     new test scenes; LAYOUTS=iidN).
+#     new test scenes; LAYOUTS=iidN) | choice (the choice scenes; LAYOUTS=iidN).
 #   ENERGY=1: an energy run (K must be 1): each episode's GPU energy, the idle power and the null episodes (energy_setup
 #     and energy_baseline in common.sh).
 [ $# -ge 5 ] || { awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 1; }

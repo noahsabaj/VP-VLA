@@ -20,7 +20,7 @@
 #   INSTRUCTIONS   reworded instructions, or the controls blank and wrong (instruction_sets.py; default: the task's
 #                  own).
 #   TASK_SET       simpler (default: SimplerEnv's 4 tasks) | harder (the harder scenes; LAYOUTS=paper or iidN) |
-#                  novel (the new test scenes; LAYOUTS=iidN).
+#                  novel (the new test scenes; LAYOUTS=iidN) | choice (the choice scenes; LAYOUTS=iidN).
 #   PLAN_CHECK     1: the VLM plan check (planner/plan_check.py) on each episode's first frame, from a VLM server
 #                  on PORT + 50 (PLAN_CHECK_VLM_ARGS; default: the VLA's fast VLM settings). It adds the feature
 #                  vlm_plan_yes and the marked pictures (TASK/plan_check/); the planner's episodes stay the same.

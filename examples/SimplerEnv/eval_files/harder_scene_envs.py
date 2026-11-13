@@ -1,11 +1,13 @@
-"""The harder scenes of harder_scenes.py and the new test scenes of novel_scenes.py as ManiSkill2_real2sim tasks,
-registered under their names when this file is imported (planner_evaluator.py imports it). Needs the simulator.
+"""The harder scenes of harder_scenes.py, the new test scenes of novel_scenes.py and the choice scenes of
+choice_scenes.py as ManiSkill2_real2sim tasks, registered under their names when this file is imported
+(planner_evaluator.py imports it). Needs the simulator.
 
 Each task is SimplerEnv's PutOnBridgeInSceneEnv (the spoon and carrot tasks' table, camera, lighting and robot) with
 all of the scene's objects instead of two; a sink scene is SimplerEnv's PutEggplantInBasketScene (the eggplant task's
 sink, camera and robot) in the same way. Each goal is checked as SimplerEnv's PutOnInSceneEnv.evaluate checks its one
 goal, for any pair of objects. Objects 0 and 1 stay the source and target object that SimplerEnv's code and the
-planner's logs read. The new test scenes have no fixed layouts: planner_evaluator.py gives each episode its own.
+planner's logs read. The new test scenes and the choice scenes have no fixed layouts: planner_evaluator.py gives each
+episode its own.
 """
 
 import json
@@ -17,20 +19,21 @@ from mani_skill2_real2sim.envs.custom_scenes.put_on_in_scene import PutEggplantI
 from mani_skill2_real2sim.utils.registration import register_env
 from transforms3d.quaternions import quat2mat
 
-from . import harder_scenes, novel_scenes
+from . import choice_scenes, harder_scenes, novel_scenes
 from .harder_scenes import Task
 
-TASKS = {**harder_scenes.TASKS, **novel_scenes.TASKS}
+TASKS = {**harder_scenes.TASKS, **novel_scenes.TASKS, **choice_scenes.TASKS}
 # The model infos of SimplerEnv's Google-robot objects, which a Bridge scene does not load (novel_scenes.PICK_MODELS).
 PICK_MODEL_JSON = ASSET_DIR / "custom" / "info_pick_custom_v0.json"
 
 
 def layouts(name: str):
-    """The task's xy and turn configs: a harder scene's fixed layouts; for a new test scene, one random layout that
-    only stands in until the evaluator gives the episode its own (novel_scenes.random_layout)."""
+    """The task's xy and turn configs: a harder scene's fixed layouts; for a new test scene or a choice scene, one
+    random layout that only stands in until the evaluator gives the episode its own (their random_layout)."""
     if name in harder_scenes.TASKS:
         return harder_scenes.layouts(name)
-    xy, quats = novel_scenes.random_layout(name, 0, 0)
+    scenes = choice_scenes if name in choice_scenes.TASKS else novel_scenes
+    xy, quats = scenes.random_layout(name, 0, 0)
     return [xy], [quats]
 
 
@@ -84,7 +87,7 @@ class HarderBridgeScene(PutOnBridgeInSceneEnv):
         self.episode_obj_bboxes_world = [quat2mat(obj.pose.q) @ size for obj, size in sizes]
 
     def _pair_name(self, pair) -> str:
-        return f"{self.task.names[pair[0]]}_on_{self.task.names[pair[1]]}"
+        return harder_scenes.pair_name(self.task, pair)
 
     def _initialize_episode_stats(self):
         self.episode_stats = OrderedDict((self._pair_name(p), False) for p in self.task.goals + self.task.logged)

@@ -82,8 +82,9 @@ line. `RGB_NOISE=realistic|harsh` puts a real color camera's errors (`camera_noi
 controller (default `none`; in `planner_eval.sh` and `selector_eval.sh`, `same` = the depth noise's level).
 `INSTRUCTIONS=NAME` gives the 4 tasks the reworded instructions of `instruction_sets.py` instead of their own.
 `TASK_SET=harder` runs the 5 harder scenes of `harder_scenes.py` instead of SimplerEnv's 4 tasks (their fixed
-layouts, `LAYOUTS=paper`, or a random one per episode, `LAYOUTS=iidN`), and `TASK_SET=novel` the 8 new test scenes of
-`novel_scenes.py` (a random layout per episode only: `LAYOUTS=iidN`). `PLAN_CHECK=1` adds the VLM plan check (`plan_check.py`): in `planner_eval.sh` it
+layouts, `LAYOUTS=paper`, or a random one per episode, `LAYOUTS=iidN`), `TASK_SET=novel` the 8 new test scenes of
+`novel_scenes.py` and `TASK_SET=choice` the 4 choice scenes of `choice_scenes.py` (both with a random layout per
+episode only: `LAYOUTS=iidN`). `PLAN_CHECK=1` adds the VLM plan check (`plan_check.py`): in `planner_eval.sh` it
 only logs the feature `vlm_plan_yes`; in `selector_eval.sh` a "no" gives the episode to the VLA.
 `TASK_SOURCE=vlm` replaces the planner's fixed rule with the VLM plan (`vlm_plan.py`; see "VLM plan" below), and
 `TASK_SOURCE=vp` with VP-VLA's own VLM marks (see "VP-VLA's VLM marks" below). `MISSING_DEPTH=target` takes all depth away from the place target in half of the episodes (see "Missing-depth
@@ -160,7 +161,9 @@ include the wait for the other sims' requests. Since 2026-10-30 the records also
 (`controller`: the wall-clock and CPU seconds in the model's reset and steps). `ENERGY=1` makes an energy run (see
 "Energy study"; one sim at a time): each episode's GPU energy from the GPU's own energy counter (`gpu_joules`), the
 GPU's idle power with the eval's servers loaded (`idle_power.json`), and the same episodes with a controller that
-does nothing (`RUN_null`: the simulation alone).
+does nothing (`RUN_null`: the simulation alone). Since 2026-11-13 the records also have the simulator's episode stats
+after the last step (`episode_stats`; in the harder, new and choice scenes: each goal and each logged pair, e.g.
+`spoon_on_plate`, and `moved_other_obj`), so a VLA-only eval has them too, not only in its video names.
 
 `SAM_VERSION` picks the model of every SAM server, both the VLA's visual prompts and the planner's masks:
 `sam3.1` (the default since 2026-10-23: SAM 3.1's detector, from the sam31 env) or `sam3` (transformers'
@@ -519,6 +522,18 @@ IID_EPISODES=48 TASK_SET=novel TASK_SOURCE=vp bash $E/planner_eval.sh 0 10320 vp
 IID_EPISODES=48 TASK_SET=novel bash $E/vla_eval.sh 0 10400 vla_novel_iid18 iid18 4
 CKPT=$RUN_ROOT/vlapl/checkpoints/steps_${STEPS}_pytorch_model.pt IID_EPISODES=48 TASK_SET=novel \
     bash $E/vla_eval.sh 0 10400 vlapl_novel_iid18 iid18 4
+# the instruction study's smoke tests (not part of the results): the planner reading the simulator's positions on the
+# first 8 episodes of each choice scene on iid98
+for t in ChoiceSpoonOnTowel-v0 ChoiceCarrotOnPlate-v0 ChoiceSpoonOnPlate-v0 ChoiceCarrotOnTowel-v0; do
+  TASK_SET=choice bash $E/sim_task.sh 0 $t 0 8 smoke_sim_choice_iid98/$t --controller planner --planner mplib \
+      --target-source sim --robot-mask joints --noise-seed 0 --layout-seed 98 --layout-per-episode
+done
+# the instruction study: the planner with the fixed rule and with the VLM's marks, VLA-0 and VLA-PL
+IID_EPISODES=48 TASK_SET=choice bash $E/planner_eval.sh 0 10320 pseed31_choice_iid19_none none iid19
+IID_EPISODES=48 TASK_SET=choice TASK_SOURCE=vp bash $E/planner_eval.sh 0 10320 vp_choice_iid19_none none iid19
+IID_EPISODES=48 TASK_SET=choice bash $E/vla_eval.sh 0 10400 vla_choice_iid19 iid19 4
+CKPT=$RUN_ROOT/vlapl/checkpoints/steps_${STEPS}_pytorch_model.pt IID_EPISODES=48 TASK_SET=choice \
+    bash $E/vla_eval.sh 0 10400 vlapl_choice_iid19 iid19 4
 ```
 
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
@@ -551,8 +566,8 @@ VLM-plan study's: `score_vlm_plan` (all its tables and tests, with the role spli
 vla31_iid15` (its closed-loop eval) and `score_costs vlmplan_iid15_harsh vla31_iid15 closed_loop_vlmplan_iid15
 handoff_vlmplan_iid15` (its costs). The difficulty sweep's: `score_sweep`. The missing-depth study's:
 `score_missing_depth`. The harder-task system study's: `score_harder_system`. The energy study's: `score_energy`.
-The marriage study's: `score_marriage` (all its tables and tests). The VLM-router study's: `score_vlm_router`. Any
-eval's costs (see "Costs" above):
+The marriage study's: `score_marriage` (all its tables and tests). The VLM-router study's: `score_vlm_router`. The
+instruction study's: `score_instruction`. Any eval's costs (see "Costs" above):
 `score_costs RUN...`.
 
 The `dfix_*` and `seeded_*` runs and `heldout_planner_none` (the evals before the planner seed and before the

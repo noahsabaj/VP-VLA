@@ -9,8 +9,9 @@ The changes, marked "CHANGED":
 3. `layout_seed` (optional): swap the task's 24 fixed layouts for new random ones, so results
    can be checked on layouts nothing was tuned on. Off by default. With `layout_per_episode`, each
    episode gets a layout of its own instead of one of 12 placements x 4 turns. For the two-object tasks, and for
-   the harder scenes with a layout per episode (harder_scenes.random_layout). The new test scenes have random
-   layouts only, one per episode (novel_scenes.random_layout), so they need both.
+   the harder scenes with a layout per episode (harder_scenes.random_layout). The new test scenes and the choice
+   scenes have random layouts only, one per episode (novel_scenes.random_layout, choice_scenes.random_layout), so
+   they need both.
 4. Before each episode, `model.set_episode(key)` is called if the model has it, so the planner can
    seed its depth noise per episode.
 5. `action_plots=False` (`--no-action-plots`) skips the per-episode action plot. On by default.
@@ -20,12 +21,14 @@ The changes, marked "CHANGED":
 7. `instruction_set` (`--instruction-set`): a reworded instruction for the task, or a control (an empty instruction
    or another task's own; instruction_sets.py). A given instruction now stays for the whole episode; SimplerEnv's
    loop replaced it with the task's own after the first step. Off by default.
-8. The harder scenes and the new test scenes (harder_scene_envs.py) are registered on import, so `env_name` can be
-   one of them.
+8. The harder scenes, the new test scenes and the choice scenes (harder_scene_envs.py) are registered on import, so
+   `env_name` can be one of them.
 9. Each episode's cost (model_time.py): its wall-clock time from the model's reset to the last step, its model
    requests' round trips and the time spent in the model's reset() and step(), one JSON line per episode in
    `logging_dir/episode_costs.jsonl`. In the energy runs (ENERGY_GPU set, energy.py), also the GPU's energy over the
-   same window (`gpu_joules`).
+   same window (`gpu_joules`). The record also has the simulator's episode stats after the last step
+   (`episode_stats`; in a harder, new or choice scene: each goal and each logged pair, e.g. `spoon_on_plate`, and
+   `moved_other_obj`), so that every controller's eval has them, the VLA-only ones too.
 10. `demos` (`--record-demos DIR`): each episode recorded as a demonstration for the VLA (demos.py): the pictures, the
    commands as the VLA's actions, the hand's pose, which object each pixel shows and where each object is; with the
    VLA then the planner, only the planner's part (the model's demo_info()). Off by default.
@@ -43,8 +46,8 @@ from simpler_env.utils.env.env_builder import build_maniskill2_env, get_robot_co
 from simpler_env.utils.env.observation_utils import get_image_from_maniskill2_obs_dict
 from simpler_env.utils.visualization import write_video
 
-from .. import harder_scene_envs  # noqa: F401 (registers the harder scenes and the new test scenes)
-from .. import harder_scenes, novel_scenes
+from .. import harder_scene_envs  # noqa: F401 (registers the harder scenes, the new test scenes and the choice scenes)
+from .. import choice_scenes, harder_scenes, novel_scenes
 from ..camera_noise import RGBNoise
 from ..instruction_sets import instruction_for
 from ..model_time import METER, cost_record
@@ -113,8 +116,11 @@ def run_maniskill2_eval_single_episode(
     if env_name in novel_scenes.TASKS and not layout_per_episode:
         raise ValueError(f"{env_name}: a new test scene has random layouts only, one per episode "
                          "(--layout-seed N --layout-per-episode)")
-    scenes = next((m for m in (harder_scenes, novel_scenes) if env_name in m.TASKS), None)
-    if layout_seed is not None and scenes is not None:  # a harder or new test scene: its own random layouts
+    if env_name in choice_scenes.TASKS and not layout_per_episode:
+        raise ValueError(f"{env_name}: a choice scene has random layouts only, one per episode "
+                         "(--layout-seed N --layout-per-episode)")
+    scenes = next((m for m in (harder_scenes, novel_scenes, choice_scenes) if env_name in m.TASKS), None)
+    if layout_seed is not None and scenes is not None:  # a harder, new test or choice scene: its own random layouts
         if not layout_per_episode:
             raise ValueError(f"{env_name}: random layouts of a harder scene are one per episode (--layout-per-episode)")
         xy, quats = scenes.random_layout(env_name, layout_seed, obj_episode_id)
@@ -231,25 +237,28 @@ def run_maniskill2_eval_single_episode(
     seconds = time.perf_counter() - t0
     energy = {} if METER.energy is None else {"gpu_joules": METER.gpu_joules(), "energy_gpu": METER.energy.index}
     episode_stats = info.get("episode_stats", {})
+    # The stats as plain values for the records below (the simulator gives numpy booleans).
+    final_stats = {k: bool(v) if isinstance(v, (bool, np.bool_)) else v for k, v in episode_stats.items()}
 
     # CHANGED: let the model log its own per-episode record.
     if hasattr(model, "finish_episode"):
         model.finish_episode(success == "success", {
             "env_name": env_name, "obj_episode_id": obj_episode_id, "layout_seed": layout_seed,
             "layout_per_episode": bool(layout_per_episode), "steps": timestep,
-            "episode_stats": {k: bool(v) if isinstance(v, (bool, np.bool_)) else v for k, v in episode_stats.items()},
+            "episode_stats": dict(final_stats),
             "layout": episode_layout_truth(env.unwrapped, obj_episode_id) if obj_variation_mode == "episode" else None,
         })
 
-    # CHANGED: the episode's cost record (model_time.py), for every controller.
+    # CHANGED: the episode's cost record (model_time.py), for every controller, with the episode stats after the last
+    # step: a VLA-only eval has them nowhere else but in its video names (default=float: a stat that is a numpy number).
     os.makedirs(logging_dir, exist_ok=True)
     with open(os.path.join(logging_dir, "episode_costs.jsonl"), "a") as f:
         f.write(json.dumps(cost_record(episode_key, success == "success", timestep, seconds, env_name=env_name,
                                        obj_episode_id=obj_episode_id, layout_seed=layout_seed,
-                                       layout_per_episode=bool(layout_per_episode), **energy)) + "\n")
+                                       layout_per_episode=bool(layout_per_episode), episode_stats=dict(final_stats),
+                                       **energy), default=float) + "\n")
     if demos is not None:
-        demos.finish(success == "success", episode_stats={k: bool(v) if isinstance(v, (bool, np.bool_)) else v
-                                                          for k, v in episode_stats.items()},
+        demos.finish(success == "success", episode_stats=dict(final_stats),
                      **(model.demo_info() if hasattr(model, "demo_info") else {}))
 
     # save video

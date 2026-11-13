@@ -148,11 +148,13 @@ def get_args():
 
     # ===== Motion planner =====
     parser.add_argument("--controller", type=str, default="vla",
-                        choices=["vla", "planner", "planner_then_vla", "vla_then_planner", "selector", "null"],
+                        choices=["vla", "planner", "planner_then_vla", "vla_then_planner", "selector", "null",
+                                 "frames"],
                         help="Who drives the arm: the VLA, a motion planner, the planner then the VLA, the VLA then "
                              "the planner (the planner's corrections; needs --takeover-steps), whichever of the two "
                              "the selector picks on the first frame (needs --selector), or nobody (null: no motion, "
-                             "for the simulator's own energy; energy.py)")
+                             "for the simulator's own energy; energy.py. frames: each episode's first frame is saved "
+                             "in --logging-dir and the episode ends; planner/frontier.py)")
     parser.add_argument("--takeover-steps", type=int, nargs=2, default=None, metavar=("LO", "HI"),
                         help="With --controller vla_then_planner: the VLA drives for a number of steps drawn per "
                              "episode from LO to HI, then the planner takes over (planner/planner_client.py)")
@@ -208,6 +210,10 @@ def get_args():
                              "vp need --vlm-plan-port")
     parser.add_argument("--vlm-plan-port", type=int, default=None,
                         help="VLM server for --task-source vlm or vp (on --vlm-host)")
+    parser.add_argument("--vlm-plan-answers", type=str, default=None,
+                        help="With --task-source vlm, in place of --vlm-plan-port: a file of another model's saved "
+                             "answers to the VLM plan's question about each episode's first frame "
+                             "(planner/frontier.py; planner-only evals)")
     parser.add_argument("--vlm-plan-min-score", type=float, default=0.0,
                         help="With --task-source vlm: a name whose chosen SAM mask scores below this counts as not "
                              "found; on the first frame that ends the planner's try (default 0: no check)")

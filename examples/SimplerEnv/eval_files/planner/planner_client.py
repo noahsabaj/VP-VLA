@@ -21,7 +21,9 @@ What to pick up and where to put it comes from the instruction: by default from 
 pick-and-place); with `task_source="vlm"` from the VLM plan (vlm_plan.py: the VLM lists the pick-and-place moves,
 and the planner does them one after another; an instruction that is not pick-and-place goes to the VLA in the
 selector mode); with `task_source="vp"` from VP-VLA's own VLM (vp_marks.py: its subtasks and the object and target
-that it names in each, which VP-VLA's SAM turns into its crosshair and box), in the same way.
+that it names in each, which VP-VLA's SAM turns into its crosshair and box), in the same way. With
+`vlm_plan_answers` (planner only), the VLM plan's answers come from a file of another model's saved answers instead
+of the VLM server (frontier.py: the frontier-model study's plan arm).
 
 Targets come from the camera: SAM3 masks the object named in the instruction, and the
 masked depth pixels give its 3D position. `target_source="sim"` reads them from the
@@ -44,7 +46,7 @@ from scipy.spatial.transform import Rotation, Slerp
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "Robocasa_tabletop" / "visual_prompt_utility"))
 
 from ..model_time import METER, time_requests
-from . import plan_check, vlm_plan, vlm_router, vp_marks
+from . import frontier, plan_check, vlm_plan, vlm_router, vp_marks
 from .geometry import (CameraView, DepthNoise, MissingDepth, corridor_points, depth_roughness, ee_delta_action,
                        mat_to_pose, path_length, pose_to_mat, short_width)
 from .planners import FINGER_OPEN, WORKSPACE, RobotSpheres, make_planner
@@ -164,6 +166,7 @@ class PlannerClient:
         takeover_steps: Optional[Sequence[int]] = None,
         vlm_router_host: str = "127.0.0.1",
         vlm_router_port: Optional[int] = None,
+        vlm_plan_answers: Optional[str] = None,
     ) -> None:
         self.planner = make_planner(planner)
         self.planner_name = planner
@@ -260,15 +263,27 @@ class PlannerClient:
             raise ValueError(f"task_source must be rule, vlm or vp, not {task_source}")
         self.task_source = task_source
         self.vlm_planner = None
+        # The frontier-model study's plan arm (frontier.py): the VLM plan's answers come from a file of another
+        # model's saved answers, in place of the VLM server.
+        self.vlm_answers = None
+        if vlm_plan_answers is not None:
+            if task_source != "vlm" or vlm_plan_port is not None:
+                raise ValueError("--vlm-plan-answers is for --task-source vlm, in place of --vlm-plan-port")
+            if self.mode != "planner":
+                raise ValueError(f"saved answers are for planner-only evals, not the {self.mode} mode")
         if task_source in ("vlm", "vp"):
-            if target_source != "camera" or vlm_plan_port is None:
-                raise ValueError(f"task_source {task_source} needs --target-source camera and --vlm-plan-port")
+            if target_source != "camera" or (vlm_plan_port is None and vlm_plan_answers is None):
+                raise ValueError(f"task_source {task_source} needs --target-source camera and --vlm-plan-port"
+                                 + (" (or --vlm-plan-answers)" if task_source == "vlm" else ""))
             if plan_check_port is not None:
                 raise ValueError(f"the plan check asks about the fixed rule's one pick-and-place: not with task_source "
                                  f"{task_source}")
-            from ..vlm_client_simpler import VLMClientSimpler
+            if vlm_plan_answers is not None:
+                self.vlm_answers = frontier.SavedAnswers(vlm_plan_answers)
+            else:
+                from ..vlm_client_simpler import VLMClientSimpler
 
-            self.vlm_planner = time_requests(VLMClientSimpler(host=vlm_plan_host, port=vlm_plan_port), "vlm")
+                self.vlm_planner = time_requests(VLMClientSimpler(host=vlm_plan_host, port=vlm_plan_port), "vlm")
         # The VLM plan's SAM score check: a name whose chosen mask scores below this is not found (0 = no check).
         if vlm_plan_min_score and task_source != "vlm":
             raise ValueError("vlm_plan_min_score is for the VLM plan (task_source vlm)")
@@ -492,7 +507,7 @@ class PlannerClient:
     def _approach(self, image, obs, env, qpos, target) -> None:
         """Find the object and plan to just above it."""
         first, self.first_look = self.first_look, False  # a grasp retry comes back here: no new features
-        if first and self.vlm_planner is not None:
+        if first and self.task_source != "rule":
             plan = self._vlm_plan if self.task_source == "vlm" else self._vp_plan
             if not plan(image):
                 self._give_up()
@@ -535,7 +550,12 @@ class PlannerClient:
 
     def _vlm_plan(self, image) -> bool:
         """The VLM plan (vlm_plan.py) from the first frame: False when the VLM finds no pick-and-place moves."""
-        answer = self.vlm_planner.generate([image], vlm_plan.prompt(self.task_description))
+        if self.vlm_answers is not None:  # another model's saved answer to the same question about the same frame
+            answer = self.vlm_answers.answer(self.episode_key, self.task_description, image)
+            self.stats["vlm_plan_answer"] = {"file": Path(self.vlm_answers.path).name, "model": answer["model"],
+                                             "error": answer["error"]}
+        else:
+            answer = self.vlm_planner.generate([image], vlm_plan.prompt(self.task_description))
         plan = vlm_plan.parse(answer["text"], image.shape[1], image.shape[0])
         self.stats.update({"vlm_plan": plan, "vlm_plan_text": answer["text"], "vlm_plan_feasible": plan["feasible"],
                            "steps_done": 0, "vlm_plan_sam": []})

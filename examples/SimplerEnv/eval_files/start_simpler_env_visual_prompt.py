@@ -71,6 +71,13 @@ if __name__ == "__main__":
         from examples.SimplerEnv.eval_files.planner.frontier import FrameExporter
 
         model = FrameExporter(args.logging_dir)
+    elif args.controller == "agent":
+        from examples.SimplerEnv.eval_files.planner import agent
+
+        if (args.agent_model == "relay") != (args.agent_relay is not None):
+            raise SystemExit("--agent-model relay needs --agent-relay ADDRESS; the scripted model takes none")
+        ask = agent.HttpRelay(args.agent_relay) if args.agent_model == "relay" else agent.scripted_reach()
+        model = agent.AgentController(agent.Robot(args.planner, args.planner_seed), ask, args.logging_dir)
     else:
         from examples.SimplerEnv.eval_files.planner.planner_client import PlannerClient
         from examples.SimplerEnv.eval_files.planner.selector import load_asm

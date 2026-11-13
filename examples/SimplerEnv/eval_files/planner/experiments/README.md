@@ -75,6 +75,7 @@ vlaplt, vlapltd, vlas}_*`, VLA-0's new ones `vla31_iid16` and `vla_harder_iid17`
 | `selector_eval.sh GPU PORT_BASE NAME LAYOUTS MODELS K [LEVEL:TASK:START:END...]` | the closed-loop ASM eval (`CONTROLLER=planner_then_vla`: the role split; `vla_then_planner`: the planner's corrections) |
 | `sim_task.sh GPU TASK START END OUT [ARGS...]` | one sim run (smoke tests; the servers must already run) |
 | `frames_eval.sh GPU NAME LAYOUTS` | the first frame of every episode of a layout set (the frontier-model study's plan arm; no model server) |
+| `agent_eval.sh GPU NAME LAYOUTS [TASK:START:END...]` | one eval of the frontier agent (the frontier-model study's agent arm; the model answers through the relay) |
 
 Each script's header lists its options. The VLA runners use the fast settings by default (`FAST=1`, see
 `fast_defaults` in `common.sh`; `FAST=0`: the paper's settings) and an MPS daemon of their own (`MPS=1`). A
@@ -592,6 +593,31 @@ VLM_PLAN_ANSWERS=fanswers/harder_iid17.jsonl IID_EPISODES=48 TASK_SET=harder \
 VLM_PLAN_ANSWERS=fanswers/novel_iid18.jsonl IID_EPISODES=48 TASK_SET=novel \
     bash $E/planner_eval.sh 0 10320 fplan_novel_iid18_none none iid18
 unset TASK_SOURCE
+```
+
+The frontier-model study's agent arm. The relay runs on the machine with the key and listens on that machine only;
+the SSH tunnel that the same machine opens gives the GPU server its end, a Unix socket in a folder of ours there
+(`SERVER_FOLDER`) that only its owner can open. `LIMIT` is the relay's guard in USD.
+
+```bash
+# a pipeline check with a made-up model (not part of the results; no request to any model): the tools, the steps
+# and the records on the first 8 episodes of SimplerEnv's tasks on iid98
+AGENT_MODEL=scripted IID_EPISODES=8 bash $E/agent_eval.sh 0 smoke_fagent_scripted_iid98 iid98
+# on the machine with the key: the relay and the tunnel
+python -m examples.SimplerEnv.eval_files.planner.experiments.agent_relay agent_relay.jsonl --limit-usd $LIMIT &
+ssh -N -R $SERVER_FOLDER/agent_relay.sock:127.0.0.1:8765 $SERVER
+# on the GPU server: the passes on iid98 that build the harness (PASS = 1, 2, 3; not part of the results)
+export AGENT_RELAY=unix:$SERVER_FOLDER/agent_relay.sock
+IID_EPISODES=8 bash $E/agent_eval.sh 0 smoke_fagent_pass${PASS}_iid98 iid98
+IID_EPISODES=8 TASK_SET=harder bash $E/agent_eval.sh 0 smoke_fagent_pass${PASS}_harder_iid98 iid98
+IID_EPISODES=8 TASK_SET=novel bash $E/agent_eval.sh 0 smoke_fagent_pass${PASS}_novel_iid98 iid98
+# the test sets, whole sets only, in the order T5, T2, T3 (after the note that freezes the harness)
+IID_EPISODES=48 TASK_SET=novel bash $E/agent_eval.sh 0 fagent_novel_iid18 iid18
+for set in synonyms attributes order reasoning; do
+  INSTRUCTIONS=$set bash $E/agent_eval.sh 0 fagent_words_${set}_paper paper
+done
+IID_EPISODES=48 TASK_SET=harder bash $E/agent_eval.sh 0 fagent_harder_iid17 iid17
+unset AGENT_RELAY
 ```
 
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
@@ -1991,6 +2017,34 @@ this note says how the code keeps it, where the plan leaves a choice.
   these, as in every test, only the units that every eval of the test has in full.
 - *Wrong joins.* `score_frontier` stops when a record under the frontier plan's names has no saved answer, when a
   record under Qwen3-VL's names has one, or when a record's depth level is not the eval's.
+
+**Note of 2026-11-13: how the agent arm is built.** Written before any call to the frontier model. The harness in
+`planner/agent.py` is draft 0: it is not frozen, and the passes on `iid98` may change it (`HARNESS` names its
+state, and every episode's record has it with the hashes of the system prompt and of the tools).
+
+- *The controller* (`--controller agent`, `agent_eval.sh`). Each episode is a new conversation: the system prompt,
+  the six tools and the instruction. Each turn sends the whole conversation so far, unchanged, and the model's
+  answer is kept as it came. The model calls one tool in a turn; an answer without a tool call costs its turn. A
+  wrong input (a pixel outside the picture, a turn of more than 90 degrees) is answered as not done and costs its
+  turn.
+- *The tools.* `look`: the picture that the VLA would get, as a PNG file. `locate`: the position of a pixel's
+  surface in the robot's base frame, from the clean depth. `move_to`: a move of 10 cm or less goes in a straight
+  line, as the planner's own short moves do; a longer move is planned by mplib (seeded per episode, planner seed 0)
+  around what the camera sees, without the arm and, with the gripper closed, without what it holds. It answers
+  that the motion was done when the hand ends within 1.5 cm of the position. `gripper`: 5 steps, as the planner's.
+  The motions' steps are the planner's (at most 2 cm in a step, and up to 3 steps that wait for the hand).
+- *The ends.* `done`, `give_up`, the turn limit (30 turns) or the eval's step limit. A refusal ends the model's part
+  as `give_up`. An answer that is cut off, or that stops in a way the harness does not know, also ends it as
+  `give_up`, with the reason in the record.
+- *The key stays on our machine.* The controller sends each turn's request to the relay (`agent_relay.py`) through
+  an SSH tunnel; the relay adds nothing and changes nothing, and it refuses a request for another model or another
+  effort. Its log has each request's tokens and cost, and no content.
+- *Errors.* The relay's client retries a request 6 times. An error that remains ends the model's part of the
+  episode as `give_up`. The eval then stops before its next episode, so that an outage costs one episode in each
+  running task; the other episodes are started again as chunks (`TASK:START:END`), and no episode is run twice.
+- *The record.* Each episode: one line in `agent_stats.jsonl` (the end, the turns, the tools that were called, the
+  tokens, the cost at the list prices and the model's time) and the conversation as it was sent, with every picture
+  as a PNG file (`transcripts/`). The runner's `status.log` has no success rates.
 
 ## Instruction study
 

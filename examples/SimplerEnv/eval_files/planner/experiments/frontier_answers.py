@@ -36,13 +36,10 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from .. import frontier, vlm_plan
 
-MODEL = "claude-fable-5-2"
-EFFORT = "high"
+MODEL, EFFORT = frontier.MODEL, frontier.EFFORT
 MAX_TOKENS = 32000  # thinking and the answer together; the answer itself is a few lines of JSON
 RETRIES = 6  # the SDK's retries of a request (connection errors, 408, 409, 429 and 5xx, with backoff)
-# USD per million input and output tokens (the model's list price on 2026-11-13), for the cost that is reported.
-PRICES = {"claude-fable-5-2": (8.0, 40.0)}
-USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+USAGE_FIELDS = frontier.USAGE_FIELDS
 
 
 def request(instruction: str, png: bytes) -> dict:
@@ -86,12 +83,10 @@ def cost_usd(rows: List[dict]) -> Optional[float]:
     """The list-price cost of these lines' tokens; None when a line's model has no price here."""
     total = 0.0
     for r in rows:
-        usage, price = r.get("usage") or {}, PRICES.get(r.get("request", {}).get("model"))
-        if price is None:
+        cost = frontier.usage_cost(r.get("usage") or {}, (r.get("request") or {}).get("model"))
+        if cost is None:
             return None
-        total += ((usage.get("input_tokens") or 0) + (usage.get("cache_creation_input_tokens") or 0)
-                  + (usage.get("cache_read_input_tokens") or 0)) * price[0] / 1e6
-        total += (usage.get("output_tokens") or 0) * price[1] / 1e6
+        total += cost
     return total
 
 

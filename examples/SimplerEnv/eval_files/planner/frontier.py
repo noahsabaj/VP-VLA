@@ -25,6 +25,12 @@ import numpy as np
 
 from . import vlm_plan
 
+MODEL = "claude-fable-5-2"  # the study's frontier model, for both arms; there is no fallback model
+EFFORT = "high"
+# USD per million tokens (the model's list prices on 2026-11-13), for the cost that is reported: input, output, a
+# cache write (5 minutes) and a cache read.
+PRICES = {"claude-fable-5-2": {"input": 8.0, "output": 40.0, "cache_write": 10.0, "cache_read": 0.2}}
+USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 FRAMES_FILE = "frames.jsonl"  # in a task's run folder, next to its frames/ folder
 # The agent arm's record of each episode, one line in a task's run folder: "obj_episode_id", "success", "turns" (the
 # model's turns), "end" (one of AGENT_ENDS: how the model's part ended; a refusal or an error ends it as give_up,
@@ -42,6 +48,16 @@ def image_hash(image) -> str:
 
 def text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def usage_cost(usage: dict, model: Optional[str] = MODEL) -> Optional[float]:
+    """The list-price cost in USD of one usage record (USAGE_FIELDS); None when the model has no price here."""
+    price = PRICES.get(model)
+    if price is None:
+        return None
+    return ((usage.get("input_tokens") or 0) * price["input"] + (usage.get("output_tokens") or 0) * price["output"]
+            + (usage.get("cache_creation_input_tokens") or 0) * price["cache_write"]
+            + (usage.get("cache_read_input_tokens") or 0) * price["cache_read"]) / 1e6
 
 
 def _pil():
@@ -64,6 +80,24 @@ def write_png(path: str, rgb: np.ndarray) -> None:
 
     if not cv2.imwrite(path, rgb[..., ::-1]):
         raise OSError(f"could not write {path}")
+
+
+def png_bytes(rgb: np.ndarray) -> bytes:
+    """An RGB picture as the bytes of a PNG file."""
+    rgb = np.ascontiguousarray(rgb, dtype=np.uint8)
+    pil = _pil()
+    if pil is not None:
+        import io
+
+        buffer = io.BytesIO()
+        pil.fromarray(rgb).save(buffer, format="PNG")
+        return buffer.getvalue()
+    import cv2
+
+    ok, data = cv2.imencode(".png", rgb[..., ::-1])
+    if not ok:
+        raise OSError("could not encode the picture")
+    return data.tobytes()
 
 
 def read_png(path: str) -> np.ndarray:

@@ -67,6 +67,10 @@ if __name__ == "__main__":
         from examples.SimplerEnv.eval_files.energy import NullController
 
         model = NullController()
+    elif args.controller == "frames":
+        from examples.SimplerEnv.eval_files.planner.frontier import FrameExporter
+
+        model = FrameExporter(args.logging_dir)
     else:
         from examples.SimplerEnv.eval_files.planner.planner_client import PlannerClient
         from examples.SimplerEnv.eval_files.planner.selector import load_asm
@@ -99,6 +103,7 @@ if __name__ == "__main__":
             takeover_steps=args.takeover_steps,
             vlm_router_host=args.vlm_host,
             vlm_router_port=args.vlm_router_port,
+            vlm_plan_answers=args.vlm_plan_answers,
         )
 
     success_arr = maniskill2_evaluator(model, args)

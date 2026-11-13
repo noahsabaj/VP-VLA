@@ -37,6 +37,10 @@
 #                  subtasks and the object and target that it names in each; planner/vp_marks.py).
 #   VLM_PLAN_MIN_SCORE  with TASK_SOURCE=vlm: a name whose chosen SAM mask scores below this is not found
 #                  (--vlm-plan-min-score; default 0: no check).
+#   VLM_PLAN_ANSWERS  with TASK_SOURCE=vlm: a file of another model's saved answers to the VLM plan's question about
+#                  each episode's first frame (in $RUNS_DIR, or an absolute path; planner/frontier.py and
+#                  frontier_answers.py: the frontier-model study's plan arm). The planner reads them in place of the
+#                  VLM server, which is not started.
 #   MISSING_DEPTH  none (default) | target: in each episode, with chance 1/2, the place target gives no depth, as glass
 #                  or black cloth would (planner/geometry.py MissingDepth; not in SimplerEnv's eggplant task).
 #   ENERGY         1: an energy run (TASKS_AT_ONCE must be 1): each episode's GPU energy, the idle power and the null
@@ -63,6 +67,13 @@ case $TS in rule | vlm | vp) ;; *) echo "TASK_SOURCE must be rule, vlm or vp"; e
 MD=${MISSING_DEPTH:-none}
 case $MD in none | target) ;; *) echo "MISSING_DEPTH must be none or target"; exit 1 ;; esac
 [ "${PLAN_CHECK:-0}" = 1 ] && [ "$TS" != rule ] && { echo "PLAN_CHECK=1 is for the fixed rule, not TASK_SOURCE=$TS"; exit 1; }
+ANSWERS=${VLM_PLAN_ANSWERS:-}
+if [ -n "$ANSWERS" ]; then
+  [ "$TS" = vlm ] || { echo "VLM_PLAN_ANSWERS is for TASK_SOURCE=vlm, not TASK_SOURCE=$TS"; exit 1; }
+  [ "${VLM_ROUTER:-0}" = 1 ] && { echo "VLM_PLAN_ANSWERS starts no VLM server: not with VLM_ROUTER=1"; exit 1; }
+  ANSWERS=$(run_dir "$ANSWERS")
+  [ -f "$ANSWERS" ] || { echo "no answers file $ANSWERS (VLM_PLAN_ANSWERS)"; exit 1; }
+fi
 [ "${VLM_ROUTER:-0}" = 1 ] && [ "${TASK_SET:-simpler}" != simpler ] &&
   { echo "VLM_ROUTER=1 is for SimplerEnv's 4 tasks (its training rates), not TASK_SET=$TASK_SET"; exit 1; }
 RGB_LEVEL=${RGB_NOISE:-none}
@@ -78,7 +89,9 @@ trap stop_servers EXIT
 start_sam_server $PORT "$OUT/sam3.log" $SAM3_ARGS || exit 1
 wait_port $PORT 600 || { log "$NAME: SAM server never opened port $PORT"; exit 1; }
 CHECK=()
-if [ "${PLAN_CHECK:-0}" = 1 ] || [ "$TS" != rule ] || [ "${VLM_ROUTER:-0}" = 1 ]; then
+if [ -n "$ANSWERS" ]; then
+  CHECK=(--task-source vlm --vlm-plan-answers "$ANSWERS" --vlm-plan-min-score ${VLM_PLAN_MIN_SCORE:-0})
+elif [ "${PLAN_CHECK:-0}" = 1 ] || [ "$TS" != rule ] || [ "${VLM_ROUTER:-0}" = 1 ]; then
   VARGS=${PLAN_CHECK_VLM_ARGS-"--attn sdpa --seed-per-query --compile"}
   start_server $((PORT + 50)) "$OUT/vlm.log" "$SAM3_PYTHON" examples/SimplerEnv/eval_files/vlm_server_subtask_simpler.py \
     --port $((PORT + 50)) $VARGS || exit 1
@@ -90,7 +103,7 @@ if [ "${PLAN_CHECK:-0}" = 1 ] || [ "$TS" != rule ] || [ "${VLM_ROUTER:-0}" = 1 ]
 fi
 energy_baseline $GPU "$OUT" "$LAYOUTS" "${RANGES[@]}" || exit 1
 log "START $NAME (ENERGY=${ENERGY:-0}, $LEVEL depth, $RGB_LEVEL RGB, ${TASK_SET:-simpler} tasks, $LAYOUTS layouts, ${INSTRUCTIONS:-default} instructions, SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS], PLANNER_SEED=[$PS]," \
-  "TASKS_AT_ONCE=${TASKS_AT_ONCE:-4}, PLAN_CHECK=${PLAN_CHECK:-0} PLAN_CHECK_MARKS=${PLAN_CHECK_MARKS:-tint} TASK_SOURCE=$TS VLM_PLAN_MIN_SCORE=${VLM_PLAN_MIN_SCORE:-0} MISSING_DEPTH=$MD VLM_ROUTER=${VLM_ROUTER:-0} [$VARGS]) on GPU $GPU (commit $(git rev-parse --short HEAD)): ${RANGES[*]}"
+  "TASKS_AT_ONCE=${TASKS_AT_ONCE:-4}, PLAN_CHECK=${PLAN_CHECK:-0} PLAN_CHECK_MARKS=${PLAN_CHECK_MARKS:-tint} TASK_SOURCE=$TS VLM_PLAN_MIN_SCORE=${VLM_PLAN_MIN_SCORE:-0} VLM_PLAN_ANSWERS=[$ANSWERS] MISSING_DEPTH=$MD VLM_ROUTER=${VLM_ROUTER:-0} [$VARGS]) on GPU $GPU (commit $(git rev-parse --short HEAD)): ${RANGES[*]}"
 nvidia-smi dmon -i $GPU -s pum -o DT -d 5 > "$OUT/dmon.txt" 2>&1 &
 DMON=$!
 

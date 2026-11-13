@@ -74,6 +74,7 @@ vlaplt, vlapltd, vlas}_*`, VLA-0's new ones `vla31_iid16` and `vla_harder_iid17`
 | `vla_eval.sh GPU PORT_BASE NAME LAYOUTS K [TASK:START:END...]` | one VLA-only eval (one server set, K sim clients) |
 | `selector_eval.sh GPU PORT_BASE NAME LAYOUTS MODELS K [LEVEL:TASK:START:END...]` | the closed-loop ASM eval (`CONTROLLER=planner_then_vla`: the role split; `vla_then_planner`: the planner's corrections) |
 | `sim_task.sh GPU TASK START END OUT [ARGS...]` | one sim run (smoke tests; the servers must already run) |
+| `frames_eval.sh GPU NAME LAYOUTS` | the first frame of every episode of a layout set (the frontier-model study's plan arm; no model server) |
 
 Each script's header lists its options. The VLA runners use the fast settings by default (`FAST=1`, see
 `fast_defaults` in `common.sh`; `FAST=0`: the paper's settings) and an MPS daemon of their own (`MPS=1`). A
@@ -87,7 +88,9 @@ layouts, `LAYOUTS=paper`, or a random one per episode, `LAYOUTS=iidN`), `TASK_SE
 episode only: `LAYOUTS=iidN`). `PLAN_CHECK=1` adds the VLM plan check (`plan_check.py`): in `planner_eval.sh` it
 only logs the feature `vlm_plan_yes`; in `selector_eval.sh` a "no" gives the episode to the VLA.
 `TASK_SOURCE=vlm` replaces the planner's fixed rule with the VLM plan (`vlm_plan.py`; see "VLM plan" below), and
-`TASK_SOURCE=vp` with VP-VLA's own VLM marks (see "VP-VLA's VLM marks" below). `MISSING_DEPTH=target` takes all depth away from the place target in half of the episodes (see "Missing-depth
+`TASK_SOURCE=vp` with VP-VLA's own VLM marks (see "VP-VLA's VLM marks" below). With `TASK_SOURCE=vlm`,
+`VLM_PLAN_ANSWERS=FILE` reads another model's saved answers to the VLM plan's question in place of the VLM server
+(see "Frontier-model study" below). `MISSING_DEPTH=target` takes all depth away from the place target in half of the episodes (see "Missing-depth
 study"). In `selector_eval.sh`, `CONTROLLER=planner_then_vla` runs the role split instead of the ASM: the planner
 moves the hand to above the object, and then the VLA does the rest of the episode (MODELS must be `-`).
 `CONTROLLER=vla_then_planner` records the planner's corrections of the VLA (see "Corrections" below).
@@ -536,6 +539,61 @@ CKPT=$RUN_ROOT/vlapl/checkpoints/steps_${STEPS}_pytorch_model.pt IID_EPISODES=48
     bash $E/vla_eval.sh 0 10400 vlapl_choice_iid19 iid19 4
 ```
 
+The frontier-model study's plan arm (see "Frontier-model study" below). The frontier model's answers are made on a
+machine of ours that holds the API key (`ANTHROPIC_API_KEY` in its environment, with the Anthropic SDK), never on
+the GPU server: `FRAMES` is that machine's copy of the frames folders, and its answers files go to
+`$RUNS_DIR/fanswers` on the server.
+
+```bash
+# Qwen3-VL's plan on the test sets
+export TASK_SOURCE=vlm
+bash $E/planner_eval.sh 0 10320 vlmplan_iid16_none none iid16
+for set in synonyms attributes order reasoning; do
+  INSTRUCTIONS=$set bash $E/planner_eval.sh 0 10320 vlmplan_words_${set}_paper_none none paper
+done
+IID_EPISODES=48 TASK_SET=harder bash $E/planner_eval.sh 0 10320 vlmplan_harder_iid17_none none iid17
+IID_EPISODES=48 TASK_SET=novel bash $E/planner_eval.sh 0 10320 vlmplan_novel_iid18_none none iid18
+unset TASK_SOURCE
+# the first frames: the smoke test's (not part of the results: the first 8 episodes of each of the 17 tasks on
+# iid98), then the test sets'
+IID_EPISODES=8 bash $E/frames_eval.sh 0 frames_smoke_iid98 iid98
+IID_EPISODES=8 TASK_SET=harder bash $E/frames_eval.sh 0 frames_smoke_harder_iid98 iid98
+IID_EPISODES=8 TASK_SET=novel bash $E/frames_eval.sh 0 frames_smoke_novel_iid98 iid98
+bash $E/frames_eval.sh 0 frames_iid16 iid16
+for set in synonyms attributes order reasoning; do
+  INSTRUCTIONS=$set bash $E/frames_eval.sh 0 frames_words_${set}_paper paper
+done
+IID_EPISODES=48 TASK_SET=harder bash $E/frames_eval.sh 0 frames_harder_iid17 iid17
+IID_EPISODES=48 TASK_SET=novel bash $E/frames_eval.sh 0 frames_novel_iid18 iid18
+# on the machine with the key: the frontier model's answers, one file for each frames folder (--dry-run counts
+# the episodes without a request; a run goes on where the last one stopped and asks no episode twice)
+for set in smoke_iid98 smoke_harder_iid98 smoke_novel_iid98 iid16 words_synonyms_paper words_attributes_paper \
+    words_order_paper words_reasoning_paper harder_iid17 novel_iid18; do
+  python -m examples.SimplerEnv.eval_files.planner.experiments.frontier_answers $FRAMES/frames_$set \
+      fanswers/$set.jsonl
+done
+# the planner reading the saved answers: the smoke test, then the test sets (T1 also with harsh depth: the same
+# answers, because the picture is the same)
+export TASK_SOURCE=vlm
+VLM_PLAN_ANSWERS=fanswers/smoke_iid98.jsonl IID_EPISODES=8 \
+    bash $E/planner_eval.sh 0 10320 smoke_fplan_iid98_none none iid98
+VLM_PLAN_ANSWERS=fanswers/smoke_harder_iid98.jsonl IID_EPISODES=8 TASK_SET=harder \
+    bash $E/planner_eval.sh 0 10320 smoke_fplan_harder_iid98_none none iid98
+VLM_PLAN_ANSWERS=fanswers/smoke_novel_iid98.jsonl IID_EPISODES=8 TASK_SET=novel \
+    bash $E/planner_eval.sh 0 10320 smoke_fplan_novel_iid98_none none iid98
+VLM_PLAN_ANSWERS=fanswers/iid16.jsonl bash $E/planner_eval.sh 0 10320 fplan_iid16_none none iid16
+VLM_PLAN_ANSWERS=fanswers/iid16.jsonl bash $E/planner_eval.sh 0 10320 fplan_iid16_harsh harsh iid16
+for set in synonyms attributes order reasoning; do
+  VLM_PLAN_ANSWERS=fanswers/words_${set}_paper.jsonl INSTRUCTIONS=$set \
+      bash $E/planner_eval.sh 0 10320 fplan_words_${set}_paper_none none paper
+done
+VLM_PLAN_ANSWERS=fanswers/harder_iid17.jsonl IID_EPISODES=48 TASK_SET=harder \
+    bash $E/planner_eval.sh 0 10320 fplan_harder_iid17_none none iid17
+VLM_PLAN_ANSWERS=fanswers/novel_iid18.jsonl IID_EPISODES=48 TASK_SET=novel \
+    bash $E/planner_eval.sh 0 10320 fplan_novel_iid18_none none iid18
+unset TASK_SOURCE
+```
+
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
 `TASK:0:8 TASK:8:16 TASK:16:24` for each task and `heldout_vla_g1` the episodes 24 to 47.
 
@@ -567,7 +625,8 @@ vla31_iid15` (its closed-loop eval) and `score_costs vlmplan_iid15_harsh vla31_i
 handoff_vlmplan_iid15` (its costs). The difficulty sweep's: `score_sweep`. The missing-depth study's:
 `score_missing_depth`. The harder-task system study's: `score_harder_system`. The energy study's: `score_energy`.
 The marriage study's: `score_marriage` (all its tables and tests). The VLM-router study's: `score_vlm_router`. The
-instruction study's: `score_instruction`. Any eval's costs (see "Costs" above):
+instruction study's: `score_instruction`. The frontier-model study's: `score_frontier` (all its tables and tests,
+for both arms). Any eval's costs (see "Costs" above):
 `score_costs RUN...`.
 
 The `dfix_*` and `seeded_*` runs and `heldout_planner_none` (the evals before the planner seed and before the
@@ -1905,6 +1964,33 @@ controller and `score_frontier`. `score_frontier` is checked on made-up data bef
 arm: up to 30 requests in each of 1,008 episodes, 500 to 2,500 USD, under the spending limit above. GPU 0: 8
 planner-only evals (the frontier plan's and Qwen3-VL's), about 15 to 80 minutes each, and the agent's evals, which
 hold the simulator while the model answers; their time is measured on `iid98`.
+
+**Note of 2026-11-13: how the plan arm and the scorer are built.** Written before any call to the frontier model.
+Qwen3-VL's plan evals (`vlmplan_*`) ran on that day; no result of theirs was read. The plan above is not changed;
+this note says how the code keeps it, where the plan leaves a choice.
+
+- *Three parts* (`planner/frontier.py`). `frames_eval.sh` saves each episode's first frame as a PNG file, with the
+  episode, its instruction and the picture's hash. `frontier_answers.py` asks the model on the machine with the key
+  and saves each answer as one line of an answers file. `planner_eval.sh` with `VLM_PLAN_ANSWERS` reads the answers
+  in place of the VLM server. An answer is tied to its episode, to the question's text and to the picture: the eval
+  stops when one of them is not the saved one.
+- *One request per episode, once.* The request has the picture and `vlm_plan.prompt` only, with at most 32,000
+  output tokens (the model's thinking and its answer together). An episode with a line in the answers file is never
+  asked again. Before each request the episode is written to a second file, so an episode whose run was killed
+  after the request went out gets an error line at the next run, not a second request.
+- *Refusals and errors.* The client retries a request 6 times (connection errors, timeouts, and the answers 408,
+  409, 429 and 5xx). A refusal, or an error that remains, gives a line with an empty answer, which the parser reads
+  as "not feasible". After an error line the run stops, so that an outage costs one episode and not the rest of
+  the set. Before the first episode of a run, one small request without a picture checks the key, the model's name
+  and the settings; when it fails, no episode is asked.
+- *A loss.* The plan says that a significant difference in the other direction is reported as a loss. For F1, with
+  its two comparisons, `score_frontier` reports a win when the frontier plan is significantly higher than each of
+  the two, and a loss when it is significantly lower than each of the two; each comparison's own line gives its
+  direction.
+- *The sets that the agent ran.* The agent arm's tests take the test sets that have all of their agent evals; of
+  these, as in every test, only the units that every eval of the test has in full.
+- *Wrong joins.* `score_frontier` stops when a record under the frontier plan's names has no saved answer, when a
+  record under Qwen3-VL's names has one, or when a record's depth level is not the eval's.
 
 ## Instruction study
 

@@ -149,7 +149,7 @@ def test_the_harness_is_the_plans():
     request = conversation.request()
     assert set(request) == {"model", "max_tokens", "output_config", "system", "tools", "tool_choice",
                             "cache_control", "messages"}  # fmt: skip
-    assert request["model"] == "claude-fable-5-2" and request["output_config"] == {"effort": "high"}
+    assert request["model"] == "claude-mythos-5-2" and request["output_config"] == {"effort": "high"}
     assert request["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}  # no forced tool
     assert request["tools"] is agent.TOOLS and "640 x 480 pixels" in request["system"]
     assert "at most 30 turns" in request["system"] and "SAM" not in request["system"]
@@ -378,7 +378,7 @@ def test_the_relay_passes_the_request_and_the_answer_unchanged(relay, tmp_path):
 def test_the_relay_refuses_what_is_not_the_studys(relay):
     made, address, requests = relay
     ask = agent.HttpRelay(address, tries=1)
-    with pytest.raises(agent.ModelError, match="400: the model must be claude-fable-5-2, not 'claude-opus-5-5'"):
+    with pytest.raises(agent.ModelError, match="400: the model must be claude-mythos-5-2, not 'claude-opus-5-5'"):
         ask(_request(model="claude-opus-5-5"))
     with pytest.raises(agent.ModelError, match="400: the effort must be high"):
         ask(_request(output_config={"effort": "low"}))

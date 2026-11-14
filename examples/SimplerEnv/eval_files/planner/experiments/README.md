@@ -666,6 +666,9 @@ Vulkan lists one NVIDIA device, the renderer and PyTorch use the eval's GPU, and
 that GPU only. The first frames of 32 episodes (the first 8 of each of SimplerEnv's tasks on `iid98`, with
 `frames_eval.sh`) are the same files, by their hashes, as without the launcher. While those simulators ran, the
 other GPU's memory stayed at its value at rest in every sample (82), and `pmon` showed no process of the run on it.
+Then the runners themselves with the setting (2026-11-14): `frames_eval.sh` wrote the same 32 files again, and a
+short `vla_eval.sh` (4 episodes, 2 simulators, and the policy, SAM and VLM servers on the MPS daemon) ran to its end;
+`pmon` showed no process of either run on the other GPU in 335 samples, one a second.
 
 **Evals before this date.** Every simulator eval of this folder before 2026-11-13 ran without the setting, so each
 of its simulator processes held that context on the machine's other GPU. No computation ran there, and the pictures

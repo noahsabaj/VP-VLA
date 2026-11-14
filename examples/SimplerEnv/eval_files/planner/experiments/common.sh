@@ -25,6 +25,18 @@ CKPT=${CKPT:-$REPO/playground/Checkpoints/VP-VLA-OXE/checkpoints/steps_70000_pyt
 cd "$REPO" || exit 1
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 
+# Off-limits GPUs (the README's "Off-limits GPUs"). OFF_LIMITS_GPUS: nvidia-smi's indices of the GPUs that no process
+# of a runner may open, with commas (not set: no restriction). CUDA_VISIBLE_DEVICES does not keep a simulator off a
+# GPU: its renderer is a Vulkan process, and the NVIDIA Vulkan driver opens another GPU when it starts. With the
+# setting, every simulator and server starts through off_limits_gpus.py (GPU_GUARD), with which the kernel forbids
+# it to open those GPUs. The runner stops here when the restriction does not work on this machine.
+GPU_GUARD=()
+if [ -n "${OFF_LIMITS_GPUS:-}" ]; then
+  GPU_GUARD=("$SIMPLER_PYTHON" "$EXPERIMENTS/off_limits_gpus.py")
+  "${GPU_GUARD[@]}" true ||
+    { echo "OFF_LIMITS_GPUS=$OFF_LIMITS_GPUS: the restriction failed; nothing was started" >&2; exit 1; }
+fi
+
 # The tasks of an eval (TASK_SET): simpler = SimplerEnv's 4 WidowX tasks (the default); harder = the 5 harder scenes
 # (eval_files/harder_scenes.py), with their fixed layouts (LAYOUTS=paper) or a random one per episode (LAYOUTS=iidN);
 # novel = the 8 new test scenes (eval_files/novel_scenes.py), with a random layout per episode only (LAYOUTS=iidN);
@@ -151,7 +163,8 @@ sim() {
   esac
   [ -n "$out" ] || return 1
   rm -rf "$out" && mkdir -p "$out" || return 1
-  CUDA_VISIBLE_DEVICES=$gpu "$SIMPLER_PYTHON" examples/SimplerEnv/eval_files/start_simpler_env_visual_prompt.py \
+  CUDA_VISIBLE_DEVICES=$gpu "${GPU_GUARD[@]}" "$SIMPLER_PYTHON" \
+    examples/SimplerEnv/eval_files/start_simpler_env_visual_prompt.py \
     --ckpt-path "$CKPT" --robot $robot --policy-setup widowx_bridge --control-freq 5 --sim-freq 500 \
     --max-episode-steps $steps --env-name "$task" --scene-name $scene \
     --rgb-overlay-path "$SIMPLERENV_PATH/ManiSkill2_real2sim/data/real_inpainting/$overlay" \
@@ -198,14 +211,14 @@ MPS_PIPE=""
 # start_mps GPU LOGDIR: an NVIDIA MPS daemon of this run only (its own pipe folder, so no other process or user
 # connects to it), so that the servers' kernels can run at the same time. The sims do not use it. Tested on
 # 2026-10-14: the same videos, hidden states and records as without it; VLA chunks 1.16x faster, the closed-loop
-# eval 1.22x.
+# eval 1.22x. With OFF_LIMITS_GPUS the daemon also starts through GPU_GUARD, and so does the server that it starts.
 start_mps() {
   local uuid
   MPS_PIPE=$(mktemp -d /tmp/vpvla_mps_XXXXXX) || return 1
   mkdir -p "$2"
   MPS_ENV=(CUDA_MPS_PIPE_DIRECTORY="$MPS_PIPE" CUDA_MPS_LOG_DIRECTORY="$2")
   uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader -i "$1")
-  env CUDA_VISIBLE_DEVICES="$uuid" "${MPS_ENV[@]}" nvidia-cuda-mps-control -d || return 1
+  env CUDA_VISIBLE_DEVICES="$uuid" "${MPS_ENV[@]}" "${GPU_GUARD[@]}" nvidia-cuda-mps-control -d || return 1
   SERVER_ENV=(CUDA_VISIBLE_DEVICES=0 "${MPS_ENV[@]}")  # the daemon shows only this GPU, as device 0
 }
 
@@ -215,7 +228,7 @@ start_server() {
   local port=$1 logfile=$2
   shift 2
   if port_in_use "$port"; then log "port $port is already in use"; return 1; fi
-  env "${SERVER_ENV[@]}" "$@" > "$logfile" 2>&1 &
+  env "${SERVER_ENV[@]}" "${GPU_GUARD[@]}" "$@" > "$logfile" 2>&1 &
   SERVER_PIDS+=($!)
 }
 

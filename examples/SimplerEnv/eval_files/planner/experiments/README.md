@@ -13,6 +13,8 @@ Each eval writes one run folder in `$RUNS_DIR`; each scorer reads run folders an
   `examples/eval_env.sh`).
 - `CKPT`: the VP-VLA SimplerEnv checkpoint (default
   `playground/Checkpoints/VP-VLA-OXE/checkpoints/steps_70000_pytorch_model.pt`).
+- `OFF_LIMITS_GPUS` (optional, Linux): nvidia-smi's indices of the GPUs that no process of a runner may open, with
+  commas (`1`, `1,3`). Set it on a machine where a GPU is not yours to use; see "Off-limits GPUs".
 
 The runners start from any folder. Run the scorers from the repository root, with numpy:
 
@@ -622,6 +624,58 @@ unset AGENT_RELAY
 
 The two-GPU VLA evals give each GPU half of the episodes as explicit chunks, e.g. `heldout_vla_g0` has
 `TASK:0:8 TASK:8:16 TASK:16:24` for each task and `heldout_vla_g1` the episodes 24 to 47.
+
+## Off-limits GPUs
+
+Added on 2026-11-13.
+
+**The problem.** A runner's `GPU` argument becomes `CUDA_VISIBLE_DEVICES`, which keeps CUDA on that GPU. It does not
+keep the simulator's renderer there. The renderer is a Vulkan process, and the NVIDIA Vulkan driver opens a GPU when
+the renderer starts (in `vkCreateInstance`), before any device is chosen: on our machine with two GPUs always the GPU
+with the boot display, whichever GPU the eval runs on. Each simulator process then holds a graphics context of about
+13 MiB there, with no load; the rendering and all computation are on the eval's GPU. The list of compute processes
+(`nvidia-smi --query-compute-apps`) does not show such a context. `nvidia-smi pmon -c 1` does (type G), and so does
+the GPU's used memory. SAPIEN's `device` option and the settings of Vulkan's device-select layer change which
+device renders, not this context.
+
+**The setting.** `OFF_LIMITS_GPUS=1` (nvidia-smi's indices, with commas). The runners of the table above then start
+every simulator, every model server and the MPS daemon through `off_limits_gpus.py`, and they stop before anything
+starts when the restriction does not work on the machine. Without the setting nothing changes. Any other command
+can start through the launcher by hand, e.g. a script that is not one of these runners:
+
+```bash
+OFF_LIMITS_GPUS=1 python examples/SimplerEnv/eval_files/planner/experiments/off_limits_gpus.py COMMAND ARGUMENT...
+OFF_LIMITS_GPUS=1 python examples/SimplerEnv/eval_files/planner/experiments/off_limits_gpus.py --check
+```
+
+**How.** The launcher asks the Linux kernel (Landlock, Linux 5.13 or later, no special rights) to forbid the command
+and every process that it starts to open those GPUs' device nodes, and then runs the command. The driver does not
+list a GPU whose node it cannot open, so Vulkan, CUDA and `nvidia-smi` in the command see the other GPUs only. It
+takes access away from our own processes and from nothing else. Three details:
+
+- A GPU's node is `/dev/nvidiaN` with N its device minor, which is not nvidia-smi's index (on our machine the two
+  are swapped), so the launcher looks the nodes up at each start (`/proc/driver/nvidia/gpus/ADDRESS/information`).
+- Landlock allows by list, so the launcher allows opening files in every entry of `/` except `/dev` and in every
+  entry of `/dev` except those nodes. Nothing else is restricted. A file that is made later directly in `/` or in
+  `/dev` cannot be opened by the command.
+- The command starts only after a proof: each forbidden node was tried and could not be opened, and each other
+  GPU's node could. Without Landlock, or with a GPU index that the machine does not have, it does not start.
+
+**What was checked** (2026-11-13; two RTX A6000, driver 595, Linux 6.8 with Landlock version 4). Under the launcher,
+Vulkan lists one NVIDIA device, the renderer and PyTorch use the eval's GPU, and `nvidia-smi` in the command lists
+that GPU only. The first frames of 32 episodes (the first 8 of each of SimplerEnv's tasks on `iid98`, with
+`frames_eval.sh`) are the same files, by their hashes, as without the launcher. While those simulators ran, the
+other GPU's memory stayed at its value at rest in every sample (82), and `pmon` showed no process of the run on it.
+
+**Evals before this date.** Every simulator eval of this folder before 2026-11-13 ran without the setting, so each
+of its simulator processes held that context on the machine's other GPU. No computation ran there, and the pictures
+do not depend on it (the 32 first frames above).
+
+**Limits.** Linux with Landlock only: with the setting, a runner stops on any other machine. Only the runners of the
+table above read the setting; `auto_eval_scripts/run_eval.sh`, the Robocasa evals and the training scripts do not,
+and need the launcher by hand. The tests (`tests/test_off_limits_gpus.py`) check the node lookup, the allow list,
+the kernel's restriction on made-up files and the runners' calls; a GPU is needed for the checks of the paragraph
+above.
 
 ## Result files (CPU)
 

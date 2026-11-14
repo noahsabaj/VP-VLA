@@ -31,6 +31,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 GPU=$1; PB=$2; NAME=$3; LAYOUTS=$4; MODELS=$5; K=$6
 shift 6
 CTRL=${CONTROLLER:-selector}
+if [ "${POLICY:-vpvla}" = mimic ] && { [ "${PLAN_CHECK:-0}" = 1 ] || [ "${TASK_SOURCE:-rule}" != rule ]; }; then
+  echo "POLICY=mimic starts no VLM server: PLAN_CHECK and TASK_SOURCE=vlm or vp do not go with it" >&2; exit 1
+fi
 case $CTRL in
   selector) MODELS=$(run_dir "$MODELS"); case $MODELS in *"{}"*) ;; *) MODELS=$MODELS/sel_v3_{}.json ;; esac ;;
   planner_then_vla) [ "$MODELS" = - ] || { echo "CONTROLLER=planner_then_vla uses no ASM: MODELS must be -" >&2; exit 1; } ;;
@@ -73,7 +76,7 @@ if [ "${MPS:-1}" = 1 ]; then start_mps $GPU "$OUT/mps_log" || { log "MPS daemon 
 T0=$SECONDS
 start_vla_servers $PB "$OUT" &&
   start_sam_server $((PB + 3)) "$OUT/planner_sam3.log" $PLANNER_SAM3_ARGS &&
-  wait_port $PB && wait_port $((PB + 1)) && wait_port $((PB + 2)) && wait_port $((PB + 3)) ||
+  wait_vla_servers $PB && wait_port $((PB + 3)) ||
   { log "servers did not start"; exit 1; }
 energy_baseline $GPU "$OUT" "$LAYOUTS" $(printf "%s\n" "${JOBS[@]}" | cut -d: -f2- | sort -u) || exit 1
 log "START K=$K MPS=${MPS:-1} ENERGY=${ENERGY:-0} CONTROLLER=$CTRL TAKEOVER_STEPS=[${TAKEOVER_STEPS:-}] LAYOUTS=$LAYOUTS MODELS=$MODELS RGB_NOISE=${RGB_NOISE:-none}" \

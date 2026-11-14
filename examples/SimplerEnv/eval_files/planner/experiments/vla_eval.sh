@@ -23,6 +23,9 @@
 #     the instruction (--action-instruction; default: task, the instruction).
 #   POLICY=small: the marriage study's small policies (CKPT from train_files/small_policy.py) instead of VP-VLA's
 #     policy, with VP-VLA's visual prompts and client (start_vla_servers in common.sh).
+#   POLICY=mimic: mimic-video instead of VP-VLA (common.sh; the README's "mimic-video"): its own server at PORT_BASE
+#     and its own client, no SAM, no VLM, and no MPS daemon unless MPS=1. HIDDEN, PERTURB and ACTION_INSTRUCTION
+#     are VP-VLA's and do not go with it.
 #   TASK_SET=simpler (default: SimplerEnv's 4 tasks) | harder (the harder scenes; LAYOUTS=paper or iidN) | novel (the
 #     new test scenes; LAYOUTS=iidN) | choice (the choice scenes; LAYOUTS=iidN).
 #   ENERGY=1: an energy run (K must be 1): each episode's GPU energy, the idle power and the null episodes (energy_setup
@@ -46,13 +49,16 @@ if [ "${PERTURB:-0}" != 0 ]; then
   SIM_ARGS="$SIM_ARGS --vla-perturb $PERTURB"
 fi
 [ -n "${ACTION_INSTRUCTION:-}" ] && SIM_ARGS="$SIM_ARGS --action-instruction $ACTION_INSTRUCTION"
+if [ "${POLICY:-vpvla}" = mimic ] && [ "${HIDDEN:-0}${PERTURB:-0}${ACTION_INSTRUCTION:-}" != 00 ]; then
+  echo "POLICY=mimic does not take HIDDEN, PERTURB or ACTION_INSTRUCTION" >&2; exit 1
+fi
 energy_setup "$K" || exit 1
 
 SERVER_ENV=(CUDA_VISIBLE_DEVICES=$GPU)
 trap stop_servers EXIT
 if [ "${MPS:-1}" = 1 ]; then start_mps $GPU "$OUT/mps_log" || { log "MPS daemon did not start"; exit 1; }; fi
 T0=$SECONDS
-start_vla_servers $PB "$OUT" && wait_port $PB && wait_port $((PB + 1)) && wait_port $((PB + 2)) ||
+start_vla_servers $PB "$OUT" && wait_vla_servers $PB ||
   { log "servers did not start"; exit 1; }
 energy_baseline $GPU "$OUT" "$LAYOUTS" "${CHUNKS[@]}" || exit 1
 log "START K=$K MPS=${MPS:-1} ENERGY=${ENERGY:-0} POLICY=${POLICY:-vpvla} TASK_SET=${TASK_SET:-simpler} LAYOUTS=$LAYOUTS RGB_NOISE=${RGB_NOISE:-none} INSTRUCTIONS=${INSTRUCTIONS:-default} SAM_VERSION=$SAM_VERSION SAM3_ARGS=[$SAM3_ARGS] VLM_ARGS=[$VLM_ARGS] POLICY_ARGS=[$POLICY_ARGS]" \

@@ -385,8 +385,9 @@ class PlannerClient:
         if task_description is not None and task_description != self.task_description:
             self.reset(task_description)
         self.step_count += 1
+        self._sim = {"obs": obs, "env": env, "info": info}
         if self.phase == "vla":
-            return self.vla.step(image, task_description)
+            return self._vla_step(image, task_description)
         if self.phase == "vla_first" and (out := self._vla_first(image, task_description, obs, info)) is not None:
             return out
 
@@ -429,10 +430,15 @@ class PlannerClient:
                 return self._action(target, target, ee_pose)
         return self._action(target, self.queue.pop(0), ee_pose)
 
+    def _vla_step(self, image, task_description):
+        """The VLA's step, with what the evaluator gave this step (the observation, the simulator and its info): a
+        policy that reads the robot's state needs them (mimic_video_client.py); VP-VLA's client ignores them."""
+        return self.vla.step(image, task_description, **self._sim)
+
     def _end_action(self, image, task_description, target, ee_pose):
         """Once the planner's part is over: the VLA's action (phase "vla") or a stop (phase "done"); else None."""
         if self.phase == "vla":
-            return self.vla.step(image, task_description)
+            return self._vla_step(image, task_description)
         if self.phase == "done":
             return self._action(target, target, ee_pose, terminate=True)
         return None
@@ -445,12 +451,12 @@ class PlannerClient:
         if self.home_orientation is None:  # the hand's orientation at the start, as in the other modes
             self.home_orientation = np.asarray(obs["agent"]["controller"]["arm"]["target_pose"], np.float64)[3:].copy()
         if self.step_count <= self.stats["takeover_step"]:
-            raw_action, action = self.vla.step(image, task_description)
+            raw_action, action = self._vla_step(image, task_description)
             self.vla_gripper = float(np.asarray(action["gripper"]).reshape(-1)[0])
             return raw_action, action
         if info is not None and info.get("success"):
             self.stats["takeover"], self.phase = "skipped", "vla"
-            return self.vla.step(image, task_description)
+            return self._vla_step(image, task_description)
         self.phase = "start"
         return None
 

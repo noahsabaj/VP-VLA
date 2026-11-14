@@ -32,14 +32,15 @@ class FakeVLA:
     """The VLA: a small move at each step, with the gripper commands of `grippers` (+1 open, -1 closed) in turn."""
 
     def __init__(self, grippers=(1.0,)):
-        self.grippers, self.steps = grippers, 0
+        self.grippers, self.steps, self.sim = grippers, 0, None
 
     def reset(self, task_description):
         self.steps = 0
 
-    def step(self, image, task_description=None):
+    def step(self, image, task_description=None, **sim):
         gripper = self.grippers[min(self.steps, len(self.grippers) - 1)]
         self.steps += 1
+        self.sim = sim  # what the evaluator gave this step: the observation, the simulator and its info
         move = {"world_vector": np.array([0.01, 0.0, 0.0]), "rot_axangle": np.zeros(3)}
         return {"from": "vla"}, {**move, "gripper": np.array([gripper]), "terminate_episode": np.zeros(1)}
 
@@ -119,6 +120,8 @@ def test_the_vla_drives_until_the_takeover_step(pc, monkeypatch):
     turned = np.array([0.0, 0.0, 0.0, 1.0])  # the VLA turned the hand about the vertical
     out = _drive(c, 1, _obs()) + _drive(c, 2, _obs(quat=turned), info={"success": False})
     assert [raw for raw, _ in out] == [{"from": "vla"}] * 3 and c.phase == "vla_first" and not approaches
+    # the VLA's step gets the simulator too (a policy that reads the robot's state needs it)
+    assert vla.sim["env"] is ENV and vla.sim["info"] == {"success": False} and vla.sim["obs"]["agent"] is not None
     raw, _ = c.step(IMAGE, TASK, obs=_obs(quat=turned), env=ENV, info={"success": False})
     assert vla.steps == 3 and "from" not in raw  # the planner's step
     # No object in the hand: the whole pick-and-place, from an open hand and with the first look.

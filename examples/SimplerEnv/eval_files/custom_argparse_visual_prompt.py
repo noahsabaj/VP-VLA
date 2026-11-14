@@ -146,6 +146,12 @@ def get_args():
                              "that the VLM's decisions have reached (subtask; needs --use-sam3, --use-vlm and "
                              "--vlm-decompose-subtasks; the instruction when the VLM gives no subtasks)")
 
+    parser.add_argument("--policy-client", type=str, default="vpvla", choices=["vpvla", "mimic_video"],
+                        help="The learned policy of the controllers that have one: VP-VLA and the policies that "
+                             "speak its server's protocol (vpvla: with its visual prompts and VLM), or mimic-video "
+                             "(mimic_video: its own server at --port, mimic_video_server.py; it reads the picture "
+                             "and the robot's state, and takes no visual prompts and no VLM)")
+
     # ===== Motion planner =====
     parser.add_argument("--controller", type=str, default="vla",
                         choices=["vla", "planner", "planner_then_vla", "vla_then_planner", "selector", "null",

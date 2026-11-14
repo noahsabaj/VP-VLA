@@ -21,6 +21,16 @@ case $SAM_VERSION in
   sam3.1) vpvla_require SAM31_PYTHON; SAM_PYTHON=$SAM31_PYTHON ;;
   *) echo "SAM_VERSION must be sam3 or sam3.1, not '$SAM_VERSION'" >&2; exit 1 ;;
 esac
+# POLICY=mimic: mimic-video is the learned policy instead of VP-VLA (the README's "mimic-video"): one server of its
+# own in its own environment, no visual prompts, no VLM and no MPS daemon. MIMIC_PYTHON: the Python of mimic-video's
+# environment. MIMIC_CHECKPOINTS: its checkpoints' folder. POLICY_ARGS: more arguments for mimic_video_server.py.
+# CKPT is then only the name of the videos' folder.
+if [ "${POLICY:-vpvla}" = mimic ]; then
+  vpvla_require MIMIC_PYTHON
+  vpvla_require_dir MIMIC_CHECKPOINTS
+  CKPT=${CKPT:-mimic-video}
+  MPS=${MPS:-0}
+fi
 CKPT=${CKPT:-$REPO/playground/Checkpoints/VP-VLA-OXE/checkpoints/steps_70000_pytorch_model.pt}
 cd "$REPO" || exit 1
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
@@ -55,6 +65,7 @@ esac
 # The VLA's visual prompts and VLM, as in the paper's SimplerEnv eval.
 VP_ARGS="--use-sam3 --target-object-prompt-mode crosshair --target-location-prompt-mode box --use-vlm
          --vlm-query-on-gripper-change --vlm-decompose-subtasks"
+[ "${POLICY:-vpvla}" = mimic ] && VP_ARGS="--policy-client mimic_video"  # mimic-video's client instead
 
 # log MESSAGE: a line with the time, on stdout and in $LOG.
 log() { echo "[$(date "+%F %T")] $*" | tee -a "$LOG"; }
@@ -137,6 +148,10 @@ all_chunks() {
 # The VLM is seeded per query, so its answers do not depend on the queries before (the closed-loop eval needs it).
 # SAM 3.1 always runs under bf16 autocast and has no --fp16 or --compile, so its fast setting is --tf32 only.
 fast_defaults() {
+  if [ "${POLICY:-vpvla}" = mimic ]; then  # none of the settings of VP-VLA's servers apply
+    : "${POLICY_ARGS=}" "${SIM_ARGS=--no-action-plots}"
+    return
+  fi
   if [ "${FAST:-1}" = 1 ]; then
     if [ "$SAM_VERSION" = sam3.1 ]; then : "${SAM3_ARGS=--tf32}"; else : "${SAM3_ARGS=--fp16 --tf32 --compile}"; fi
     : "${VLM_ARGS=--attn sdpa --seed-per-query --compile}" \
@@ -149,6 +164,7 @@ fast_defaults() {
 # INSTRUCTIONS=NAME: the reworded instructions, or the controls blank and wrong, of instruction_sets.py instead of the
 # task's own (default: none).
 # RECORD_DEMOS=1: each episode also recorded as a demonstration for the VLA in OUT/demos (planner/demos.py).
+# EPISODE_STEPS=N: the steps of an episode (default: 120, and 240 or 360 for a task with two or three pick-and-places).
 sim() {
   local gpu=$1 task=$2 start=$3 end=$4 out=$5
   shift 5
@@ -161,6 +177,7 @@ sim() {
     TwoStepSpoonAndCarrot-v0 | NovelStackOnPlate-v0) steps=240 ;;
     NovelThreeStep-v0) steps=360 ;;
   esac
+  [ -n "${EPISODE_STEPS:-}" ] && steps=$EPISODE_STEPS
   [ -n "$out" ] || return 1
   rm -rf "$out" && mkdir -p "$out" || return 1
   CUDA_VISIBLE_DEVICES=$gpu "${GPU_GUARD[@]}" "$SIMPLER_PYTHON" \
@@ -243,8 +260,14 @@ start_sam_server() {
 # start_vla_servers PORT_BASE DIR: the VLA's servers, logs in DIR: policy (PORT_BASE, POLICY_ARGS), SAM (+1,
 # SAM_VERSION, SAM3_ARGS) and VLM (+2, VLM_ARGS). The VLM server is in the sam3 env. POLICY=small: the marriage
 # study's small policies (CKPT from train_files/small_policy.py) instead of VP-VLA's policy (POLICY_ARGS do not apply).
+# POLICY=mimic: mimic-video's server only (PORT_BASE).
 start_vla_servers() {
   local pb=$1 dir=$2
+  if [ "${POLICY:-vpvla}" = mimic ]; then
+    start_server $pb "$dir/policy.log" "$MIMIC_PYTHON" -m examples.SimplerEnv.eval_files.mimic_video_server \
+      --checkpoints "$MIMIC_CHECKPOINTS" --port $pb $POLICY_ARGS
+    return
+  fi
   if [ "${POLICY:-vpvla}" = small ]; then
     start_server $pb "$dir/policy.log" "$STARVLA_PYTHON" -m examples.SimplerEnv.train_files.small_policy serve \
       --ckpt "$CKPT" --port $pb
@@ -255,6 +278,12 @@ start_vla_servers() {
   start_sam_server $((pb + 1)) "$dir/sam3.log" $SAM3_ARGS &&
   start_server $((pb + 2)) "$dir/vlm.log" "$SAM3_PYTHON" examples/SimplerEnv/eval_files/vlm_server_subtask_simpler.py \
     --port $((pb + 2)) $VLM_ARGS
+}
+
+# wait_vla_servers PORT_BASE: until the servers of start_vla_servers have opened their ports.
+wait_vla_servers() {
+  wait_port $1 || return 1
+  [ "${POLICY:-vpvla}" = mimic ] || { wait_port $(($1 + 1)) && wait_port $(($1 + 2)); }
 }
 
 # stop_servers: the servers, then the MPS daemon. Runners call it before their last log line and on exit.

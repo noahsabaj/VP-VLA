@@ -123,7 +123,7 @@ def test_the_request_holds_the_picture_and_the_question_only(tmp_path):
     png = Path(frame["path"]).read_bytes()
     request = fa.request(INSTRUCTION, png)
     assert set(request) == {"model", "max_tokens", "output_config", "messages"}  # no tools, no system prompt
-    assert request["model"] == "claude-fable-5-2" and request["output_config"] == {"effort": "high"}
+    assert request["model"] == "claude-mythos-5-2" and request["output_config"] == {"effort": "high"}
     (message,) = request["messages"]
     picture, question = message["content"]
     assert message["role"] == "user" and picture["source"]["media_type"] == "image/png"

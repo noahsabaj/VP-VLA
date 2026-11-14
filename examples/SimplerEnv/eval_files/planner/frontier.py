@@ -25,11 +25,11 @@ import numpy as np
 
 from . import vlm_plan
 
-MODEL = "claude-fable-5-2"  # the study's frontier model, for both arms; there is no fallback model
+MODEL = "claude-mythos-5-2"  # the study's frontier model, for both arms; there is no fallback model
 EFFORT = "high"
-# USD per million tokens (the model's list prices on 2026-11-13), for the cost that is reported: input, output, a
+# USD per million tokens (the model's list prices on 2026-11-14), for the cost that is reported: input, output, a
 # cache write (5 minutes) and a cache read.
-PRICES = {"claude-fable-5-2": {"input": 8.0, "output": 40.0, "cache_write": 10.0, "cache_read": 0.2}}
+PRICES = {"claude-mythos-5-2": {"input": 8.0, "output": 40.0, "cache_write": 10.0, "cache_read": 0.2}}
 USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 FRAMES_FILE = "frames.jsonl"  # in a task's run folder, next to its frames/ folder
 # The agent arm's record of each episode, one line in a task's run folder: "obj_episode_id", "success", "turns" (the

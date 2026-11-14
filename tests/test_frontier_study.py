@@ -163,7 +163,7 @@ def test_run_names_and_the_plan(small, monkeypatch):
         240,
         384,
     ]
-    assert fa.MODEL == "claude-fable-5-2" and fa.EFFORT == "high"
+    assert fa.MODEL == "claude-mythos-5-2" and fa.EFFORT == "high"
     fr = sf.Frontier()
     assert [[name for name, *_ in tests] for _, tests in sf.families(fr).values()] == [
         ["F1", "F2", "F3"],

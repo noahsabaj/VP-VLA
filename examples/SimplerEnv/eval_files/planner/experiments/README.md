@@ -1947,7 +1947,8 @@ training. Two arms ask what it can do in this system:
 - **The agent arm**: the frontier model drives the arm itself, with no pick-and-place script. Does the frontier
   model still need the planner (A1)? Does the agent beat the trained VLA (A2) and the married system (A3)?
 
-**The model.** Claude Fable 5.2 (`claude-fable-5-2`), effort `high`, through its API. The API has no temperature
+**The model.** Claude Mythos 5.2 (`claude-mythos-5-2`; until the note of 2026-11-14, Claude Fable 5.2), effort
+`high`, through its API. The API has no temperature
 setting, so the same input can give different answers: every episode is run once, its answers are saved, and the
 saved answers are the record. No episode is run again, whatever its result. A refusal, or an error that remains
 after the client's retries, ends the model's part of the episode: in the plan arm it counts as "not feasible", in
@@ -2106,6 +2107,13 @@ state, and every episode's record has it with the hashes of the system prompt an
 - *The record.* Each episode: one line in `agent_stats.jsonl` (the end, the turns, the tools that were called, the
   tokens, the cost at the list prices and the model's time) and the conversation as it was sent, with every picture
   as a PNG file (`transcripts/`). The runner's `status.log` has no success rates.
+
+**Note of 2026-11-14: the model is Claude Mythos 5.2.** Written before any call to the frontier model: no smoke
+test and no eval of either arm has run. The study's model, for both arms, is Claude Mythos 5.2
+(`claude-mythos-5-2`) in place of Claude Fable 5.2 (`claude-fable-5-2`). Anthropic's documentation describes it as
+the same model as Claude Fable 5.2 for organizations that it has verified, with the same specifications and list
+prices. A reproduction without that access uses `claude-fable-5-2`, which the code's `MODEL` names in one place.
+The effort, the settings and the rest of the plan stay as they are.
 
 ## Instruction study
 

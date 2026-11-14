@@ -13,9 +13,10 @@ Each episode becomes a folder DIR/EPISODE_KEY (the evaluator's key: TASK/LAYOUTS
 - frames.mp4: the camera picture of each step, before the step's command (the picture that the controller saw), at
   the eval's 5 steps per second;
 - episode.npz: `actions` (the labels, steps x 7), `states` (steps x 8: Bridge's state, see state_from_obs),
-  `object_map` (steps x height x width: which of the episode's objects each pixel shows, from the simulator's own
-  segmentation; see scene_object_map) and `object_xyz` (steps x objects x 3: where each object is; see
-  scene_object_xyz);
+  `fingers` (steps x 2: the two fingers' joint positions before each step, in metres: the gripper's measured opening,
+  which lags the command and stops at a held object; in demonstrations since 2026-11-14), `object_map` (steps x
+  height x width: which of the episode's objects each pixel shows, from the simulator's own segmentation; see
+  scene_object_map) and `object_xyz` (steps x objects x 3: where each object is; see scene_object_xyz);
 - meta.json, written last: the instruction of each step, the success, the steps, the episode's objects and goals
   (scene_objects) and its settings.
 A demonstration can be the end of its episode only (`first_step`): with the VLA then the planner (planner_client.py),
@@ -171,7 +172,7 @@ class DemoRecorder:
 
     def start(self, episode_key: str, **info) -> None:
         """A new episode; `info` (the task, the layouts, the episode) goes into its meta.json."""
-        self._episode = {"key": episode_key, "info": info, "frames": [], "actions": [], "states": [],
+        self._episode = {"key": episode_key, "info": info, "frames": [], "actions": [], "states": [], "fingers": [],
                          "instructions": [], "object_maps": [], "object_xyz": []}
         self._open = 1.0  # the WidowX starts with its gripper open
 
@@ -182,6 +183,8 @@ class DemoRecorder:
         e = self._episode
         e["frames"].append(np.asarray(image, np.uint8))
         e["states"].append(state_from_obs(obs, self._open))
+        if "qpos" in obs["agent"]:  # the WidowX's joints: 6 of the arm, then the 2 fingers
+            e["fingers"].append(np.asarray(obs["agent"]["qpos"], np.float32)[-2:])
         e["actions"].append(label_from_action(action))
         e["instructions"].append(instruction)
         if object_map is not None:
@@ -197,7 +200,7 @@ class DemoRecorder:
         out = os.path.join(self.root, e["key"])
         os.makedirs(out, exist_ok=True)
         total = len(e["actions"])
-        for name in ("object_maps", "object_xyz"):
+        for name in ("fingers", "object_maps", "object_xyz"):
             if e[name] and len(e[name]) != total:
                 raise ValueError(f"{e['key']}: {len(e[name])} {name.replace('_', ' ')} for {total} steps")
         start = total if first_step is None else first_step
@@ -206,6 +209,8 @@ class DemoRecorder:
         frames, object_maps, steps = e["frames"][start:], e["object_maps"][start:], total - start
         arrays = {"actions": np.array(e["actions"][start:], np.float32).reshape(steps, 7),
                   "states": np.array(e["states"][start:], np.float32).reshape(steps, 8)}
+        if e["fingers"]:
+            arrays["fingers"] = np.array(e["fingers"][start:], np.float32).reshape(steps, 2)
         if object_maps:
             arrays["object_map"] = np.stack(object_maps)
         if e["object_xyz"][start:]:

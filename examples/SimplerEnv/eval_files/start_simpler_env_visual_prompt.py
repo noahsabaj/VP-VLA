@@ -27,6 +27,10 @@ if __name__ == "__main__":
         start_debugpy_once()
 
     def make_vla():
+        if args.policy_client == "mimic_video":
+            from examples.SimplerEnv.eval_files.mimic_video_client import MimicVideoClient
+
+            return MimicVideoClient(port=args.port)
         return ModelClientVP(
             policy_ckpt_path=args.ckpt_path,
             policy_setup=args.policy_setup,

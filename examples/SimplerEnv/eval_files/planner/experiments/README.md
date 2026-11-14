@@ -15,6 +15,8 @@ Each eval writes one run folder in `$RUNS_DIR`; each scorer reads run folders an
   `playground/Checkpoints/VP-VLA-OXE/checkpoints/steps_70000_pytorch_model.pt`).
 - `OFF_LIMITS_GPUS` (optional, Linux): nvidia-smi's indices of the GPUs that no process of a runner may open, with
   commas (`1`, `1,3`). Set it on a machine where a GPU is not yours to use; see "Off-limits GPUs".
+- `MIMIC_PYTHON` and `MIMIC_CHECKPOINTS` (optional): mimic-video's environment and checkpoints, for `POLICY=mimic`; see
+  "mimic-video".
 
 The runners start from any folder. Run the scorers from the repository root, with numpy:
 
@@ -97,6 +99,8 @@ only logs the feature `vlm_plan_yes`; in `selector_eval.sh` a "no" gives the epi
 study"). In `selector_eval.sh`, `CONTROLLER=planner_then_vla` runs the role split instead of the ASM: the planner
 moves the hand to above the object, and then the VLA does the rest of the episode (MODELS must be `-`).
 `CONTROLLER=vla_then_planner` records the planner's corrections of the VLA (see "Corrections" below).
+`POLICY=mimic` in `vla_eval.sh` and `selector_eval.sh` runs mimic-video as the learned policy in place of VP-VLA
+(see "mimic-video" below).
 
 **Demonstrations** (since 2026-10-30). `RECORD_DEMOS=1` records every episode of any runner as a demonstration for
 the VLA, in each sim's folder (`.../demos`; `demos.py`): the camera pictures, each step's command as the VLA's 7
@@ -2188,3 +2192,65 @@ unfamiliar target as well as from the instruction; the logged pair separates the
 
 **Cost.** About 4 GPU hours on GPU 0: two VLA-only evals of 192 episodes and two planner-only evals, and the smoke
 tests.
+
+## mimic-video
+
+A learned policy of another class than VP-VLA, in the same evaluator. mimic-video (arXiv 2512.15692,
+github.com/mimic-video/mimic-video) is a world action model: a video model (Cosmos-Predict2 2B with a Bridge LoRA)
+predicts how the scene goes on, and an action decoder reads the video model's hidden states and gives a chunk of
+actions. It reads the last 5 camera pictures, the instruction, the hand's pose and the gripper's opening. It has no
+VLM and no visual prompts.
+
+**Setup.** mimic-video at its commit `a38dbfe`, in its own environment as its README says (its `model/.venv`, with
+its SimplerEnv fork), with `websockets` and `msgpack` added to that environment, and its checkpoints (its
+`scripts/download_checkpoints.py`). `MIMIC_PYTHON` is that environment's Python. `MIMIC_CHECKPOINTS` is the
+checkpoints' folder (with `action_decoder`, `dataset_statistics`, `text_encoder` and `video_backbone`).
+
+**In the runners.** With `POLICY=mimic`, `vla_eval.sh` and `selector_eval.sh` start one server,
+`eval_files/mimic_video_server.py`, at PORT_BASE in place of VP-VLA's policy, SAM and VLM servers, and no MPS
+daemon. The simulators talk to it through `eval_files/mimic_video_client.py`, which sends each step's picture, the
+instruction and the robot's state, read from the simulator as mimic-video's own eval loop reads it (the hand's
+pose in the robot's base frame from the arm controller, and the fingers' mean position as an opening from 0 to 1). The
+policy in the server is mimic-video's own inference class, not a copy. Each episode has a session with its own
+pictures, states and action chunk, and all sessions share the one loaded model. The model's noise has a fixed seed
+in mimic-video's code, so an episode does not depend on the other episodes or on the order of the requests. One
+step in five asks the model for a new chunk of actions. An eval's run folder and episode records are those of a VLA
+eval, so the scorers read them as they are.
+
+```bash
+export POLICY=mimic MIMIC_PYTHON=$MIMIC_VIDEO/model/.venv/bin/python MIMIC_CHECKPOINTS=$MIMIC_VIDEO_CHECKPOINTS
+# mimic-video's own protocol on SimplerEnv's fixed layouts: 60 steps, and 120 for the eggplant task
+EPISODE_STEPS=60 bash $E/vla_eval.sh 0 10700 mimic_paper60 paper 1 PutSpoonOnTableClothInScene-v0:0:24 \
+    PutCarrotOnPlateInScene-v0:0:24 StackGreenCubeOnYellowCubeBakedTexInScene-v0:0:24
+bash $E/vla_eval.sh 0 10700 mimic_paper60_egg paper 1 PutEggplantInBasketScene-v0:0:24
+# our protocol (120 steps for every task) on the smoke layouts
+IID_EPISODES=8 bash $E/vla_eval.sh 0 10700 mimic_smoke_iid98 iid98 1
+# another action decoder for the same video model (POLICY_ARGS are arguments of mimic_video_server.py)
+POLICY_ARGS="--action-model DECODER.pt --stats STATISTICS.json" bash $E/vla_eval.sh 0 10700 NAME iid98 1
+unset POLICY
+```
+
+**The check of 2026-11-14** (the released Bridge model; a check of the pipeline, not a result of a study). Each of
+the 96 episodes of SimplerEnv's fixed layouts has the same outcome through our runner as in mimic-video's own eval
+loop (`eval/bridge/eval.sh`), with one simulator and with two on the one server.
+
+| Task | Its own loop | Our runner, its protocol | Our runner, 120 steps |
+|---|---|---|---|
+| spoon on towel | 50.0% | 50.0% | 66.7% |
+| carrot on plate | 29.2% | 29.2% | 29.2% |
+| stack the cubes | 16.7% | 16.7% | 16.7% |
+| eggplant in basket | 100% | 100% | 100% (its protocol has 120 steps) |
+| mean | 49.0% | 49.0% | 53.1% |
+
+Its paper reports 46.9% for this model. On the smoke layouts (the first 8 episodes of each task on `iid98`, 120
+steps) it succeeds in 7, 4, 1 and 6 of 8 episodes (spoon, carrot, cubes, eggplant).
+
+**Cost.** The server and one simulator use 35 GB of GPU memory, so one 48 GB GPU holds one server. A chunk of
+actions takes about 2.3 s, and an episode of 120 steps about 60 s with one simulator (56 s of it the model). The
+server answers the simulators' requests one at a time: with two simulators an episode takes about twice as long,
+so K above 1 does not make an eval faster.
+
+**Limits.** `POLICY=mimic` does not take `HIDDEN`, `PERTURB` or `ACTION_INSTRUCTION` (they belong to VP-VLA's
+servers), and in `selector_eval.sh` not `PLAN_CHECK` or `TASK_SOURCE=vlm` or `vp` (no VLM server runs). Its actions
+are changes of the arm controller's target pose, so the client stops in a task whose robot has another control mode
+than SimplerEnv's WidowX tasks.
